@@ -26,7 +26,7 @@ class SubdomainFinder:
             root = host
         self.base_domain = root
         self.pattern = re.compile(
-            r"\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+)"
+            r"\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
             + re.escape(self.base_domain) + r")\b",
             re.IGNORECASE,
         )
