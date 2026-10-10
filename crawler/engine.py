@@ -1,26 +1,35 @@
-"""Async crawl engine with high concurrency, UA rotation, and full metadata."""
+"""Async crawl engine with bounded workers, strict hostname scope, and TLS verification."""
 import asyncio
 import hashlib
+from urllib.parse import urlparse, urljoin, urldefrag
+
 import aiohttp
-from urllib.parse import urlparse, urljoin
 from crawler.parser import PageParser
-from crawler.fetcher import build_headers
+
+MAX_BODY_BYTES = 5 * 1024 * 1024
+REDIRECT_CODES = {301, 302, 303, 307, 308}
+
+
+def _hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _normalize_http_url(url: str):
+    if not url:
+        return None
+    url, _ = urldefrag(url.strip())
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        return None
+    return parsed._replace(scheme=parsed.scheme.lower()).geturl()
 
 
 class CrawlResult:
     def __init__(
-        self,
-        url: str,
-        status: int,
-        title: str,
-        html: str,
-        redirect_chain=None,
-        final_url=None,
-        word_count: int = 0,
-        content_hash: str = "",
-        text_hash: str = "",
-        content_length: int = 0,
-        content_type: str = "",
+        self, url: str, status: int, title: str, html: str,
+        redirect_chain=None, final_url=None, word_count: int = 0,
+        content_hash: str = "", text_hash: str = "",
+        content_length: int = 0, content_type: str = "",
         favicon_hash: str = "",
     ):
         self.url = url
@@ -35,6 +44,10 @@ class CrawlResult:
         self.content_length = content_length
         self.content_type = content_type
         self.favicon_hash = favicon_hash
+        # Kept in memory for analysis; deliberately omitted from to_dict().
+        self.headers = {}
+        self.depth = 0
+        self.error = ""
 
     def to_dict(self) -> dict:
         return {
@@ -49,11 +62,9 @@ class CrawlResult:
             "content_hash": self.content_hash,
             "text_hash": self.text_hash,
             "favicon_hash": self.favicon_hash,
+            "depth": self.depth,
+            "error": self.error,
         }
-
-
-def _hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 
 class CrawlEngine:
@@ -62,105 +73,138 @@ class CrawlEngine:
         start_url: str,
         max_depth: int = 2,
         max_pages: int = 100,
-        concurrency: int = 50,
+        concurrency: int = 5,
         on_page_crawled=None,
         on_log=None,
+        should_stop=None,
     ):
-        self.start_url = start_url
-        self.base_domain = urlparse(start_url).netloc
-        self.max_depth = max_depth
-        self.max_pages = max_pages
-        self.concurrency = concurrency
-        self.parser = PageParser(start_url)
+        normalized = _normalize_http_url(start_url)
+        if not normalized:
+            raise ValueError("start_url must be a full http:// or https:// URL")
+        self.start_url = normalized
+        self.base_domain = (urlparse(normalized).hostname or "").lower()
+        self.max_depth = max(0, int(max_depth))
+        self.max_pages = max(1, int(max_pages))
+        self.concurrency = max(1, min(int(concurrency), 20))
+        self.parser = PageParser(self.start_url)
         self.on_page_crawled = on_page_crawled
         self.on_log = on_log or (lambda msg: None)
+        self.should_stop = should_stop or (lambda: False)
         self.visited: set = set()
         self.results: list = []
+        self._schedule_lock = asyncio.Lock()
 
-    def _log(self, msg: str):
-        self.on_log(msg)
+    def _in_scope(self, url: str) -> bool:
+        host = urlparse(url).hostname
+        return bool(host and host.lower() == self.base_domain)
 
     async def crawl(self):
-        queue: asyncio.Queue = asyncio.Queue()
-        await queue.put((self.start_url, 0))
+        timeout = aiohttp.ClientTimeout(total=15, connect=8)
+        # Keep certificate verification enabled. Never disable TLS verification for recon.
+        connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=True)
+        headers = {
+            "User-Agent": "Recon-GUI/2.1 (+authorized security testing)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        queue = asyncio.Queue()
+        queue.put_nowait((self.start_url, 0))
         self.visited.add(self.start_url)
 
-        semaphore = asyncio.Semaphore(self.concurrency)
-        connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=False)
-
-        async with aiohttp.ClientSession(connector=connector) as session:
-            tasks = []
-            while not queue.empty() and len(self.results) < self.max_pages:
-                url, depth = await queue.get()
-                if depth > self.max_depth:
-                    continue
-                task = asyncio.create_task(
-                    self._crawl_one(session, url, depth, queue, semaphore)
-                )
-                tasks.append(task)
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _crawl_one(self, session, url, depth, queue, semaphore):
-        async with semaphore:
-            if len(self.results) >= self.max_pages:
-                return
-
-            current_url = url
-            redirect_chain = []
-            max_redirects = 5
-            html = ""
-            final_status = 0
-            content_type = ""
-
-            for _ in range(max_redirects + 1):
-                try:
-                    async with session.get(
-                        current_url,
-                        headers=build_headers(),
-                        timeout=aiohttp.ClientTimeout(total=15),
-                        allow_redirects=False,
-                    ) as resp:
-                        final_status = resp.status
-                        content_type = resp.headers.get("Content-Type", "")
-
-                        if resp.status in (301, 302, 303, 307, 308):
-                            location = resp.headers.get("Location", "")
-                            if not location:
-                                break
-                            next_url = urljoin(current_url, location)
-                            redirect_chain.append({
-                                "status": resp.status,
-                                "from": current_url,
-                                "to": next_url,
-                            })
-                            current_url = next_url
+        async with aiohttp.ClientSession(
+            connector=connector, timeout=timeout, headers=headers,
+            raise_for_status=False,
+        ) as session:
+            async def worker():
+                while True:
+                    item = await queue.get()
+                    try:
+                        if item is None:
+                            return
+                        if self.should_stop():
                             continue
+                        url, depth = item
+                        result, links = await self._crawl_one(session, url, depth)
+                        if result is None:
+                            continue
+                        self.results.append(result)
+                        self._log(
+                            f"[{result.status or 'ERR'}] depth={depth} {url}"
+                            + (f" -> {result.final_url}" if result.final_url != url else "")
+                            + (f" -- {result.title[:60]}" if result.title else "")
+                            + (f" -- {result.error}" if result.error else "")
+                        )
+                        if self.on_page_crawled:
+                            self.on_page_crawled(result)
 
-                        if "text/html" in content_type or resp.status == 200:
-                            html = await resp.text(errors="ignore")
-                        break
-                except Exception as exc:
-                    self._log(f"[ERR] {current_url} -- {exc}")
-                    return
+                        if result.status != 200 or depth >= self.max_depth or self.should_stop():
+                            continue
+                        for link in links:
+                            if not self._in_scope(link):
+                                continue
+                            async with self._schedule_lock:
+                                # visited contains both queued and in-flight URLs, so the cap is reserved atomically.
+                                if link in self.visited or len(self.visited) >= self.max_pages:
+                                    continue
+                                self.visited.add(link)
+                                queue.put_nowait((link, depth + 1))
+                    except Exception as exc:
+                        self._log(f"[WORKER ERROR] {type(exc).__name__}: {exc}")
+                    finally:
+                        queue.task_done()
 
-            if not html:
-                result = CrawlResult(
-                    url=url, status=final_status, title="", html="",
-                    redirect_chain=redirect_chain, final_url=current_url,
-                    content_type=content_type,
-                )
-                self.results.append(result)
-                self._log(f"[{final_status}] {url}"
-                          + (f" -> {current_url}" if current_url != url else ""))
-                if self.on_page_crawled:
-                    self.on_page_crawled(result)
-                return
+            workers = [asyncio.create_task(worker()) for _ in range(self.concurrency)]
+            await queue.join()
+            for _ in workers:
+                queue.put_nowait(None)
+            await queue.join()
+            await asyncio.gather(*workers, return_exceptions=True)
 
-            parsed = self.parser.parse(html, current_url)
-            text = parsed["text"]
-            word_count = len(text.split())
+        self._log(f"Crawl finished: {len(self.results)} page responses recorded.")
+        return self.results
 
+    async def _crawl_one(self, session, url, depth):
+        current_url = url
+        redirect_chain = []
+        final_status = 0
+        content_type = ""
+        html = ""
+        response_headers = {}
+
+        try:
+            for _ in range(6):
+                if self.should_stop():
+                    return None, []
+                async with session.get(current_url, allow_redirects=False) as response:
+                    final_status = response.status
+                    content_type = response.headers.get("Content-Type", "")
+                    response_headers = dict(response.headers)
+                    if final_status in REDIRECT_CODES:
+                        location = response.headers.get("Location", "")
+                        if not location:
+                            break
+                        candidate = _normalize_http_url(urljoin(current_url, location))
+                        if not candidate:
+                            break
+                        redirect_chain.append({
+                            "status": final_status,
+                            "from": current_url,
+                            "to": candidate,
+                        })
+                        # Record but never request a redirect destination outside the starting hostname.
+                        current_url = candidate
+                        if not self._in_scope(candidate):
+                            break
+                        continue
+                    if "text/html" in content_type.lower() or "application/xhtml+xml" in content_type.lower():
+                        body = await response.content.read(MAX_BODY_BYTES + 1)
+                        if len(body) > MAX_BODY_BYTES:
+                            body = body[:MAX_BODY_BYTES]
+                            self._log(f"[LIMIT] Body truncated at {MAX_BODY_BYTES} bytes: {url}")
+                        html = body.decode(response.charset or "utf-8", errors="replace")
+                    break
+
+            parsed = self.parser.parse(html, current_url) if html else {"title": "", "text": "", "links": []}
+            page_text = parsed["text"]
             result = CrawlResult(
                 url=url,
                 status=final_status,
@@ -168,30 +212,23 @@ class CrawlEngine:
                 html=html,
                 redirect_chain=redirect_chain,
                 final_url=current_url,
-                word_count=word_count,
-                content_hash=_hash(html),
-                text_hash=_hash(text),
-                content_length=len(html),
+                word_count=len(page_text.split()),
+                content_hash=_hash(html) if html else "",
+                text_hash=_hash(page_text) if page_text else "",
+                content_length=len(html.encode("utf-8")),
                 content_type=content_type,
             )
-            self.results.append(result)
-
-            redirect_note = ""
-            if redirect_chain:
-                chain_str = " -> ".join(str(c["status"]) for c in redirect_chain)
-                redirect_note = f" [{chain_str} -> {final_status}]"
-
-            self._log(f"[{final_status}]{redirect_note} {url} -- "
-                      f"{word_count} words -- {parsed['title'][:50]}")
-
-            if self.on_page_crawled:
-                self.on_page_crawled(result)
-
-            if final_status != 200 or depth >= self.max_depth:
-                return
-
-            for link in parsed["links"]:
-                if (PageParser.is_same_domain(link, self.start_url)
-                        and link not in self.visited):
-                    self.visited.add(link)
-                    await queue.put((link, depth + 1))
+            result.headers = response_headers
+            result.depth = depth
+            result.error = ""
+            return result, parsed["links"] if html else []
+        except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError) as exc:
+            result = CrawlResult(
+                url=url, status=final_status, title="", html="",
+                redirect_chain=redirect_chain, final_url=current_url,
+                content_type=content_type,
+            )
+            result.headers = response_headers
+            result.depth = depth
+            result.error = f"{type(exc).__name__}: {exc}"
+            return result, []
