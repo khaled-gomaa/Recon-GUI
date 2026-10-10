@@ -8,6 +8,7 @@ from crawler.fetcher import build_headers
 
 DEFAULT_EXTENSIONS = ["", ".html", ".php", ".bak", ".old", ".txt", ".zip"]
 MAX_WORDS = 500
+MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 class WordlistScanner:
@@ -68,16 +69,22 @@ class WordlistScanner:
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
                 allow_redirects=False,
             ) as resp:
-                data = await resp.content.read(1024 * 1024 + 1)
-                self.baseline_size = len(data[:1024 * 1024])
-                self.on_log(f"[Baseline] Reference response: HTTP {resp.status}, {self.baseline_size} bytes")
+                data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
+                self.baseline_size = len(data[:MAX_RESPONSE_BYTES])
+                self.on_log(
+                    f"[Baseline] Reference response: HTTP {resp.status}, "
+                    f"{self.baseline_size} bytes"
+                )
         except (aiohttp.ClientError, asyncio.TimeoutError):
             self.baseline_size = None
 
     async def scan(self):
         words = self._load_wordlist()
         targets = list(dict.fromkeys(target for word in words for target in self._build_targets(word)))
-        self.on_log(f"[Wordlist] Checking {len(targets)} candidates (concurrency={self.concurrency}, delay={self.delay_ms}ms).")
+        self.on_log(
+            f"[Wordlist] Checking {len(targets)} candidates "
+            f"(concurrency={self.concurrency}, delay={self.delay_ms}ms)."
+        )
         queue = asyncio.Queue()
         for target in targets:
             queue.put_nowait(target)
@@ -85,7 +92,9 @@ class WordlistScanner:
         connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=True)
         headers = build_headers()
 
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
+        async with aiohttp.ClientSession(
+            connector=connector, timeout=timeout, headers=headers
+        ) as session:
             await self._fetch_baseline(session)
 
             async def worker():
@@ -98,24 +107,33 @@ class WordlistScanner:
                             continue
                         try:
                             async with session.get(url, allow_redirects=False) as resp:
-                                data = await resp.content.read(1024 * 1024 + 1)
-                                size = len(data[:1024 * 1024])
-                                if resp.status in self.bad_status:
-                                    if resp.status == 429:
-                                        self.on_log(f"[Wordlist] Rate limited (429) at {url}; stopping checks.")
-                                        self._rate_limited = True
-                                    continue
-                                if self.baseline_size is not None and abs(size - self.baseline_size) < 50:
-                                    continue
-                                hit = {
-                                    "url": url, "status": resp.status, "size": size,
-                                    "content_type": resp.headers.get("Content-Type", ""),
-                                }
-                                self.hits.append(hit)
-                                self.on_hit(url, resp.status, size)
+                                data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
+                                size = len(data[:MAX_RESPONSE_BYTES])
+                                if resp.status == 429:
+                                    self._rate_limited = True
+                                    self.on_log(
+                                        f"[Wordlist] HTTP 429 received at {url}; "
+                                        "remaining checks will be skipped."
+                                    )
+                                elif resp.status not in self.bad_status:
+                                    baseline_match = (
+                                        self.baseline_size is not None
+                                        and abs(size - self.baseline_size) < 50
+                                    )
+                                    if not baseline_match:
+                                        hit = {
+                                            "url": url,
+                                            "status": resp.status,
+                                            "size": size,
+                                            "content_type": resp.headers.get("Content-Type", ""),
+                                        }
+                                        self.hits.append(hit)
+                                        self.on_hit(url, resp.status, size)
                         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                             self.on_log(f"[Wordlist] Request failed for {url}: {exc}")
-                        if self.delay_ms:
+
+                        # Apply delay even for ordinary 404/filtered responses.
+                        if self.delay_ms and not self.should_stop():
                             await asyncio.sleep(self.delay_ms / 1000)
                     finally:
                         queue.task_done()
