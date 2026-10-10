@@ -32,6 +32,7 @@ class WordlistScanner:
         self.hits = []
         self.bad_status = {400, 404, 410, 429, 500, 502, 503, 504}
         self.baseline_size = None
+        self._rate_limited = False
 
     def _load_wordlist(self):
         if not self.wordlist_path.is_file():
@@ -93,7 +94,7 @@ class WordlistScanner:
                     try:
                         if url is None:
                             return
-                        if self.should_stop():
+                        if self.should_stop() or self._rate_limited:
                             continue
                         try:
                             async with session.get(url, allow_redirects=False) as resp:
@@ -102,7 +103,7 @@ class WordlistScanner:
                                 if resp.status in self.bad_status:
                                     if resp.status == 429:
                                         self.on_log(f"[Wordlist] Rate limited (429) at {url}; stopping checks.")
-                                        self.should_stop()
+                                        self._rate_limited = True
                                     continue
                                 if self.baseline_size is not None and abs(size - self.baseline_size) < 50:
                                     continue
