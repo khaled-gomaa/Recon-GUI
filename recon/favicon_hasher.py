@@ -30,7 +30,7 @@ async def get_favicon_hash(session, base_url: str, timeout: int = 8) -> str:
             favicon_url,
             headers=build_headers(),
             timeout=aiohttp.ClientTimeout(total=timeout),
-            allow_redirects=True,
+            allow_redirects=False,
         ) as resp:
             if resp.status != 200:
                 return ""
@@ -43,6 +43,6 @@ async def get_favicon_hash(session, base_url: str, timeout: int = 8) -> str:
 
 
 async def hash_favicon_simple(base_url: str) -> str:
-    connector = aiohttp.TCPConnector(ssl=False)
+    connector = aiohttp.TCPConnector(ssl=True)
     async with aiohttp.ClientSession(connector=connector) as session:
         return await get_favicon_hash(session, base_url)
