@@ -6,12 +6,11 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
-from crawler.parser import PageParser
 from recon.js_endpoint_extractor import JSEndpointExtractor
 from crawler.fetcher import build_headers
 
-SOURCEMAP_RE = re.compile(r"//[#@]\\s*sourceMappingURL=([^\\s*]+)")
-JS_URL_RE = re.compile(r"""["'\x60]([^"'\x60]+\\.js(?:\\?[^"'\x60]*)?)["'\x60]""")
+SOURCEMAP_RE = re.compile(r"//[#@]\s*sourceMappingURL=([^\s*]+)")
+JS_URL_RE = re.compile(r"""["']([^"']+\.js(?:\?[^"']*)?)["']""")
 MAX_JS_BYTES = 2 * 1024 * 1024
 MAX_JS_FILES = 200
 
@@ -45,8 +44,6 @@ class JSCollector:
 
     async def download_and_analyze(self, concurrency: int = 5, should_stop=None):
         stop = should_stop or (lambda: False)
-        if not self.js_urls:
-            return
         concurrency = max(1, min(int(concurrency), 10))
         timeout = aiohttp.ClientTimeout(total=15, connect=8)
         connector = aiohttp.TCPConnector(limit=concurrency, ssl=True)
@@ -54,8 +51,7 @@ class JSCollector:
 
         async with aiohttp.ClientSession(connector=connector) as session:
             while self.js_urls - analyzed and len(analyzed) < MAX_JS_FILES and not stop():
-                batch = sorted(self.js_urls - analyzed)[:concurrency]
-                batch = batch[:MAX_JS_FILES - len(analyzed)]
+                batch = sorted(self.js_urls - analyzed)[:min(concurrency, MAX_JS_FILES - len(analyzed))]
                 await asyncio.gather(
                     *(self._fetch_js(session, url, timeout, stop) for url in batch),
                     return_exceptions=True,
@@ -72,11 +68,8 @@ class JSCollector:
             async with session.get(
                 url, headers=build_headers(), timeout=timeout, allow_redirects=False
             ) as resp:
-                # Do not follow redirects; their destination may be outside scope.
+                # Do not follow redirects: their destinations may be outside scope.
                 if resp.status != 200:
-                    return
-                ctype = resp.headers.get("Content-Type", "").lower()
-                if ctype and not any(t in ctype for t in ("javascript", "ecmascript", "text/plain", "application/octet-stream")):
                     return
                 data = await resp.content.read(MAX_JS_BYTES + 1)
                 if len(data) > MAX_JS_BYTES:
