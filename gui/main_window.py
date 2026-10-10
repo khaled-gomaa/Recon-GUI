@@ -44,8 +44,8 @@ class MainWindow(QMainWindow):
 
         input_row.addWidget(QLabel("Concurrency:"))
         self.conc_spin = QSpinBox()
-        self.conc_spin.setRange(1, 500)
-        self.conc_spin.setValue(50)
+        self.conc_spin.setRange(1, 20)
+        self.conc_spin.setValue(5)
         input_row.addWidget(self.conc_spin)
         root.addLayout(input_row)
 
@@ -192,10 +192,10 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def _stop_crawl(self):
-        if self.worker:
-            self.worker.terminate()
-            self._append_log("[Stopped by user]")
-        self._reset_buttons()
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self._append_log("[Stop requested — allowing in-flight requests to finish]")
+            self.stop_btn.setEnabled(False)
 
     def _append_log(self, msg: str):
         self.log_view.append(msg)
