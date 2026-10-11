@@ -67,7 +67,8 @@ def test_crawler_visits_multiple_depths_and_blocks_off_host_redirects():
         finally:
             await runner.cleanup()
 
-    asyncio.run(scenario())
+    # Fail in seconds if the async crawler/queue regresses instead of hanging CI.
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
 
 
 def test_crawler_respects_max_pages_with_many_discovered_links():
@@ -103,4 +104,5 @@ def test_crawler_respects_max_pages_with_many_discovered_links():
         finally:
             await runner.cleanup()
 
-    asyncio.run(scenario())
+    # Fail in seconds if the async crawler/queue regresses instead of hanging CI.
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
