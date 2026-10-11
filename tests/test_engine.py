@@ -138,9 +138,7 @@ def test_callback_failure_does_not_stop_discovery():
         app.router.add_get("/child", child)
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(app, "127.0.0.1", 0)
         try:
-            # AppRunner needs to own the app lifecycle before binding the TCP site.
             site = web.TCPSite(runner, "127.0.0.1", 0)
             await site.start()
             port = site._server.sockets[0].getsockname()[1]
