@@ -32,8 +32,16 @@ class JSCollector:
 
     def collect_from_html(self, page_url: str, html: str):
         soup = BeautifulSoup(html or "", "lxml")
+        resource_base = page_url
+        base_tag = soup.find("base", href=True)
+        if base_tag:
+            candidate = urljoin(page_url, base_tag["href"].strip())
+            parsed_base = urlparse(candidate)
+            if parsed_base.scheme.lower() in ("http", "https") and parsed_base.hostname:
+                resource_base = candidate
+
         for tag in soup.find_all("script", src=True):
-            absolute = urljoin(page_url, tag["src"].strip())
+            absolute = urljoin(resource_base, tag["src"].strip())
             if absolute.startswith(("http://", "https://")) and self._in_scope(absolute):
                 self.js_urls.add(absolute)
         for tag in soup.find_all("script", src=False):
