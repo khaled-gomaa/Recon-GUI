@@ -15,6 +15,7 @@ from recon.similarity_detector import SimilarityDetector
 class CrawlWorker(QThread):
     log_message = Signal(str)
     page_crawled = Signal(object)
+    discovery_result = Signal(dict)
     finished = Signal(dict)
     error = Signal(str)
 
@@ -126,6 +127,7 @@ class CrawlWorker(QThread):
                     ),
                     on_log=lambda message: self.log_message.emit(message),
                     should_stop=self._stopping,
+                    on_result=lambda result: self.discovery_result.emit(result),
                 )
                 analyzer.wordlist_hits = loop.run_until_complete(scanner.scan())
                 wordlist_results = scanner.responses
