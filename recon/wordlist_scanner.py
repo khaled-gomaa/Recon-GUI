@@ -38,7 +38,7 @@ class WordlistScanner:
     def _log(self, message: str):
         """Logging is best-effort and must not terminate a scan worker."""
         try:
-            self._log(message)
+            self.on_log(message)
         except Exception:
             pass
 
