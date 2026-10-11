@@ -244,3 +244,56 @@ def test_crawler_follows_hidden_forms_data_links_and_inline_js_routes():
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+
+def test_crawler_reads_robots_and_sitemap_content_to_discover_pages():
+    async def scenario():
+        requested = []
+
+        async def root(request):
+            requested.append(request.path)
+            html = '<a href="/robots.txt">robots</a><a href="/sitemap.xml">sitemap</a>'
+            return web.Response(text=html, content_type="text/html")
+
+        async def robots(request):
+            requested.append(request.path)
+            return web.Response(
+                text="User-agent: *\nDisallow: /hidden/robots-route\n",
+                content_type="text/plain",
+            )
+
+        async def sitemap(request):
+            requested.append(request.path)
+            return web.Response(
+                text="<urlset><url><loc>/hidden/sitemap-route</loc></url></urlset>",
+                content_type="application/xml",
+            )
+
+        async def hidden(request):
+            requested.append(request.path)
+            return web.Response(text="<title>hidden</title>", content_type="text/html")
+
+        app = web.Application()
+        app.router.add_get("/", root)
+        app.router.add_get("/robots.txt", robots)
+        app.router.add_get("/sitemap.xml", sitemap)
+        app.router.add_get("/hidden/{name}", hidden)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            engine = CrawlEngine(
+                f"http://127.0.0.1:{port}/", max_depth=2,
+                max_pages=10, concurrency=3,
+            )
+            results = await engine.crawl()
+            assert len(results) == 5
+            assert "/hidden/robots-route" in requested
+            assert "/hidden/sitemap-route" in requested
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
