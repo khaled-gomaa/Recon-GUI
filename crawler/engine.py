@@ -269,7 +269,11 @@ class CrawlEngine:
                         if not self._in_scope(candidate):
                             break
                         continue
-                    if "text/html" in content_type.lower() or "application/xhtml+xml" in content_type.lower():
+                    current_path = urlparse(current_url).path.lower()
+                    is_html = "text/html" in content_type.lower() or "application/xhtml+xml" in content_type.lower()
+                    is_xml = "xml" in content_type.lower() or current_path.endswith(".xml")
+                    is_robots = current_path == "/robots.txt" or current_path.endswith("/robots.txt")
+                    if is_html or is_xml or is_robots:
                         body = await response.content.read(MAX_BODY_BYTES + 1)
                         if len(body) > MAX_BODY_BYTES:
                             body = body[:MAX_BODY_BYTES]
