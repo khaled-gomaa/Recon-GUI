@@ -30,7 +30,10 @@ class PageParser:
 
         return {
             "title": self._get_title(soup),
-            "links": self._extract_links(soup, document_base, inline_routes, raw_content=html or "", current_url=current_url),
+            "links": self._extract_links(
+                soup, document_base, inline_routes,
+                raw_content=html or "", source_url=current_url,
+            ),
             "raw_html": html or "",
             "text": soup.get_text(separator=" ", strip=True),
             "scripts": self._extract_script_srcs(soup, document_base),
