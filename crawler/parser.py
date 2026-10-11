@@ -20,7 +20,14 @@ class PageParser:
         self.base_url = base_url
 
     def parse(self, html: str, current_url: str) -> dict:
-        soup = BeautifulSoup(html or "", "lxml")
+        raw_content = html or ""
+        source_path = urlparse(current_url).path.lower()
+        looks_like_sitemap = (
+            source_path.endswith((".xml", ".xml.gz"))
+            or re.search(r"<(?:[a-z0-9_-]+:)?(?:urlset|sitemapindex)\b", raw_content[:1000], re.IGNORECASE)
+        )
+        # Use an XML-aware parser for sitemap documents rather than silently treating them as HTML.
+        soup = BeautifulSoup(raw_content, "xml" if looks_like_sitemap else "lxml")
         document_base = self._document_base(soup, current_url)
         inline_routes = set()
         for script in soup.find_all("script", src=False):
