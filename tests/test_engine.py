@@ -200,3 +200,47 @@ def test_crawler_can_crawl_additional_seed_urls_without_revisiting_pages():
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+
+def test_crawler_follows_hidden_forms_data_links_and_inline_js_routes():
+    async def scenario():
+        requested = []
+
+        async def root(request):
+            requested.append(request.path)
+            html = """
+            <html><body>
+              <form action="/hidden/form-action"></form>
+              <div data-url="/hidden/data-route"></div>
+              <script>const hidden = '/hidden/from-inline-js';</script>
+            </body></html>
+            """
+            return web.Response(text=html, content_type="text/html")
+
+        async def hidden(request):
+            requested.append(request.path)
+            return web.Response(text="<title>Found</title>", content_type="text/html")
+
+        app = web.Application()
+        app.router.add_get("/", root)
+        app.router.add_get("/hidden/{name}", hidden)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            engine = CrawlEngine(
+                f"http://127.0.0.1:{port}/", max_depth=1,
+                max_pages=10, concurrency=3,
+            )
+            results = await engine.crawl()
+            assert len(results) == 4
+            assert "/hidden/form-action" in requested
+            assert "/hidden/data-route" in requested
+            assert "/hidden/from-inline-js" in requested
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
