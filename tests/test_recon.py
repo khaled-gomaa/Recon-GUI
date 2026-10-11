@@ -37,7 +37,8 @@ def test_analyzer_uses_url_hostname_and_response_headers():
     analyzer = ReconAnalyzer("https://www.example.com/")
     html = (
         "<html><head><title>Sample</title>"
-        '<script src="/assets/app.js"></script></head>'
+        '<base href="/assets/">'
+        '<script src="app.js"></script></head>'
         "<body>api.example.com api.dev.example.com</body></html>"
     )
     analyzer.analyze_page(
