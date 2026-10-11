@@ -41,10 +41,13 @@ class PageParser:
         tag = soup.find("base", href=True)
         if not tag:
             return current_url
-        candidate = urljoin(current_url, tag["href"].strip())
-        parsed = urlparse(candidate)
-        if parsed.scheme.lower() in ("http", "https") and parsed.hostname:
-            return candidate
+        try:
+            candidate = urljoin(current_url, tag["href"].strip())
+            parsed = urlparse(candidate)
+            if parsed.scheme.lower() in ("http", "https") and parsed.hostname:
+                return candidate
+        except (TypeError, ValueError, UnicodeError):
+            pass
         return current_url
 
     @staticmethod
@@ -55,12 +58,19 @@ class PageParser:
     @staticmethod
     def _candidate_url(value: str, current_url: str):
         value = (value or "").strip()
-        if not value or value.startswith(("#", "mailto:", "tel:", "javascript:", "data:", "blob:")):
+        if not value or value.lower().startswith(
+            ("#", "mailto:", "tel:", "javascript:", "data:", "blob:")
+        ):
             return None
-        absolute = urljoin(current_url, value)
-        absolute, _ = urldefrag(absolute)
-        parsed = urlparse(absolute)
-        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        try:
+            absolute = urljoin(current_url, value)
+            absolute, _ = urldefrag(absolute)
+            parsed = urlparse(absolute)
+            if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+                return None
+            # Invalid URL authorities (such as malformed IPv6 literals) are ignored.
+            _ = parsed.port
+        except (TypeError, ValueError, UnicodeError):
             return None
         if parsed.path.lower().endswith(STATIC_SUFFIXES):
             return None
@@ -126,11 +136,16 @@ class PageParser:
         scripts = set()
         for tag in soup.find_all("script", src=True):
             src = tag["src"].strip()
-            if src:
+            if not src:
+                continue
+            try:
                 absolute = urljoin(current_url, src)
                 parsed = urlparse(absolute)
                 if parsed.scheme.lower() in ("http", "https") and parsed.hostname:
+                    _ = parsed.port
                     scripts.add(absolute)
+            except (TypeError, ValueError, UnicodeError):
+                continue
         return sorted(scripts)
 
     @staticmethod
