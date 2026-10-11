@@ -93,7 +93,8 @@ def test_records_404_responses_for_content_discovery_results(tmp_path):
             if "this-path-should-not-exist-recon-baseline" in request.path:
                 return web.Response(status=404, text="missing")
             if request.path == "/admin":
-                return web.Response(status=200, text="admin area")
+                # Differ clearly from the missing-path baseline to avoid wildcard false positives.
+                return web.Response(status=200, text="admin area " + ("visible " * 20))
             return web.Response(status=404, text="missing")
 
         app = web.Application()
