@@ -35,6 +35,20 @@ class WordlistScanner:
         self.baseline_size = None
         self._rate_limited = False
 
+    def _log(self, message: str):
+        """Logging is best-effort and must not terminate a scan worker."""
+        try:
+            self.on_log(message)
+        except Exception:
+            pass
+
+    def _notify_hit(self, url: str, status: int, size: int):
+        """Report a hit without letting an external callback stop the scan."""
+        try:
+            self.on_hit(url, status, size)
+        except Exception as exc:
+            self._log(f"[Wordlist] Hit callback failed: {type(exc).__name__}: {exc}")
+
     def _load_wordlist(self):
         if not self.wordlist_path.is_file():
             raise FileNotFoundError(f"Wordlist not found: {self.wordlist_path}")
@@ -44,9 +58,9 @@ class WordlistScanner:
             if word and not word.startswith("#"):
                 entries.append(word.lstrip("/"))
             if len(entries) >= MAX_WORDS:
-                self.on_log(f"[Wordlist] Limited to first {MAX_WORDS} entries.")
+                self._log(f"[Wordlist] Limited to first {MAX_WORDS} entries.")
                 break
-        self.on_log(f"[Wordlist] Loaded {len(entries)} entries")
+        self._log(f"[Wordlist] Loaded {len(entries)} entries")
         return entries
 
     def _build_targets(self, word: str):
@@ -69,9 +83,16 @@ class WordlistScanner:
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
                 allow_redirects=False,
             ) as resp:
+                if resp.status == 429:
+                    self._rate_limited = True
+                    self._log(
+                        "[Baseline] HTTP 429 received; stopping wordlist checks "
+                        "to avoid continuing into rate limiting."
+                    )
+                    return
                 data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
                 self.baseline_size = len(data[:MAX_RESPONSE_BYTES])
-                self.on_log(
+                self._log(
                     f"[Baseline] Reference response: HTTP {resp.status}, "
                     f"{self.baseline_size} bytes"
                 )
@@ -81,7 +102,7 @@ class WordlistScanner:
     async def scan(self):
         words = self._load_wordlist()
         targets = list(dict.fromkeys(target for word in words for target in self._build_targets(word)))
-        self.on_log(
+        self._log(
             f"[Wordlist] Checking {len(targets)} candidates "
             f"(concurrency={self.concurrency}, delay={self.delay_ms}ms)."
         )
@@ -111,7 +132,7 @@ class WordlistScanner:
                                 size = len(data[:MAX_RESPONSE_BYTES])
                                 if resp.status == 429:
                                     self._rate_limited = True
-                                    self.on_log(
+                                    self._log(
                                         f"[Wordlist] HTTP 429 received at {url}; "
                                         "remaining checks will be skipped."
                                     )
@@ -128,9 +149,15 @@ class WordlistScanner:
                                             "content_type": resp.headers.get("Content-Type", ""),
                                         }
                                         self.hits.append(hit)
-                                        self.on_hit(url, resp.status, size)
+                                        self._notify_hit(url, resp.status, size)
                         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                            self.on_log(f"[Wordlist] Request failed for {url}: {exc}")
+                            self._log(f"[Wordlist] Request failed for {url}: {exc}")
+                        except Exception as exc:
+                            # A malformed response or optional callback should not kill a worker.
+                            self._log(
+                                f"[Wordlist] Unexpected error for {url}: "
+                                f"{type(exc).__name__}: {exc}"
+                            )
 
                         # Apply delay even for ordinary 404/filtered responses.
                         if self.delay_ms and not self.should_stop():
@@ -145,5 +172,5 @@ class WordlistScanner:
             await queue.join()
             await asyncio.gather(*workers, return_exceptions=True)
 
-        self.on_log(f"[Wordlist] Finished: {len(self.hits)} potential hits.")
+        self._log(f"[Wordlist] Finished: {len(self.hits)} potential hits.")
         return self.hits
