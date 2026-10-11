@@ -25,6 +25,8 @@ class JSCollector:
         self.inline_scripts: list = []
         self.endpoints: set = set()
         self.source_maps: set = set()
+        self.route_urls: set = set()
+        self._analyzed_js_urls: set = set()
 
     def _in_scope(self, url: str) -> bool:
         host = urlparse(url).hostname
@@ -55,16 +57,21 @@ class JSCollector:
         concurrency = max(1, min(int(concurrency), 10))
         timeout = aiohttp.ClientTimeout(total=15, connect=8)
         connector = aiohttp.TCPConnector(limit=concurrency, ssl=True)
-        analyzed = set()
-
         async with aiohttp.ClientSession(connector=connector) as session:
-            while self.js_urls - analyzed and len(analyzed) < MAX_JS_FILES and not stop():
-                batch = sorted(self.js_urls - analyzed)[:min(concurrency, MAX_JS_FILES - len(analyzed))]
+            while (
+                self.js_urls - self._analyzed_js_urls
+                and len(self._analyzed_js_urls) < MAX_JS_FILES
+                and not stop()
+            ):
+                batch = sorted(self.js_urls - self._analyzed_js_urls)[
+                    :min(concurrency, MAX_JS_FILES - len(self._analyzed_js_urls))
+                ]
                 await asyncio.gather(
                     *(self._fetch_js(session, url, timeout, stop) for url in batch),
                     return_exceptions=True,
                 )
-                analyzed.update(batch)
+                # Mark attempts once to avoid repeating failing endpoints on a second pass.
+                self._analyzed_js_urls.update(batch)
 
         if len(self.js_urls) > MAX_JS_FILES:
             self.on_log(f"[JS] File limit reached ({MAX_JS_FILES}).")
@@ -90,6 +97,10 @@ class JSCollector:
 
         self.js_contents[url] = content
         self.endpoints.update(JSEndpointExtractor.extract(content))
+        for route in JSEndpointExtractor.extract_routes(content):
+            candidate = urljoin(url, route)
+            if candidate.startswith(("http://", "https://")) and self._in_scope(candidate):
+                self.route_urls.add(candidate)
 
         for match in JS_URL_RE.findall(content):
             candidate = urljoin(url, match)
@@ -109,4 +120,5 @@ class JSCollector:
             "inline_script_count": len(self.inline_scripts),
             "endpoints": sorted(self.endpoints),
             "source_maps": sorted(self.source_maps),
+            "discovered_routes": sorted(self.route_urls),
         }
