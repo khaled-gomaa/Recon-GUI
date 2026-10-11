@@ -15,7 +15,7 @@ class WordlistScanner:
     def __init__(
         self, base_url: str, wordlist_path: str, extensions=None,
         concurrency: int = 5, timeout: int = 8, delay_ms: int = 200,
-        on_hit=None, on_log=None, should_stop=None,
+        on_hit=None, on_log=None, should_stop=None, on_result=None,
     ):
         parsed = urlparse(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -30,7 +30,10 @@ class WordlistScanner:
         self.on_hit = on_hit or (lambda url, status, size: None)
         self.on_log = on_log or (lambda msg: None)
         self.should_stop = should_stop or (lambda: False)
+        self.on_result = on_result or (lambda result: None)
         self.hits = []
+        # Complete per-candidate response history, including ordinary 404 responses.
+        self.responses = []
         self.bad_status = {400, 404, 410, 429, 500, 502, 503, 504}
         self.baseline_size = None
         self._rate_limited = False
@@ -48,6 +51,13 @@ class WordlistScanner:
             self.on_hit(url, status, size)
         except Exception as exc:
             self._log(f"[Wordlist] Hit callback failed: {type(exc).__name__}: {exc}")
+
+    def _notify_result(self, result: dict):
+        """Emit every response for live tables; callback errors are non-fatal."""
+        try:
+            self.on_result(result)
+        except Exception as exc:
+            self._log(f"[Wordlist] Result callback failed: {type(exc).__name__}: {exc}")
 
     def _load_wordlist(self):
         if not self.wordlist_path.is_file():
@@ -129,27 +139,38 @@ class WordlistScanner:
                         try:
                             async with session.get(url, allow_redirects=False) as resp:
                                 data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
-                                size = len(data[:MAX_RESPONSE_BYTES])
+                                body = data[:MAX_RESPONSE_BYTES]
+                                size = len(body)
+                                text = body.decode(resp.charset or "utf-8", errors="replace")
+                                word_count = len(text.split())
+                                baseline_match = (
+                                    self.baseline_size is not None
+                                    and abs(size - self.baseline_size) < 50
+                                )
+                                result = {
+                                    "url": url,
+                                    "status": resp.status,
+                                    "size": size,
+                                    "word_count": word_count,
+                                    "content_type": resp.headers.get("Content-Type", ""),
+                                    "location": resp.headers.get("Location", ""),
+                                    "baseline_match": baseline_match,
+                                    "potential_hit": (
+                                        resp.status not in self.bad_status
+                                        and not baseline_match
+                                    ),
+                                }
+                                self.responses.append(result)
+                                self._notify_result(result)
                                 if resp.status == 429:
                                     self._rate_limited = True
                                     self._log(
                                         f"[Wordlist] HTTP 429 received at {url}; "
                                         "remaining checks will be skipped."
                                     )
-                                elif resp.status not in self.bad_status:
-                                    baseline_match = (
-                                        self.baseline_size is not None
-                                        and abs(size - self.baseline_size) < 50
-                                    )
-                                    if not baseline_match:
-                                        hit = {
-                                            "url": url,
-                                            "status": resp.status,
-                                            "size": size,
-                                            "content_type": resp.headers.get("Content-Type", ""),
-                                        }
-                                        self.hits.append(hit)
-                                        self._notify_hit(url, resp.status, size)
+                                elif result["potential_hit"]:
+                                    self.hits.append(result)
+                                    self._notify_hit(url, resp.status, size)
                         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                             self._log(f"[Wordlist] Request failed for {url}: {exc}")
                         except Exception as exc:

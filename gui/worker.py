@@ -15,6 +15,7 @@ from recon.similarity_detector import SimilarityDetector
 class CrawlWorker(QThread):
     log_message = Signal(str)
     page_crawled = Signal(object)
+    discovery_result = Signal(dict)
     finished = Signal(dict)
     error = Signal(str)
 
@@ -56,9 +57,18 @@ class CrawlWorker(QThread):
             )
             loop.run_until_complete(engine.crawl())
 
+            analyzed_urls = set()
+
+            def _analyze_new_results():
+                # Follow-up discovery passes append new results to the same engine.
+                for result in engine.results:
+                    if result.url in analyzed_urls:
+                        continue
+                    analyzer.analyze_page(result.url, result.html, headers=result.headers)
+                    analyzed_urls.add(result.url)
+
             # Analyze response metadata as well as HTML.
-            for result in engine.results:
-                analyzer.analyze_page(result.url, result.html, headers=result.headers)
+            _analyze_new_results()
 
             if not self._stopping():
                 self.log_message.emit("[Favicon] Computing favicon hash...")
@@ -76,9 +86,35 @@ class CrawlWorker(QThread):
                     self.log_message.emit(f"[Favicon] Error: {exc}")
 
             if not self._stopping():
-                self.log_message.emit("[JS] Downloading and analyzing same-host JavaScript files...")
-                analyzer.finalize_js(loop, should_stop=self._stopping)
+                # Two bounded passes let routes found in external JS enter the page table,
+                # while page limits and exact-host scope remain enforced by CrawlEngine.
+                for discovery_round in range(2):
+                    self.log_message.emit(
+                        f"[JS] Downloading/analyzing same-host JavaScript "
+                        f"(route pass {discovery_round + 1}/2)..."
+                    )
+                    analyzer.finalize_js(loop, should_stop=self._stopping)
+                    if self._stopping() or not analyzer.js_collector.route_urls:
+                        break
 
+                    before_count = len(engine.results)
+                    route_seeds = sorted(analyzer.js_collector.route_urls)
+                    self.log_message.emit(
+                        f"[DISCOVERY] Crawling {len(route_seeds)} route candidates extracted from JavaScript."
+                    )
+                    loop.run_until_complete(
+                        engine.crawl(seed_urls=route_seeds, seed_depth=1)
+                    )
+                    _analyze_new_results()
+                    if len(engine.results) == before_count:
+                        break
+
+                # Analyze any JS assets discovered on the final extra batch without
+                # adding an unbounded third route crawl.
+                if not self._stopping():
+                    analyzer.finalize_js(loop, should_stop=self._stopping)
+
+            wordlist_results = []
             if self.wordlist_path and not self._stopping():
                 from recon.wordlist_scanner import WordlistScanner
                 self.log_message.emit(f"[Wordlist] Checking authorized paths: {self.wordlist_path}")
@@ -91,8 +127,10 @@ class CrawlWorker(QThread):
                     ),
                     on_log=lambda message: self.log_message.emit(message),
                     should_stop=self._stopping,
+                    on_result=lambda result: self.discovery_result.emit(result),
                 )
                 analyzer.wordlist_hits = loop.run_until_complete(scanner.scan())
+                wordlist_results = scanner.responses
 
             all_results = engine.results
             if not self.matcher.is_empty():
@@ -104,6 +142,7 @@ class CrawlWorker(QThread):
 
             report = analyzer.to_dict()
             report["pages"] = [result.to_dict() for result in all_results]
+            report["wordlist_results"] = wordlist_results
             report["filtered_pages"] = [result.to_dict() for result in filtered]
             report["similarity"] = SimilarityDetector().analyze(filtered)
             report["matcher_description"] = self.matcher.describe()

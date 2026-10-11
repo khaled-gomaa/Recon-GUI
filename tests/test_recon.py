@@ -52,3 +52,13 @@ def test_analyzer_uses_url_hostname_and_response_headers():
     assert "https://www.example.com/assets/app.js" in report["js_files"]
     assert report["header_audits"][0]["present"]["Content-Security-Policy"] == "default-src 'self'"
     assert any("Strict-Transport-Security" in item for item in report["header_audits"][0]["missing"])
+
+
+
+def test_js_route_extractor_finds_hidden_routes_but_skips_static_assets():
+    routes = JSEndpointExtractor.extract_routes(
+        "const a='/admin/users'; fetch('/api/v1/items'); const b='/assets/app.js';"
+    )
+    assert "/admin/users" in routes
+    assert "/api/v1/items" in routes
+    assert "/assets/app.js" not in routes

@@ -1,6 +1,18 @@
-"""Parse HTML, extract links, and gather raw content for recon."""
-from bs4 import BeautifulSoup
+"""Parse HTML and discover ordinary, hidden, and client-side routes."""
+import re
+from bs4 import BeautifulSoup, Comment
 from urllib.parse import urljoin, urlparse, urldefrag
+
+from recon.js_endpoint_extractor import JSEndpointExtractor
+
+META_REFRESH_RE = re.compile(r"""(?:^|;)\s*url\s*=\s*['"]?([^;'"]+)""", re.IGNORECASE)
+ROBOTS_RULE_RE = re.compile(r"^\s*(?:allow|disallow):\s*(/[^\s#]*)", re.IGNORECASE | re.MULTILINE)
+ROBOTS_SITEMAP_RE = re.compile(r"^\s*sitemap:\s*(https?://\S+)", re.IGNORECASE | re.MULTILINE)
+DATA_URL_ATTRIBUTES = ("data-href", "data-url", "data-link", "data-endpoint", "data-action", "data-target")
+STATIC_SUFFIXES = (
+    ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    ".webp", ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3",
+)
 
 
 class PageParser:
@@ -8,14 +20,24 @@ class PageParser:
         self.base_url = base_url
 
     def parse(self, html: str, current_url: str) -> dict:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html or "", "lxml")
         document_base = self._document_base(soup, current_url)
+        inline_routes = set()
+        for script in soup.find_all("script", src=False):
+            inline_routes.update(JSEndpointExtractor.extract_routes(script.string or script.get_text() or ""))
+        for comment in soup.find_all(string=lambda value: isinstance(value, Comment)):
+            inline_routes.update(JSEndpointExtractor.extract_routes(str(comment)))
+
         return {
             "title": self._get_title(soup),
-            "links": self._extract_links(soup, document_base),
-            "raw_html": html,
+            "links": self._extract_links(
+                soup, document_base, inline_routes,
+                raw_content=html or "", source_url=current_url,
+            ),
+            "raw_html": html or "",
             "text": soup.get_text(separator=" ", strip=True),
             "scripts": self._extract_script_srcs(soup, document_base),
+            "hidden_routes": sorted(self._resolve_candidates(inline_routes, document_base)),
         }
 
     @staticmethod
@@ -24,10 +46,13 @@ class PageParser:
         tag = soup.find("base", href=True)
         if not tag:
             return current_url
-        candidate = urljoin(current_url, tag["href"].strip())
-        parsed = urlparse(candidate)
-        if parsed.scheme.lower() in ("http", "https") and parsed.hostname:
-            return candidate
+        try:
+            candidate = urljoin(current_url, tag["href"].strip())
+            parsed = urlparse(candidate)
+            if parsed.scheme.lower() in ("http", "https") and parsed.hostname:
+                return candidate
+        except (TypeError, ValueError, UnicodeError):
+            pass
         return current_url
 
     @staticmethod
@@ -35,28 +60,131 @@ class PageParser:
         tag = soup.find("title")
         return tag.get_text(strip=True) if tag else ""
 
-    def _extract_links(self, soup: BeautifulSoup, current_url: str) -> list:
-        links = set()
-        for a in soup.find_all("a", href=True):
-            href = a["href"].strip()
-            if href.startswith(("mailto:", "tel:", "javascript:")):
-                continue
-            absolute = urljoin(current_url, href)
+    @staticmethod
+    def _candidate_url(value: str, current_url: str):
+        value = (value or "").strip()
+        if not value or value.lower().startswith(
+            ("#", "mailto:", "tel:", "javascript:", "data:", "blob:")
+        ):
+            return None
+        try:
+            absolute = urljoin(current_url, value)
             absolute, _ = urldefrag(absolute)
-            if absolute.startswith(("http://", "https://")):
-                links.add(absolute)
-        return list(links)
+            parsed = urlparse(absolute)
+            if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+                return None
+            # Invalid URL authorities (such as malformed IPv6 literals) are ignored.
+            _ = parsed.port
+        except (TypeError, ValueError, UnicodeError):
+            return None
+        if parsed.path.lower().endswith(STATIC_SUFFIXES):
+            return None
+        return absolute
+
+    @classmethod
+    def _resolve_candidates(cls, candidates, current_url: str) -> set:
+        return {
+            resolved for item in candidates
+            if (resolved := cls._candidate_url(item, current_url))
+        }
+
+    def _extract_links(
+        self, soup: BeautifulSoup, current_url: str, inline_routes=None,
+        raw_content: str = "", source_url: str = "",
+    ) -> list:
+        links = set()
+        tag_attributes = (
+            ("a", "href"), ("area", "href"), ("form", "action"),
+            ("button", "formaction"), ("input", "formaction"),
+            ("iframe", "src"), ("frame", "src"), ("object", "data"),
+        )
+        for tag_name, attribute in tag_attributes:
+            for tag in soup.find_all(tag_name, attrs={attribute: True}):
+                candidate = self._candidate_url(tag.get(attribute, ""), current_url)
+                if candidate:
+                    links.add(candidate)
+
+        # Canonical/alternate links can reveal public routes; ignore stylesheet links.
+        for tag in soup.find_all("link", href=True):
+            rel = {str(value).lower() for value in (tag.get("rel") or [])}
+            if rel.intersection({"canonical", "alternate"}):
+                candidate = self._candidate_url(tag["href"], current_url)
+                if candidate:
+                    links.add(candidate)
+
+        # Data attributes and onclick handlers frequently hide SPA navigation targets.
+        for tag in soup.find_all(True):
+            for attribute in DATA_URL_ATTRIBUTES:
+                if tag.has_attr(attribute):
+                    candidate = self._candidate_url(tag.get(attribute, ""), current_url)
+                    if candidate:
+                        links.add(candidate)
+            onclick = tag.get("onclick", "")
+            if onclick:
+                for route in JSEndpointExtractor.extract_routes(onclick):
+                    candidate = self._candidate_url(route, current_url)
+                    if candidate:
+                        links.add(candidate)
+
+        # HTML meta refresh is a navigation just like an anchor.
+        for tag in soup.find_all("meta", attrs={"http-equiv": re.compile("^refresh$", re.I)}):
+            match = META_REFRESH_RE.search(tag.get("content", ""))
+            if match:
+                candidate = self._candidate_url(match.group(1), current_url)
+                if candidate:
+                    links.add(candidate)
+
+        for route in inline_routes or ():
+            candidate = self._candidate_url(route, current_url)
+            if candidate:
+                links.add(candidate)
+
+        # Sitemap XML <loc> elements are high-confidence page URLs.
+        source_path = urlparse(source_url or current_url).path.lower()
+        is_sitemap = (
+            source_path.endswith((".xml", ".xml.gz"))
+            or soup.find("urlset") is not None
+            or soup.find("sitemapindex") is not None
+        )
+        if is_sitemap:
+            for tag in soup.find_all("loc"):
+                candidate = self._candidate_url(tag.get_text(strip=True), current_url)
+                if candidate:
+                    links.add(candidate)
+
+        # robots.txt often discloses paths and sitemap locations unavailable from links.
+        if source_path == "/robots.txt" or source_path.endswith("/robots.txt"):
+            for match in ROBOTS_RULE_RE.finditer(raw_content or ""):
+                path = match.group(1).strip()
+                # Wildcard rules are patterns, not concrete paths to request.
+                if not path or "*" in path or "$" in path:
+                    continue
+                candidate = self._candidate_url(path, current_url)
+                if candidate:
+                    links.add(candidate)
+            for match in ROBOTS_SITEMAP_RE.finditer(raw_content or ""):
+                candidate = self._candidate_url(match.group(1).strip(), current_url)
+                if candidate:
+                    links.add(candidate)
+
+        return sorted(links)
 
     def _extract_script_srcs(self, soup: BeautifulSoup, current_url: str) -> list:
         scripts = set()
         for tag in soup.find_all("script", src=True):
             src = tag["src"].strip()
-            if src:
+            if not src:
+                continue
+            try:
                 absolute = urljoin(current_url, src)
-                if absolute.startswith(("http://", "https://")):
+                parsed = urlparse(absolute)
+                if parsed.scheme.lower() in ("http", "https") and parsed.hostname:
+                    _ = parsed.port
                     scripts.add(absolute)
-        return list(scripts)
+            except (TypeError, ValueError, UnicodeError):
+                continue
+        return sorted(scripts)
 
     @staticmethod
     def is_same_domain(url: str, base: str) -> bool:
-        return urlparse(url).netloc == urlparse(base).netloc
+        return (urlparse(url).hostname or "").lower() == (urlparse(base).hostname or "").lower()
