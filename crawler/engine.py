@@ -150,7 +150,8 @@ class CrawlEngine:
             # Logging is auxiliary; keep crawling even if a UI/log adapter fails.
             pass
 
-    async def crawl(self):
+    async def crawl(self, seed_urls=None, seed_depth=0):
+        """Crawl the start URL once, or crawl additional same-host seeds with existing limits."""
         timeout = aiohttp.ClientTimeout(total=15, connect=8)
         # Keep certificate verification enabled. Never disable TLS verification for recon.
         connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=True)
@@ -159,8 +160,24 @@ class CrawlEngine:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
         queue = asyncio.Queue()
-        queue.put_nowait((self.start_url, 0))
-        self.visited.add(self.start_url)
+        if seed_urls is None:
+            seed_items = [(self.start_url, 0)]
+        else:
+            try:
+                depth = max(0, int(seed_depth))
+            except (TypeError, ValueError):
+                depth = 0
+            seed_items = [(url, depth) for url in seed_urls]
+
+        # Reserve seeds before workers start so concurrency cannot exceed max_pages.
+        for raw_url, depth in seed_items:
+            normalized = _normalize_http_url(raw_url)
+            if not normalized or not self._in_scope(normalized):
+                continue
+            if normalized in self.visited or len(self.visited) >= self.max_pages:
+                continue
+            self.visited.add(normalized)
+            queue.put_nowait((normalized, depth))
 
         async with aiohttp.ClientSession(
             connector=connector, timeout=timeout, headers=headers,
