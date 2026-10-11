@@ -244,6 +244,7 @@ class MainWindow(QMainWindow):
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
+        self.worker.discovery_result.connect(self._on_discovery_result)
         self.worker.finished.connect(self._on_finished)
         self.worker.error.connect(self._on_error)
         self.worker.start()
@@ -318,37 +319,43 @@ class MainWindow(QMainWindow):
                 item.setForeground(QBrush(QColor(foreground)))
                 item.setBackground(QBrush(QColor(background)))
 
+    def _on_discovery_result(self, result: dict):
+        self._append_content_discovery_row(result)
+
+    def _append_content_discovery_row(self, result: dict):
+        proxy = SimpleNamespace(
+            status=result.get("status", 0),
+            content_length=result.get("size", 0),
+            word_count=result.get("word_count", 0),
+        )
+        if not self.active_matcher.matches(proxy):
+            return
+
+        row = self.discovery_table.rowCount()
+        self.discovery_table.insertRow(row)
+        if result.get("baseline_match"):
+            classification = "Likely wildcard response"
+        elif result.get("potential_hit"):
+            classification = "Potential hit"
+        else:
+            classification = "Response (not considered a hit)"
+
+        values = (
+            result.get("url", ""),
+            str(result.get("status", "")),
+            str(result.get("size", "")),
+            str(result.get("word_count", "")),
+            result.get("content_type", ""),
+            classification,
+        )
+        for column, value in enumerate(values):
+            self.discovery_table.setItem(row, column, QTableWidgetItem(value))
+        self._color_row(self.discovery_table, row, result.get("status", 0))
+
     def _rebuild_content_discovery_table(self, results):
         self.discovery_table.setRowCount(0)
         for result in results:
-            proxy = SimpleNamespace(
-                status=result.get("status", 0),
-                content_length=result.get("size", 0),
-                word_count=result.get("word_count", 0),
-            )
-            if not self.active_matcher.matches(proxy):
-                continue
-
-            row = self.discovery_table.rowCount()
-            self.discovery_table.insertRow(row)
-            if result.get("baseline_match"):
-                classification = "Likely wildcard response"
-            elif result.get("potential_hit"):
-                classification = "Potential hit"
-            else:
-                classification = "Response (not considered a hit)"
-
-            values = (
-                result.get("url", ""),
-                str(result.get("status", "")),
-                str(result.get("size", "")),
-                str(result.get("word_count", "")),
-                result.get("content_type", ""),
-                classification,
-            )
-            for column, value in enumerate(values):
-                self.discovery_table.setItem(row, column, QTableWidgetItem(value))
-            self._color_row(self.discovery_table, row, result.get("status", 0))
+            self._append_content_discovery_row(result)
 
     def _on_finished(self, report: dict):
         self.recon_report = report
