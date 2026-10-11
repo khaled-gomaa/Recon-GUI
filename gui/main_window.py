@@ -225,6 +225,7 @@ class MainWindow(QMainWindow):
         self.active_matcher = matcher
         self.log_view.clear()
         self.table.setRowCount(0)
+        self.discovery_table.setRowCount(0)
         self.recon_view.clear()
         self.similarity_view.clear()
         self.recon_report = {}
@@ -335,7 +336,7 @@ class MainWindow(QMainWindow):
             elif result.get("potential_hit"):
                 classification = "Potential hit"
             else:
-                classification = "Response (filtered by status/baseline)"
+                classification = "Response (not considered a hit)"
 
             values = (
                 result.get("url", ""),
