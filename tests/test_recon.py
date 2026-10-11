@@ -5,10 +5,16 @@ from recon.analyzer import ReconAnalyzer
 
 
 def test_email_extraction():
-    text = "Contact admin@example.com or support@test.co.uk"
+    text = "Contact admin@acme.org or support@test.co.uk"
     emails = EmailExtractor.extract(text)
-    assert "admin@example.com" in emails
+    assert "admin@acme.org" in emails
     assert "support@test.co.uk" in emails
+
+
+def test_email_extraction_filters_placeholder_addresses():
+    # Placeholder addresses are intentionally suppressed to reduce recon noise.
+    emails = EmailExtractor.extract("Contact admin@example.com")
+    assert "admin@example.com" not in emails
 
 
 def test_subdomain_finder():
