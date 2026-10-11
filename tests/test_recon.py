@@ -1,21 +1,29 @@
 from recon.email_extractor import EmailExtractor
 from recon.subdomain_finder import SubdomainFinder
 from recon.js_endpoint_extractor import JSEndpointExtractor
+from recon.analyzer import ReconAnalyzer
 
 
 def test_email_extraction():
-    text = "Contact admin@example.com or support@test.co.uk"
+    text = "Contact admin@acme.org or support@test.co.uk"
     emails = EmailExtractor.extract(text)
-    assert "admin@example.com" in emails
+    assert "admin@acme.org" in emails
     assert "support@test.co.uk" in emails
+
+
+def test_email_extraction_filters_placeholder_addresses():
+    # Placeholder addresses are intentionally suppressed to reduce recon noise.
+    emails = EmailExtractor.extract("Contact admin@example.com")
+    assert "admin@example.com" not in emails
 
 
 def test_subdomain_finder():
     finder = SubdomainFinder("example.com")
-    text = "Visit api.example.com and www.example.com"
+    text = "Visit api.example.com, www.example.com, and api.dev.example.com"
     subs = finder.find(text)
     assert "api.example.com" in subs
     assert "www.example.com" in subs
+    assert "api.dev.example.com" in subs
 
 
 def test_js_endpoints():
@@ -23,3 +31,23 @@ def test_js_endpoints():
     endpoints = JSEndpointExtractor.extract(js)
     assert "/api/users" in endpoints
     assert "/v1/items" in endpoints
+
+
+def test_analyzer_uses_url_hostname_and_response_headers():
+    analyzer = ReconAnalyzer("https://www.example.com/")
+    html = (
+        "<html><head><title>Sample</title>"
+        '<script src="/assets/app.js"></script></head>'
+        "<body>api.example.com api.dev.example.com</body></html>"
+    )
+    analyzer.analyze_page(
+        "https://www.example.com/",
+        html,
+        headers={"Content-Security-Policy": "default-src 'self'"},
+    )
+    report = analyzer.to_dict()
+    assert "api.example.com" in report["subdomains"]
+    assert "api.dev.example.com" in report["subdomains"]
+    assert "https://www.example.com/assets/app.js" in report["js_files"]
+    assert report["header_audits"][0]["present"]["Content-Security-Policy"] == "default-src 'self'"
+    assert any("Strict-Transport-Security" in item for item in report["header_audits"][0]["missing"])

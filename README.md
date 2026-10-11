@@ -14,9 +14,9 @@ Inspired by SiteOne Crawler + vyre (Rust subdomain prober).
 - Security header audit
 - Email & subdomain harvesting
 - Favicon hash (mmh3) - identifies tech and shared infra
-- Random User-Agent rotation
+- Consistent descriptive User-Agent and verified TLS certificates
 - Matchers/Filters (status code, content length, word count)
-- High concurrency (50 parallel requests by default)
+- Bounded concurrency (default 5, maximum 20 in the crawler GUI)
 - Export to JSON
 
 ## Quick Start
