@@ -56,6 +56,7 @@ class ReconAnalyzer:
             ],
             "js_files": sorted(self.js_collector.js_urls),
             "source_maps": sorted(self.js_collector.source_maps),
+            "discovered_routes": sorted(self.js_collector.route_urls),
             "inline_script_count": len(self.js_collector.inline_scripts),
             "wordlist_hits": self.wordlist_hits,
         }
