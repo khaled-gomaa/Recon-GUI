@@ -1,11 +1,15 @@
 """Main application window."""
 import json
+from pathlib import Path
+from types import SimpleNamespace
+
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QSpinBox, QPushButton, QTextEdit, QTableWidget,
-    QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox,
+    QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox,
 )
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QBrush
+from gui.status_style import status_colors
 from gui.worker import CrawlWorker
 from recon.matchers import MatcherFilter
 
@@ -17,6 +21,7 @@ class MainWindow(QMainWindow):
         self.resize(1300, 800)
         self.worker = None
         self.recon_report = {}
+        self.active_matcher = MatcherFilter()
         self._build_ui()
 
     def _build_ui(self):
@@ -53,11 +58,17 @@ class MainWindow(QMainWindow):
         wl_row = QHBoxLayout()
         wl_row.addWidget(QLabel("Wordlist:"))
         self.wordlist_input = QLineEdit()
-        self.wordlist_input.setPlaceholderText("(optional) e.g. wordlists/common.txt")
+        self.wordlist_input.setPlaceholderText("Custom list (blank = bundled common list)")
+        self.wordlist_input.setToolTip("When Content Discovery is enabled, an empty field uses wordlists/common.txt.")
+        self.wordlist_input.textChanged.connect(self._wordlist_path_changed)
         wl_row.addWidget(self.wordlist_input, stretch=1)
         browse_btn = QPushButton("Browse")
         browse_btn.clicked.connect(self._pick_wordlist)
         wl_row.addWidget(browse_btn)
+        self.content_discovery_check = QCheckBox("Content Discovery")
+        self.content_discovery_check.setChecked(False)
+        self.content_discovery_check.setToolTip("Active path checks using the chosen wordlist. Use only on authorized targets.")
+        wl_row.addWidget(self.content_discovery_check)
 
         self.start_btn = QPushButton("Start Crawl")
         self.start_btn.clicked.connect(self._start_crawl)
@@ -102,6 +113,12 @@ class MainWindow(QMainWindow):
         self.filter_words.setMaximumWidth(120)
         mf_row.addWidget(self.filter_words)
 
+        mf_row.addWidget(QLabel("Filter Length:"))
+        self.filter_length = QLineEdit()
+        self.filter_length.setPlaceholderText("1000-2000")
+        self.filter_length.setMaximumWidth(120)
+        mf_row.addWidget(self.filter_length)
+
         mf_row.addStretch()
         root.addLayout(mf_row)
 
@@ -123,6 +140,15 @@ class MainWindow(QMainWindow):
         self.table.setColumnWidth(2, 130)
         self.table.setColumnWidth(3, 200)
         self.tabs.addTab(self.table, "Pages (filtered)")
+
+        self.discovery_table = QTableWidget(0, 6)
+        self.discovery_table.setHorizontalHeaderLabels([
+            "URL", "Status", "Size", "Words", "Content-Type", "Classification",
+        ])
+        self.discovery_table.horizontalHeader().setStretchLastSection(True)
+        self.discovery_table.setColumnWidth(0, 360)
+        self.discovery_table.setColumnWidth(4, 190)
+        self.tabs.addTab(self.discovery_table, "Content Discovery")
 
         self.similarity_view = QTextEdit()
         self.similarity_view.setReadOnly(True)
@@ -149,6 +175,16 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.wordlist_input.setText(path)
+            self.content_discovery_check.setChecked(True)
+
+    def _wordlist_path_changed(self, value: str):
+        # Pasting or typing a list path opts into active content discovery.
+        if value.strip() and not self.content_discovery_check.isChecked():
+            self.content_discovery_check.setChecked(True)
+
+    @staticmethod
+    def _bundled_wordlist_path() -> Path:
+        return Path(__file__).resolve().parent.parent / "wordlists" / "common.txt"
 
     def _build_matcher(self) -> MatcherFilter:
         return MatcherFilter(
@@ -156,17 +192,37 @@ class MainWindow(QMainWindow):
             match_length=self.match_length.text().strip(),
             match_words=self.match_words.text().strip(),
             filter_status=self.filter_status.text().strip(),
-            filter_length=None,
+            filter_length=self.filter_length.text().strip(),
             filter_words=self.filter_words.text().strip(),
         )
 
     def _start_crawl(self):
         url = self.url_input.text().strip()
-        if not url.startswith(("http://", "https://")):
-            QMessageBox.warning(self, "Invalid URL",
-                                "URL must start with http:// or https://")
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            QMessageBox.warning(self, "Invalid URL", "Enter a full http:// or https:// URL.")
             return
 
+        try:
+            matcher = self._build_matcher()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid filter", str(exc))
+            return
+
+        wordlist_path = None
+        if self.content_discovery_check.isChecked():
+            selected_path = self.wordlist_input.text().strip()
+            wordlist_path = Path(selected_path) if selected_path else self._bundled_wordlist_path()
+            if not wordlist_path.is_file():
+                QMessageBox.warning(
+                    self, "Wordlist not found",
+                    f"Cannot find content-discovery wordlist:\n{wordlist_path}",
+                )
+                return
+            wordlist_path = str(wordlist_path)
+
+        self.active_matcher = matcher
         self.log_view.clear()
         self.table.setRowCount(0)
         self.recon_view.clear()
@@ -182,8 +238,8 @@ class MainWindow(QMainWindow):
             max_depth=self.depth_spin.value(),
             max_pages=self.pages_spin.value(),
             concurrency=self.conc_spin.value(),
-            wordlist_path=self.wordlist_input.text().strip() or None,
-            matcher=self._build_matcher(),
+            wordlist_path=wordlist_path,
+            matcher=matcher,
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
@@ -201,6 +257,9 @@ class MainWindow(QMainWindow):
         self.log_view.append(msg)
 
     def _on_page_crawled(self, result):
+        # Apply filters as results arrive; all responses remain in the exported report.
+        if not self.active_matcher.matches(result):
+            return
         row = self.table.rowCount()
         self.table.insertRow(row)
 
@@ -220,20 +279,7 @@ class MainWindow(QMainWindow):
         self.table.setItem(row, 6, QTableWidgetItem(result.content_hash))
         self.table.setItem(row, 7, QTableWidgetItem("--"))
 
-        color = None
-        if result.status == 200:
-            color = "#1e7e34"
-        elif result.status in (301, 302, 307, 308):
-            color = "#b8860b"
-        elif result.status in (401, 403):
-            color = "#c82333"
-        elif result.status == 404:
-            color = "#6c757d"
-        if color:
-            for col in (1, 2):
-                item = self.table.item(row, col)
-                if item:
-                    item.setForeground(QColor(color))
+        self._color_row(self.table, row, result.status)
 
     def _rebuild_table_from_filtered(self, filtered, favicon_hash):
         self.table.setRowCount(0)
@@ -260,26 +306,55 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 6, QTableWidgetItem(result["content_hash"]))
             self.table.setItem(row, 7, QTableWidgetItem(favicon_hash or "--"))
 
-            color = None
-            if result["status"] == 200:
-                color = "#1e7e34"
-            elif result["status"] in (301, 302, 307, 308):
-                color = "#b8860b"
-            elif result["status"] in (401, 403):
-                color = "#c82333"
-            elif result["status"] == 404:
-                color = "#6c757d"
-            if color:
-                for col in (1, 2):
-                    item = self.table.item(row, col)
-                    if item:
-                        item.setForeground(QColor(color))
+            self._color_row(self.table, row, result["status"])
+
+    @staticmethod
+    def _color_row(table: QTableWidget, row: int, status: int):
+        foreground, background = status_colors(status)
+        for column in range(table.columnCount()):
+            item = table.item(row, column)
+            if item is not None:
+                item.setForeground(QBrush(QColor(foreground)))
+                item.setBackground(QBrush(QColor(background)))
+
+    def _rebuild_content_discovery_table(self, results):
+        self.discovery_table.setRowCount(0)
+        for result in results:
+            proxy = SimpleNamespace(
+                status=result.get("status", 0),
+                content_length=result.get("size", 0),
+                word_count=result.get("word_count", 0),
+            )
+            if not self.active_matcher.matches(proxy):
+                continue
+
+            row = self.discovery_table.rowCount()
+            self.discovery_table.insertRow(row)
+            if result.get("baseline_match"):
+                classification = "Likely wildcard response"
+            elif result.get("potential_hit"):
+                classification = "Potential hit"
+            else:
+                classification = "Response (filtered by status/baseline)"
+
+            values = (
+                result.get("url", ""),
+                str(result.get("status", "")),
+                str(result.get("size", "")),
+                str(result.get("word_count", "")),
+                result.get("content_type", ""),
+                classification,
+            )
+            for column, value in enumerate(values):
+                self.discovery_table.setItem(row, column, QTableWidgetItem(value))
+            self._color_row(self.discovery_table, row, result.get("status", 0))
 
     def _on_finished(self, report: dict):
         self.recon_report = report
         favicon = report.get("favicon_hash", "")
         filtered = report.get("filtered_pages", [])
         self._rebuild_table_from_filtered(filtered, favicon)
+        self._rebuild_content_discovery_table(report.get("wordlist_results", []))
         self._render_recon(report)
         self._render_similarity(report.get("similarity", {}))
         self.export_btn.setEnabled(True)
@@ -291,11 +366,18 @@ class MainWindow(QMainWindow):
         matcher_note = ""
         if report.get("matcher_applied"):
             matcher_note = f" | matched {kept}/{total}"
+        path_results = report.get("wordlist_results", [])
+        path_hits = report.get("wordlist_hits", [])
+        discovery_note = (
+            f" | content discovery {len(path_results)} responses/{len(path_hits)} potential hits"
+            if path_results or self.content_discovery_check.isChecked() else ""
+        )
         self.status_label.setText(
             f"Done -- {total} pages crawled{matcher_note}, "
             f"favicon={favicon or 'n/a'} | "
             f"{len(sim.get('exact_duplicates', []))} dup groups, "
-            f"{len(sim.get('soft_404_candidates', []))} soft-404s."
+            f"{len(sim.get('soft_404_candidates', []))} soft-404s"
+            f"{discovery_note}."
         )
 
     def _on_error(self, msg: str):
@@ -316,7 +398,7 @@ class MainWindow(QMainWindow):
         lines.append(f"  {report.get('matcher_description', '')}\n")
 
         for section in ("emails", "subdomains", "endpoints",
-                        "js_files", "source_maps"):
+                        "discovered_routes", "js_files", "source_maps"):
             lines.append(f"=== {section.upper().replace('_', ' ')} ===")
             for item in report.get(section, []):
                 lines.append(f"  - {item}")
