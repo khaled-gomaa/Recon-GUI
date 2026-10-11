@@ -68,3 +68,36 @@ def test_hidden_routes_do_not_allow_non_http_schemes():
     html = """<html><body><div data-url="javascript:alert(1)"></div></body></html>"""
     result = PageParser("https://example.com").parse(html, "https://example.com/")
     assert all(link.startswith(("http://", "https://")) for link in result["links"])
+
+
+
+def test_robots_txt_discloses_concrete_paths_and_sitemaps():
+    body = """User-agent: *
+Disallow: /private/
+Allow: /public/
+Disallow: /secret/*
+Sitemap: https://example.com/sitemap.xml
+"""
+    result = PageParser("https://example.com").parse(
+        body, "https://example.com/robots.txt"
+    )
+    links = set(result["links"])
+    assert "https://example.com/private/" in links
+    assert "https://example.com/public/" in links
+    assert "https://example.com/sitemap.xml" in links
+    assert "https://example.com/secret/*" not in links
+
+
+def test_sitemap_xml_extracts_loc_urls():
+    body = """<?xml version="1.0"?>
+    <urlset>
+      <url><loc>https://example.com/catalog/one</loc></url>
+      <url><loc>https://example.com/catalog/two</loc></url>
+      <url><loc>https://other.example/outside</loc></url>
+    </urlset>
+    """
+    result = PageParser("https://example.com").parse(
+        body, "https://example.com/sitemap.xml"
+    )
+    assert "https://example.com/catalog/one" in result["links"]
+    assert "https://example.com/catalog/two" in result["links"]
