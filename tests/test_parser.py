@@ -22,3 +22,19 @@ def test_parse_links():
 def test_is_same_domain():
     assert PageParser.is_same_domain("https://example.com/a", "https://example.com")
     assert not PageParser.is_same_domain("https://other.com/a", "https://example.com")
+
+
+
+def test_parse_resolves_relative_links_and_scripts_against_base_href():
+    html = """
+    <html><head>
+      <base href="/assets/">
+      <title>Base test</title>
+      <script src="app.js"></script>
+    </head><body><a href="next.html">Next</a></body></html>
+    """
+    result = PageParser("https://example.com/dir/page").parse(
+        html, "https://example.com/dir/page"
+    )
+    assert "https://example.com/assets/next.html" in result["links"]
+    assert "https://example.com/assets/app.js" in result["scripts"]

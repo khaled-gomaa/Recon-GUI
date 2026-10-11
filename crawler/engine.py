@@ -15,13 +15,49 @@ def _hash(text: str) -> str:
 
 
 def _normalize_http_url(url: str):
+    """Canonicalize HTTP(S) URLs for safe, predictable deduplication."""
     if not url:
         return None
-    url, _ = urldefrag(url.strip())
-    parsed = urlparse(url)
-    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+    try:
+        url, _ = urldefrag(url.strip())
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+        hostname = parsed.hostname
+        # Accessing .port validates malformed ports (for example, ":notaport").
+        port = parsed.port
+    except (AttributeError, TypeError, ValueError):
         return None
-    return parsed._replace(scheme=parsed.scheme.lower()).geturl()
+
+    if scheme not in ("http", "https") or not hostname:
+        return None
+
+    hostname = hostname.rstrip(".").lower()
+    if not hostname:
+        return None
+    # DNS names are case-insensitive and Unicode labels have an ASCII wire form.
+    if ":" not in hostname:
+        try:
+            hostname = hostname.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
+
+    # Keep IPv6 literals bracketed when rebuilding the authority component.
+    netloc_host = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None and not (
+        (scheme == "http" and port == 80)
+        or (scheme == "https" and port == 443)
+    ):
+        netloc_host = f"{netloc_host}:{port}"
+
+    # Preserve explicit user-info when present; only normalize the host/port.
+    user_info = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
+    path = parsed.path or "/"
+    return parsed._replace(
+        scheme=scheme,
+        netloc=user_info + netloc_host,
+        path=path,
+        fragment="",
+    ).geturl()
 
 
 class CrawlResult:
@@ -95,8 +131,16 @@ class CrawlEngine:
         self._schedule_lock = asyncio.Lock()
 
     def _in_scope(self, url: str) -> bool:
-        host = urlparse(url).hostname
-        return bool(host and host.lower() == self.base_domain)
+        try:
+            host = urlparse(url).hostname
+            if not host:
+                return False
+            host = host.rstrip(".").lower()
+            if ":" not in host:
+                host = host.encode("idna").decode("ascii")
+            return host == self.base_domain
+        except (UnicodeError, ValueError):
+            return False
 
     def _log(self, message: str):
         """Best-effort logging: a GUI callback must never break crawl workers."""
@@ -142,19 +186,24 @@ class CrawlEngine:
                             + (f" -- {result.error}" if result.error else "")
                         )
                         if self.on_page_crawled:
-                            self.on_page_crawled(result)
+                            try:
+                                self.on_page_crawled(result)
+                            except Exception as exc:
+                                # UI/reporting callbacks must not prevent discovery from continuing.
+                                self._log(f"[CALLBACK ERROR] {type(exc).__name__}: {exc}")
 
                         if result.status != 200 or depth >= self.max_depth or self.should_stop():
                             continue
                         for link in links:
-                            if not self._in_scope(link):
+                            normalized_link = _normalize_http_url(link)
+                            if not normalized_link or not self._in_scope(normalized_link):
                                 continue
                             async with self._schedule_lock:
                                 # visited contains both queued and in-flight URLs, so the cap is reserved atomically.
-                                if link in self.visited or len(self.visited) >= self.max_pages:
+                                if normalized_link in self.visited or len(self.visited) >= self.max_pages:
                                     continue
-                                self.visited.add(link)
-                                queue.put_nowait((link, depth + 1))
+                                self.visited.add(normalized_link)
+                                queue.put_nowait((normalized_link, depth + 1))
                     except Exception as exc:
                         self._log(f"[WORKER ERROR] {type(exc).__name__}: {exc}")
                     finally:
