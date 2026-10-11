@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QBrush
 from gui.status_style import status_colors
 from gui.worker import CrawlWorker
 from recon.matchers import MatcherFilter
+from recon.similarity_detector import SimilarityDetector
 
 
 class MainWindow(QMainWindow):
@@ -22,6 +23,8 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.recon_report = {}
         self.active_matcher = MatcherFilter()
+        self.live_results = []
+        self.live_discovery_results = []
         self._build_ui()
 
     def _build_ui(self):
@@ -118,6 +121,10 @@ class MainWindow(QMainWindow):
         self.filter_length.setPlaceholderText("1000-2000")
         self.filter_length.setMaximumWidth(120)
         mf_row.addWidget(self.filter_length)
+
+        self.apply_filters_btn = QPushButton("Apply Filters")
+        self.apply_filters_btn.clicked.connect(self._apply_filters_to_current_results)
+        mf_row.addWidget(self.apply_filters_btn)
 
         mf_row.addStretch()
         root.addLayout(mf_row)
@@ -223,6 +230,8 @@ class MainWindow(QMainWindow):
             wordlist_path = str(wordlist_path)
 
         self.active_matcher = matcher
+        self.live_results = []
+        self.live_discovery_results = []
         self.log_view.clear()
         self.table.setRowCount(0)
         self.discovery_table.setRowCount(0)
@@ -259,56 +268,41 @@ class MainWindow(QMainWindow):
         self.log_view.append(msg)
 
     def _on_page_crawled(self, result):
-        # Apply filters as results arrive; all responses remain in the exported report.
+        # Keep every result so the user can change filters without repeating the scan.
+        self.live_results.append(result)
         if not self.active_matcher.matches(result):
             return
+        self._append_page_row(
+            result.url, result.status, result.redirect_chain, result.final_url,
+            result.word_count, result.title, result.content_hash, "--",
+        )
+
+    def _append_page_row(
+        self, url, status, redirect_chain, final_url,
+        word_count, title, content_hash, favicon_hash="--",
+    ):
         row = self.table.rowCount()
         self.table.insertRow(row)
-
-        if result.redirect_chain:
-            chain = " -> ".join(str(c["status"]) for c in result.redirect_chain)
-            chain += f" -> {result.status}"
+        if redirect_chain:
+            chain = " -> ".join(str(item["status"]) for item in redirect_chain)
+            chain += f" -> {status}"
         else:
             chain = "--"
-        final_url = result.final_url if result.final_url != result.url else "--"
-
-        self.table.setItem(row, 0, QTableWidgetItem(result.url))
-        self.table.setItem(row, 1, QTableWidgetItem(str(result.status)))
-        self.table.setItem(row, 2, QTableWidgetItem(chain))
-        self.table.setItem(row, 3, QTableWidgetItem(final_url))
-        self.table.setItem(row, 4, QTableWidgetItem(str(result.word_count)))
-        self.table.setItem(row, 5, QTableWidgetItem(result.title))
-        self.table.setItem(row, 6, QTableWidgetItem(result.content_hash))
-        self.table.setItem(row, 7, QTableWidgetItem("--"))
-
-        self._color_row(self.table, row, result.status)
+        visible_final_url = final_url if final_url != url else "--"
+        values = (url, str(status), chain, visible_final_url, str(word_count),
+                  title, content_hash, favicon_hash or "--")
+        for column, value in enumerate(values):
+            self.table.setItem(row, column, QTableWidgetItem(value))
+        self._color_row(self.table, row, status)
 
     def _rebuild_table_from_filtered(self, filtered, favicon_hash):
         self.table.setRowCount(0)
         for result in filtered:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-
-            if result["redirect_chain"]:
-                chain = " -> ".join(
-                    str(c["status"]) for c in result["redirect_chain"]
-                )
-                chain += f" -> {result['status']}"
-            else:
-                chain = "--"
-            final_url = (result["final_url"]
-                         if result["final_url"] != result["url"] else "--")
-
-            self.table.setItem(row, 0, QTableWidgetItem(result["url"]))
-            self.table.setItem(row, 1, QTableWidgetItem(str(result["status"])))
-            self.table.setItem(row, 2, QTableWidgetItem(chain))
-            self.table.setItem(row, 3, QTableWidgetItem(final_url))
-            self.table.setItem(row, 4, QTableWidgetItem(str(result["word_count"])))
-            self.table.setItem(row, 5, QTableWidgetItem(result["title"]))
-            self.table.setItem(row, 6, QTableWidgetItem(result["content_hash"]))
-            self.table.setItem(row, 7, QTableWidgetItem(favicon_hash or "--"))
-
-            self._color_row(self.table, row, result["status"])
+            self._append_page_row(
+                result["url"], result["status"], result["redirect_chain"],
+                result["final_url"], result["word_count"], result["title"],
+                result["content_hash"], favicon_hash or "--",
+            )
 
     @staticmethod
     def _color_row(table: QTableWidget, row: int, status: int):
@@ -320,6 +314,7 @@ class MainWindow(QMainWindow):
                 item.setBackground(QBrush(QColor(background)))
 
     def _on_discovery_result(self, result: dict):
+        self.live_discovery_results.append(result)
         self._append_content_discovery_row(result)
 
     def _append_content_discovery_row(self, result: dict):
@@ -357,8 +352,59 @@ class MainWindow(QMainWindow):
         for result in results:
             self._append_content_discovery_row(result)
 
+    @staticmethod
+    def _page_filter_proxy(page: dict):
+        return SimpleNamespace(
+            url=page.get("url", ""),
+            status=page.get("status", 0),
+            content_length=page.get("content_length", 0),
+            word_count=page.get("word_count", 0),
+            content_hash=page.get("content_hash", ""),
+            text_hash=page.get("text_hash", ""),
+            title=page.get("title", ""),
+            final_url=page.get("final_url", ""),
+            redirect_chain=page.get("redirect_chain", []),
+        )
+
+    def _refresh_report_filters(self):
+        pages = self.recon_report.get("pages", [])
+        filtered = [
+            page for page in pages
+            if self.active_matcher.matches(self._page_filter_proxy(page))
+        ]
+        self.recon_report["filtered_pages"] = filtered
+        self.recon_report["matcher_description"] = self.active_matcher.describe()
+        self.recon_report["matcher_applied"] = not self.active_matcher.is_empty()
+        filtered_proxies = [self._page_filter_proxy(page) for page in filtered]
+        self.recon_report["similarity"] = SimilarityDetector().analyze(filtered_proxies)
+
+    def _apply_filters_to_current_results(self):
+        try:
+            self.active_matcher = self._build_matcher()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid filter", str(exc))
+            return
+
+        if self.recon_report.get("pages") is not None and "pages" in self.recon_report:
+            # Filtering is local: no network requests or repeat scan are needed.
+            self._on_finished(self.recon_report)
+        else:
+            self.table.setRowCount(0)
+            for result in self.live_results:
+                if self.active_matcher.matches(result):
+                    self._append_page_row(
+                        result.url, result.status, result.redirect_chain,
+                        result.final_url, result.word_count, result.title,
+                        result.content_hash, "--",
+                    )
+            self._rebuild_content_discovery_table(self.live_discovery_results)
+            self.status_label.setText(
+                f"Filters applied to current results: {self.active_matcher.describe()}"
+            )
+
     def _on_finished(self, report: dict):
         self.recon_report = report
+        self._refresh_report_filters()
         favicon = report.get("favicon_hash", "")
         filtered = report.get("filtered_pages", [])
         self._rebuild_table_from_filtered(filtered, favicon)
