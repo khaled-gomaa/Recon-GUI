@@ -26,6 +26,13 @@ Inspired by SiteOne Crawler + vyre (Rust subdomain prober).
 - Regression tests run with per-test and overall CI deadlines to avoid multi-hour hangs
 - Export to JSON
 
+## Using the discovery features
+
+- **Hidden link discovery** runs with the normal crawl. It checks anchors, forms, iframe/frame targets, canonical/alternate links, data attributes, meta refreshes, inline JavaScript, HTML comments, and routes extracted from same-host JavaScript bundles. It then follows discovered same-host routes in up to two bounded passes, subject to the configured page/depth limits.
+- **Content Discovery** is an optional active phase. Tick the Content Discovery checkbox before starting. Leave the wordlist field blank to use the bundled `wordlists/common.txt`, or browse to a custom wordlist. The Content Discovery tab shows each HTTP response (including 404s), response size, approximate word count, status color, and a likely-hit/wildcard classification. Scanning is capped and stops scheduling further requests after HTTP 429.
+- **Filters** can be changed before or after a scan. Enter comma-separated exact values (e.g. `200,301`), numeric ranges (e.g. `1000-2000`), and status classes such as `2xx` or `5xx`, then click **Apply Filters**. “Match” fields include only matching results; “Filter” fields exclude matching results. Applying filters does not repeat network requests.
+- Use active Content Discovery only for targets you own or are explicitly authorized to test.
+
 ## Quick Start
     python -m venv .venv
     .venv\Scripts\activate
