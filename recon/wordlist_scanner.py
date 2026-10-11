@@ -15,7 +15,7 @@ class WordlistScanner:
     def __init__(
         self, base_url: str, wordlist_path: str, extensions=None,
         concurrency: int = 5, timeout: int = 8, delay_ms: int = 200,
-        on_hit=None, on_log=None, should_stop=None,
+        on_hit=None, on_log=None, should_stop=None, on_result=None,
     ):
         parsed = urlparse(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -30,6 +30,7 @@ class WordlistScanner:
         self.on_hit = on_hit or (lambda url, status, size: None)
         self.on_log = on_log or (lambda msg: None)
         self.should_stop = should_stop or (lambda: False)
+        self.on_result = on_result or (lambda result: None)
         self.hits = []
         # Complete per-candidate response history, including ordinary 404 responses.
         self.responses = []
@@ -50,6 +51,13 @@ class WordlistScanner:
             self.on_hit(url, status, size)
         except Exception as exc:
             self._log(f"[Wordlist] Hit callback failed: {type(exc).__name__}: {exc}")
+
+    def _notify_result(self, result: dict):
+        """Emit every response for live tables; callback errors are non-fatal."""
+        try:
+            self.on_result(result)
+        except Exception as exc:
+            self._log(f"[Wordlist] Result callback failed: {type(exc).__name__}: {exc}")
 
     def _load_wordlist(self):
         if not self.wordlist_path.is_file():
@@ -153,6 +161,7 @@ class WordlistScanner:
                                     ),
                                 }
                                 self.responses.append(result)
+                                self._notify_result(result)
                                 if resp.status == 429:
                                     self._rate_limited = True
                                     self._log(
