@@ -84,3 +84,43 @@ def test_baseline_http_429_stops_wordlist_requests(tmp_path):
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+
+def test_records_404_responses_for_content_discovery_results(tmp_path):
+    async def scenario():
+        async def handler(request):
+            if "this-path-should-not-exist-recon-baseline" in request.path:
+                return web.Response(status=404, text="missing")
+            if request.path == "/admin":
+                return web.Response(status=200, text="admin area")
+            return web.Response(status=404, text="missing")
+
+        app = web.Application()
+        app.router.add_get("/{name:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            wordlist = tmp_path / "paths.txt"
+            wordlist.write_text("admin\nmissing\n", encoding="utf-8")
+            scanner = WordlistScanner(
+                f"http://127.0.0.1:{port}/",
+                str(wordlist),
+                extensions=[""],
+                concurrency=1,
+                delay_ms=0,
+            )
+            hits = await scanner.scan()
+            by_path = {item["url"].rsplit("/", 1)[-1]: item for item in scanner.responses}
+            assert by_path["admin"]["status"] == 200
+            assert by_path["admin"]["potential_hit"] is True
+            assert by_path["missing"]["status"] == 404
+            assert by_path["missing"]["potential_hit"] is False
+            assert len(hits) == 1
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
