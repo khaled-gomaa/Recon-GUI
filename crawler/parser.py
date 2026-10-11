@@ -6,6 +6,8 @@ from urllib.parse import urljoin, urlparse, urldefrag
 from recon.js_endpoint_extractor import JSEndpointExtractor
 
 META_REFRESH_RE = re.compile(r"""(?:^|;)\s*url\s*=\s*['"]?([^;'"]+)""", re.IGNORECASE)
+ROBOTS_RULE_RE = re.compile(r"^\s*(?:allow|disallow):\s*(/[^\s#]*)", re.IGNORECASE | re.MULTILINE)
+ROBOTS_SITEMAP_RE = re.compile(r"^\s*sitemap:\s*(https?://\S+)", re.IGNORECASE | re.MULTILINE)
 DATA_URL_ATTRIBUTES = ("data-href", "data-url", "data-link", "data-endpoint", "data-action", "data-target")
 STATIC_SUFFIXES = (
     ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
@@ -28,7 +30,7 @@ class PageParser:
 
         return {
             "title": self._get_title(soup),
-            "links": self._extract_links(soup, document_base, inline_routes),
+            "links": self._extract_links(soup, document_base, inline_routes, raw_content=html or "", current_url=current_url),
             "raw_html": html or "",
             "text": soup.get_text(separator=" ", strip=True),
             "scripts": self._extract_script_srcs(soup, document_base),
@@ -83,7 +85,10 @@ class PageParser:
             if (resolved := cls._candidate_url(item, current_url))
         }
 
-    def _extract_links(self, soup: BeautifulSoup, current_url: str, inline_routes=None) -> list:
+    def _extract_links(
+        self, soup: BeautifulSoup, current_url: str, inline_routes=None,
+        raw_content: str = "", source_url: str = "",
+    ) -> list:
         links = set()
         tag_attributes = (
             ("a", "href"), ("area", "href"), ("form", "action"),
@@ -130,6 +135,35 @@ class PageParser:
             candidate = self._candidate_url(route, current_url)
             if candidate:
                 links.add(candidate)
+
+        # Sitemap XML <loc> elements are high-confidence page URLs.
+        source_path = urlparse(source_url or current_url).path.lower()
+        is_sitemap = (
+            source_path.endswith((".xml", ".xml.gz"))
+            or soup.find("urlset") is not None
+            or soup.find("sitemapindex") is not None
+        )
+        if is_sitemap:
+            for tag in soup.find_all("loc"):
+                candidate = self._candidate_url(tag.get_text(strip=True), current_url)
+                if candidate:
+                    links.add(candidate)
+
+        # robots.txt often discloses paths and sitemap locations unavailable from links.
+        if source_path == "/robots.txt" or source_path.endswith("/robots.txt"):
+            for match in ROBOTS_RULE_RE.finditer(raw_content or ""):
+                path = match.group(1).strip()
+                # Wildcard rules are patterns, not concrete paths to request.
+                if not path or "*" in path or "$" in path:
+                    continue
+                candidate = self._candidate_url(path, current_url)
+                if candidate:
+                    links.add(candidate)
+            for match in ROBOTS_SITEMAP_RE.finditer(raw_content or ""):
+                candidate = self._candidate_url(match.group(1).strip(), current_url)
+                if candidate:
+                    links.add(candidate)
+
         return sorted(links)
 
     def _extract_script_srcs(self, soup: BeautifulSoup, current_url: str) -> list:
