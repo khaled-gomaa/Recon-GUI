@@ -98,6 +98,14 @@ class CrawlEngine:
         host = urlparse(url).hostname
         return bool(host and host.lower() == self.base_domain)
 
+    def _log(self, message: str):
+        """Best-effort logging: a GUI callback must never break crawl workers."""
+        try:
+            self.on_log(message)
+        except Exception:
+            # Logging is auxiliary; keep crawling even if a UI/log adapter fails.
+            pass
+
     async def crawl(self):
         timeout = aiohttp.ClientTimeout(total=15, connect=8)
         # Keep certificate verification enabled. Never disable TLS verification for recon.
