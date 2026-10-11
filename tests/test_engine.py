@@ -159,3 +159,44 @@ def test_callback_failure_does_not_stop_discovery():
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+
+def test_crawler_can_crawl_additional_seed_urls_without_revisiting_pages():
+    async def scenario():
+        requested = []
+
+        async def handler(request):
+            requested.append(request.path)
+            if request.path == "/":
+                return web.Response(text="<title>root</title>", content_type="text/html")
+            if request.path == "/hidden":
+                return web.Response(text="<title>hidden</title>", content_type="text/html")
+            return web.Response(status=404, text="missing", content_type="text/html")
+
+        app = web.Application()
+        app.router.add_get("/{name:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            engine = CrawlEngine(
+                f"http://127.0.0.1:{port}/",
+                max_depth=2, max_pages=5, concurrency=2,
+            )
+            initial = await engine.crawl()
+            assert len(initial) == 1
+            combined = await engine.crawl(
+                seed_urls=[f"http://127.0.0.1:{port}/hidden",
+                           f"http://127.0.0.1:{port}/hidden#fragment",
+                           "https://other.example/should-not-fetch"],
+                seed_depth=1,
+            )
+            assert len(combined) == 2
+            assert requested.count("/hidden") == 1
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
