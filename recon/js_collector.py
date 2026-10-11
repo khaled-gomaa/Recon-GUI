@@ -51,6 +51,10 @@ class JSCollector:
             if content.strip():
                 self.inline_scripts.append(content)
                 self.endpoints.update(JSEndpointExtractor.extract(content))
+                for route in JSEndpointExtractor.extract_routes(content):
+                    candidate = urljoin(resource_base, route)
+                    if candidate.startswith(("http://", "https://")) and self._in_scope(candidate):
+                        self.route_urls.add(candidate)
 
     async def download_and_analyze(self, concurrency: int = 5, should_stop=None):
         stop = should_stop or (lambda: False)
