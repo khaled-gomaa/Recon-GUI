@@ -1,5 +1,6 @@
 """QThread worker for the desktop crawler, with cooperative cancellation."""
 import asyncio
+import hashlib
 import threading
 
 import aiohttp
@@ -79,6 +80,56 @@ class CrawlWorker(QThread):
 
             # Analyze response metadata as well as HTML.
             _analyze_new_results()
+
+            rendered_pages = 0
+            if self.render_javascript and not self._stopping():
+                from recon.browser_renderer import render_pages
+                candidates = [
+                    item.url for item in engine.results
+                    if item.status == 200 and item.html
+                    and ("html" in (item.content_type or "").lower() or not item.content_type)
+                ][:30]
+                self.log_message.emit(
+                    f"[Browser] Optional JavaScript rendering enabled for {len(candidates)} pages."
+                )
+                try:
+                    rendered = loop.run_until_complete(render_pages(
+                        candidates, headers=self.request_headers,
+                        should_stop=self._stopping, on_log=self.log_message.emit,
+                    ))
+                except RuntimeError as exc:
+                    rendered = {}
+                    self.log_message.emit(f"[Browser] {exc}")
+                by_url = {item.url: item for item in engine.results}
+                route_seeds = set()
+                for url, html in rendered.items():
+                    result = by_url.get(url)
+                    if result is None or self._stopping():
+                        continue
+                    parsed = engine.parser.parse(html, url)
+                    result.html = html
+                    result.title = parsed.get("title", result.title)
+                    result.word_count = len((parsed.get("text") or "").split())
+                    result.content_hash = hashlib.sha256(
+                        html.encode("utf-8", errors="ignore")
+                    ).hexdigest()[:16]
+                    result.text_hash = hashlib.sha256(
+                        (parsed.get("text") or "").encode("utf-8", errors="ignore")
+                    ).hexdigest()[:16]
+                    result.content_length = len(html.encode("utf-8", errors="ignore"))
+                    analyzer.report.header_audits = [
+                        audit for audit in analyzer.report.header_audits if audit.url != url
+                    ]
+                    analyzed_urls.discard(url)
+                    route_seeds.update(parsed.get("links", []))
+                    rendered_pages += 1
+                _analyze_new_results()
+                if route_seeds and not self._stopping():
+                    self.log_message.emit(
+                        f"[Browser] Following {len(route_seeds)} same-host routes from rendered DOM."
+                    )
+                    loop.run_until_complete(engine.crawl(seed_urls=sorted(route_seeds), seed_depth=1))
+                    _analyze_new_results()
 
             if not self._stopping():
                 self.log_message.emit("[Favicon] Computing favicon hash...")
