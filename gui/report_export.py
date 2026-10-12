@@ -16,6 +16,14 @@ def render_text_report(report: dict) -> str:
         f"Pages after filters: {len(report.get('filtered_pages', []))}",
         f"Filter: {report.get('matcher_description', '(no filters)')}",
         f"Favicon hash: {report.get('favicon_hash') or '(not found)'}",
+        "Crawler rate limit: " + (
+            "stopped safely" if report.get("crawler_rate_limited_stop")
+            else "not triggered / resumed after Retry-After"
+        ),
+        "Content Discovery rate limit: " + (
+            "stopped safely" if report.get("wordlist_rate_limited_stop")
+            else "not triggered / resumed after Retry-After"
+        ),
     ]
 
     _section(lines, "Pages")
