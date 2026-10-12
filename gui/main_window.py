@@ -665,7 +665,9 @@ class MainWindow(QMainWindow):
         )
         crawler_limited = report.get("crawler_rate_limited_stop", False)
         discovery_limited = report.get("wordlist_rate_limited_stop", False)
-        if crawler_limited or discovery_limited:
+        if report.get("stopped_by_user"):
+            self.status_label.setText(f"STOPPED  ·  {total} pages")
+        elif crawler_limited or discovery_limited:
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
         else:
             self.status_label.setText(f"COMPLETE  ·  {total} pages")
