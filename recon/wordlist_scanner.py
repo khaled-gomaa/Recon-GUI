@@ -135,13 +135,11 @@ class WordlistScanner:
             deadline = loop.time() + retry_after
             while loop.time() < deadline:
                 if self.should_stop():
-                    self._rate_limited = True
                     self._resume_event.set()
                     return False
                 await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
 
             if self.should_stop():
-                self._rate_limited = True
                 self._resume_event.set()
                 return False
 
@@ -297,6 +295,6 @@ class WordlistScanner:
 
         if self._rate_limited:
             self._log("[Wordlist] Ended early because the target is rate-limiting requests.")
-        self.rate_limit_stopped = self._rate_limited
+        self.rate_limit_stopped = self._rate_limited and not self.should_stop()
         self._log(f"[Wordlist] Finished: {len(self.hits)} potential hits.")
         return self.hits
