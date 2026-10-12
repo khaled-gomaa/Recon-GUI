@@ -54,9 +54,9 @@ class ReconAnalyzer:
         if headers:
             self.report.header_audits.append(HeaderAuditor.audit(url, headers))
 
-    def finalize_js(self, loop, should_stop=None):
+    def finalize_js(self, loop, should_stop=None, delay_seconds: float = 0.0):
         loop.run_until_complete(
-            self.js_collector.download_and_analyze(should_stop=should_stop)
+            self.js_collector.download_and_analyze(should_stop=should_stop, delay_seconds=delay_seconds)
         )
         self.report.endpoints.update(self.js_collector.endpoints)
         # Secret-pattern checks also inspect downloaded same-host JS assets, but retain
@@ -83,6 +83,7 @@ class ReconAnalyzer:
             "source_maps": sorted(self.js_collector.source_maps),
             "discovered_routes": sorted(self.js_collector.route_urls),
             "inline_script_count": len(self.js_collector.inline_scripts),
+            "js_rate_limited_stop": self.js_collector.rate_limit_stopped,
             "wordlist_hits": self.wordlist_hits,
             "forms": sorted(self.forms.values(), key=lambda item: (item["page"], item["action"])),
             "json_ld": sorted(self.json_ld.values(), key=lambda item: (item["page"], item["type"])),
