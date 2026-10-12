@@ -1,47 +1,72 @@
-# Recon Crawler v2
+# Recon-GUI — Desktop Web Reconnaissance
 
-Desktop website crawler for reconnaissance on Windows.
-Inspired by SiteOne Crawler + vyre (Rust subdomain prober).
+Recon-GUI is a Python desktop application for mapping and documenting web assets on targets you own or are explicitly authorized to assess.
 
-## Features
-- Deep crawl with configurable depth & page limit
-- Canonical URL handling (host casing, default ports, fragments, IDNs) to reduce duplicate requests
-- Honors HTML `<base href>` when resolving links and JavaScript assets
-- Full redirect chain tracking (301/302/307/308)
-- Status codes + colors (200 green, 3xx yellow, 4xx red)
-- Word count per page
-- Similarity detection (exact dupes, soft-404, path variants)
-- HTML discovery from hidden anchors, forms, iframe actions, data attributes, meta refresh, inline scripts/comments, and same-host routes extracted from external JavaScript
-- JavaScript file collection + endpoint extraction + source maps; discovered first-party routes are crawled in bounded follow-up passes
-- Low-rate wordlist path checks with capped wordlist/response sizes and automatic stop on HTTP 429 (including baseline requests)
-- Security header audit
-- Email & subdomain harvesting
-- Favicon hash (mmh3) - identifies tech and shared infra
-- Consistent descriptive User-Agent and verified TLS certificates
-- Matchers/Filters (status code, content length, word count) with exact values, numeric ranges (1000-2000), and status classes (2xx/3xx/5xx)
-- Optional Content Discovery tab using a custom wordlist or bundled common wordlist; full response history includes 404s and likely wildcard responses
-- HTTP status rows use consistent foreground/background coloring in both page and content-discovery tables
-- Bounded concurrency (default 5, maximum 20 in the crawler GUI)
-- Worker resilience: logging/reporting callback failures do not break page/path discovery
-- Regression tests run with per-test and overall CI deadlines to avoid multi-hour hangs
-- Export complete results as readable TXT or structured JSON
-- Polished desktop UI with grouped scan controls, dedicated Match/Exclude filters, Clear Filters, and local re-filtering
-- HTTP 429 handling respects Retry-After, pauses queued requests, and stops safely if the server provides no usable retry guidance
+## Core features
 
-## Using the discovery features
+- Bounded same-host crawling with configurable depth, page count, and concurrency.
+- Canonical URL handling, redirect-chain tracking, response metadata, page hashes, similarity groups, and soft-404 candidates.
+- Hidden-route discovery from forms, iframes, data attributes, meta refresh, inline scripts/comments, sitemaps, robots.txt, and same-host JavaScript.
+- Optional Playwright rendering to discover routes created by client-side JavaScript.
+- JavaScript collection, endpoint extraction, source-map references, and bounded follow-up route crawling.
+- HTML form inventory (fields, method, action, and possible CSRF field names) without submitting forms.
+- JSON-LD extraction and redacted candidate detection for known token/key patterns and secret-like assignments.
+- Security-header audits, favicon hash, emails, and subdomains.
+- Optional passive lookups through Certificate Transparency (crt.sh) and Wayback CDX; results are not actively probed by the passive module.
+- Optional Content Discovery using a custom or bundled wordlist, with response history and wildcard/soft-hit classification.
+- Optional in-memory Bearer token, Basic Auth, and Cookie headers for the built-in crawler, JavaScript collection, and Content Discovery.
+- Local SQLite scan history grouped by origin, including newly added, removed, and changed URL comparisons between scans.
+- Filterable results and readable TXT, machine-readable JSON, and spreadsheet-friendly CSV reports.
+- Optional external CLI integrations for Subfinder, GAU, Nuclei, and ffuf. They run only when explicitly selected in the External Tools tab.
+- Honors a valid Crawl-delay in robots.txt. On HTTP 429, the crawler waits only when the response provides a supported Retry-After; otherwise it stops safely rather than bypassing rate limits.
 
-- **Hidden link discovery** runs with the normal crawl. It checks anchors, forms, iframe/frame targets, canonical/alternate links, data attributes, meta refreshes, inline JavaScript, HTML comments, and routes extracted from same-host JavaScript bundles. It then follows discovered same-host routes in up to two bounded passes, subject to the configured page/depth limits.
-- **Content Discovery** is an optional active phase. Tick the Content Discovery checkbox before starting. Leave the wordlist field blank to use the bundled `wordlists/common.txt`, or browse to a custom wordlist. The Content Discovery tab shows each HTTP response (including 404s), response size, approximate word count, status color, and a likely-hit/wildcard classification. Scanning is capped and stops scheduling further requests after HTTP 429.
-- **Filters** can be changed before or after a scan. Enter comma-separated exact values (e.g. `200,301`), numeric ranges (e.g. `1000-2000`), and status classes such as `2xx` or `5xx`, then click **Apply filters**. “Match” fields keep matching results; “Filter” fields exclude matching results. **Clear** resets all fields. Applying filters does not repeat network requests.
-- **HTTP 429**: if the server supplies a valid `Retry-After` of at most 120 seconds, queued requests pause for that duration then resume at the configured rate. If the header is missing/invalid, the wait exceeds that bound, or rate limiting repeats too often, the relevant phase stops safely. The app does not try to bypass rate limits. The Stop button remains responsive during cool-downs.
-- **Export**: use **Export TXT** for a readable report containing all pages, currently filtered pages, recon findings, content-discovery responses, potential hits, header audits, and similarity findings; use **Export JSON** for machine-readable data.
-- Use active Content Discovery only for targets you own or are explicitly authorized to test.
+## Quick start (Windows)
 
-## Quick Start
     python -m venv .venv
     .venv\Scripts\activate
-    pip install -r requirements.txt
+    python -m pip install -r requirements.txt
     python main.py
 
+## Optional JavaScript rendering
+
+Playwright is deliberately not a core dependency. To enable the checkbox in the GUI:
+
+    python -m pip install -r requirements-optional.txt
+    playwright install chromium
+
+The renderer is bounded to 30 pages and two concurrent tabs. Cross-host browser requests are blocked. If Playwright or Chromium is not installed, the ordinary HTTP crawler continues and logs a clear message.
+
+## Optional external tools
+
+Install the tools you need separately using their official installation instructions and make sure their executable is available on PATH.
+
+- **Subfinder** — passive subdomain enumeration.
+- **GAU** — historical URL discovery.
+- **Nuclei** — template-based security checks, explicitly initiated from the GUI with a conservative rate limit.
+- **ffuf** — wordlist path discovery, explicitly initiated from the GUI with a conservative rate limit and a selected local wordlist.
+- **Nmap** — optional top-50 TCP port scan (`-sT`, `-T3`) on the entered host; the GUI requires confirmation before launching it.
+
+The GUI's External Tools tab can check which tools are installed. External CLIs have independent rate-limit handling and do not share the built-in crawler's HTTP 429 Retry-After manager; stop active CLI tools and respect the target's retry guidance if rate limiting is observed. Nuclei and ffuf require a confirmation before execution. Their CLI processes have a bounded runtime and output size and can be stopped from the GUI. CLI integrations do not inherit the GUI's session token or cookies; configure them separately only when appropriate for your authorized test.
+
+## Authentication and data handling
+
+- Built-in authentication fields are held in application memory only and are not added to reports or scan-history records.
+- Candidate secret findings contain a type, source, severity, and a redacted marker; the matched raw value is never included.
+- Form analysis only inspects markup and does not submit the form or perform login attempts.
+- The history database is local to your user profile. On Windows it is normally stored at %LOCALAPPDATA%\Recon-GUI\history.sqlite3; other systems use ~/.recon-gui/history.sqlite3 unless XDG_DATA_HOME is set.
+- Export files can still contain URLs, email addresses, hostnames, and findings. Review them before sharing.
+
+## HTTP 429 and request pacing
+
+If the origin returns HTTP 429, Recon-GUI parses Retry-After (seconds or an HTTP date), pauses queued requests for supported waits, and resumes at the configured rate. If no usable retry guidance is provided, the requested wait exceeds the automatic ceiling, or the limit recurs too often, that phase stops safely. The application does not try to evade server-enforced limits. Content Discovery is low-rate by default; when a crawl delay is present, it reduces the path scanner to one worker and applies the delay between requests.
+
+## Tests
+
+    python -m pip install pytest pytest-timeout aiohttp beautifulsoup4 lxml requests mmh3
+    python -m pytest -q
+
+GitHub Actions runs compile checks and the regression suite with per-test and overall deadlines.
+
 ## Legal
-Use only on targets you own or have permission to test.
+
+Use only on systems you own or where you have explicit authorization. Respect scope, service terms, traffic limits, and any program rules. This application is a reconnaissance aid; findings are candidates that require manual validation.

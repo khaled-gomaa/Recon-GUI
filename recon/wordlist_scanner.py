@@ -19,7 +19,7 @@ class WordlistScanner:
     def __init__(
         self, base_url: str, wordlist_path: str, extensions=None,
         concurrency: int = 5, timeout: int = 8, delay_ms: int = 200,
-        on_hit=None, on_log=None, should_stop=None, on_result=None,
+        on_hit=None, on_log=None, should_stop=None, on_result=None, request_headers=None,
     ):
         parsed = urlparse(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -35,6 +35,7 @@ class WordlistScanner:
         self.on_log = on_log or (lambda msg: None)
         self.should_stop = should_stop or (lambda: False)
         self.on_result = on_result or (lambda result: None)
+        self.request_headers = dict(request_headers or {})
         self.hits = []
         # Complete per-candidate response history, including ordinary 404 responses.
         self.responses = []
@@ -221,6 +222,11 @@ class WordlistScanner:
         timeout = aiohttp.ClientTimeout(total=self.timeout, connect=min(self.timeout, 5))
         connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=True)
         headers = build_headers()
+        headers.update({
+            str(key): str(value) for key, value in self.request_headers.items()
+            if str(key).lower() in {"authorization", "cookie", "accept-language"}
+            and "\r" not in str(value) and "\n" not in str(value)
+        })
 
         async with aiohttp.ClientSession(
             connector=connector, timeout=timeout, headers=headers

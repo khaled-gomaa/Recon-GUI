@@ -1,4 +1,5 @@
 """Main application window."""
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,7 +7,7 @@ from types import SimpleNamespace
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QGridLayout, QGroupBox, QLineEdit, QSpinBox, QPushButton, QTextEdit,
-    QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox,
+    QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox, QComboBox,
 )
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtCore import Qt
@@ -14,7 +15,10 @@ from gui.status_style import status_colors
 from gui.worker import CrawlWorker
 from recon.matchers import MatcherFilter
 from recon.similarity_detector import SimilarityDetector
-from gui.report_export import render_text_report
+from gui.report_export import render_text_report, render_csv_report
+from recon.history_store import HistoryStore
+from recon.external_tools import available_tools
+from gui.tool_worker import ExternalToolWorker
 
 
 class MainWindow(QMainWindow):
@@ -23,11 +27,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Recon Crawler v2 - Desktop Website Reconnaissance")
         self.resize(1300, 800)
         self.worker = None
+        self.tool_worker = None
         self.recon_report = {}
         self.active_matcher = MatcherFilter()
         self.live_results = []
         self.live_discovery_results = []
         self._build_ui()
+        self._refresh_history_for_target()
 
     def _build_ui(self):
         central = QWidget()
@@ -131,6 +137,61 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.stop_btn)
         grid.addLayout(action_row, 3, 0, 1, 6)
         root.addWidget(settings)
+
+        # Optional capabilities and session settings; credentials remain in memory only.
+        options = QGroupBox("Optional modules & session")
+        options.setObjectName("sectionCard")
+        options_grid = QGridLayout(options)
+        options_grid.setContentsMargins(16, 18, 16, 12)
+        options_grid.setHorizontalSpacing(12)
+        options_grid.setVerticalSpacing(7)
+        self.render_js_check = QCheckBox("Render JavaScript (optional Playwright)")
+        self.render_js_check.setToolTip(
+            "Renders at most 30 pages; install Playwright and Chromium separately. "
+            "Cross-host browser requests are blocked."
+        )
+        self.passive_check = QCheckBox("Passive sources (crt.sh + Wayback)")
+        self.passive_check.setToolTip(
+            "Queries public indexes only; discovered hosts are not actively probed."
+        )
+        options_grid.addWidget(self.render_js_check, 0, 0, 1, 2)
+        options_grid.addWidget(self.passive_check, 0, 2, 1, 2)
+
+        token_label = QLabel("Bearer token")
+        token_label.setObjectName("fieldLabel")
+        self.auth_token_input = QLineEdit()
+        self.auth_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.auth_token_input.setClearButtonEnabled(True)
+        self.auth_token_input.setPlaceholderText("Optional; kept in memory only")
+        self.auth_token_input.setToolTip("Sent only in the Authorization header; never written to reports.")
+        cookie_label = QLabel("Cookies")
+        cookie_label.setObjectName("fieldLabel")
+        self.cookie_input = QLineEdit()
+        self.cookie_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.cookie_input.setClearButtonEnabled(True)
+        self.cookie_input.setPlaceholderText("name=value; other=value")
+        self.cookie_input.setToolTip("Optional Cookie header; never written to reports.")
+        options_grid.addWidget(token_label, 1, 0)
+        options_grid.addWidget(self.auth_token_input, 1, 1)
+        options_grid.addWidget(cookie_label, 1, 2)
+        options_grid.addWidget(self.cookie_input, 1, 3)
+
+        basic_user_label = QLabel("Basic username")
+        basic_user_label.setObjectName("fieldLabel")
+        self.basic_user_input = QLineEdit()
+        self.basic_user_input.setClearButtonEnabled(True)
+        self.basic_user_input.setPlaceholderText("Optional")
+        basic_password_label = QLabel("Basic password")
+        basic_password_label.setObjectName("fieldLabel")
+        self.basic_password_input = QLineEdit()
+        self.basic_password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.basic_password_input.setClearButtonEnabled(True)
+        self.basic_password_input.setPlaceholderText("Optional")
+        options_grid.addWidget(basic_user_label, 2, 0)
+        options_grid.addWidget(self.basic_user_input, 2, 1)
+        options_grid.addWidget(basic_password_label, 2, 2)
+        options_grid.addWidget(self.basic_password_input, 2, 3)
+        root.addWidget(options)
 
         # Filters are grouped by intent so Match/Exclude semantics are obvious.
         filters = QGroupBox("Result filters")
@@ -250,7 +311,52 @@ class MainWindow(QMainWindow):
         self.recon_view.setReadOnly(True)
         self.tabs.addTab(self.recon_view, "Recon findings")
 
-        for table in (self.table, self.discovery_table):
+        self.history_table = QTableWidget(0, 7)
+        self.history_table.setHorizontalHeaderLabels([
+            "Scan #", "Started", "Status", "Pages", "Added", "Removed", "Changed",
+        ])
+        self.history_table.setColumnWidth(0, 70)
+        self.history_table.setColumnWidth(1, 240)
+        self.history_table.setColumnWidth(2, 120)
+        self.tabs.addTab(self.history_table, "Scan History")
+        self.url_input.editingFinished.connect(self._refresh_history_for_target)
+
+        tool_page = QWidget()
+        tool_layout = QVBoxLayout(tool_page)
+        tool_controls = QHBoxLayout()
+        self.external_tool_combo = QComboBox()
+        self.external_tool_combo.addItems(["subfinder", "gau", "nuclei", "ffuf", "nmap"])
+        self.check_tools_btn = QPushButton("Check installed tools")
+        self.check_tools_btn.clicked.connect(self._check_external_tools)
+        self.run_tool_btn = QPushButton("Run selected tool")
+        self.run_tool_btn.setObjectName("primaryButton")
+        self.run_tool_btn.clicked.connect(self._run_external_tool)
+        self.stop_tool_btn = QPushButton("Stop tool")
+        self.stop_tool_btn.setObjectName("dangerButton")
+        self.stop_tool_btn.setEnabled(False)
+        self.stop_tool_btn.clicked.connect(self._stop_external_tool)
+        tool_controls.addWidget(QLabel("Tool"))
+        tool_controls.addWidget(self.external_tool_combo)
+        tool_controls.addWidget(self.check_tools_btn)
+        tool_controls.addWidget(self.run_tool_btn)
+        tool_controls.addWidget(self.stop_tool_btn)
+        tool_layout.addLayout(tool_controls)
+        self.external_tool_status = QLabel(
+            "Optional CLI integrations. Active tools use conservative request rates; "
+            "GUI session cookies/tokens are not passed to CLI tools."
+        )
+        self.external_tool_status.setWordWrap(True)
+        self.external_tool_status.setObjectName("mutedText")
+        tool_layout.addWidget(self.external_tool_status)
+        self.external_tool_output = QTextEdit()
+        self.external_tool_output.setReadOnly(True)
+        self.external_tool_output.setPlaceholderText(
+            "Installed-tool status and output appear here. Tools run only when explicitly selected."
+        )
+        tool_layout.addWidget(self.external_tool_output, 1)
+        self.tabs.addTab(tool_page, "External Tools")
+
+        for table in (self.table, self.discovery_table, self.history_table):
             self._style_table(table)
 
         # Export and status footer
@@ -266,8 +372,13 @@ class MainWindow(QMainWindow):
         self.export_btn.setObjectName("secondaryButton")
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._export_json)
+        self.export_csv_btn = QPushButton("Export CSV")
+        self.export_csv_btn.setObjectName("secondaryButton")
+        self.export_csv_btn.setEnabled(False)
+        self.export_csv_btn.clicked.connect(self._export_csv)
         footer.addWidget(self.export_txt_btn)
         footer.addWidget(self.export_btn)
+        footer.addWidget(self.export_csv_btn)
         footer.addStretch(1)
         root.addLayout(footer)
 
@@ -391,6 +502,107 @@ class MainWindow(QMainWindow):
             QCheckBox { color: #344863; font-weight: 600; spacing: 6px; }
         """)
 
+    def _check_external_tools(self):
+        tools = available_tools()
+        lines = ["Optional command-line integrations:"]
+        for name, path in tools.items():
+            lines.append(f"{name}: {path if path else 'not installed / not on PATH'}")
+        self.external_tool_output.setPlainText("\n".join(lines))
+        missing = sum(1 for path in tools.values() if not path)
+        self.external_tool_status.setText(
+            f"{len(tools) - missing}/{len(tools)} tools available. "
+            "Install missing tools separately and ensure they are on PATH."
+        )
+
+    def _run_external_tool(self):
+        if self.tool_worker and self.tool_worker.isRunning():
+            QMessageBox.information(self, "Tool already running", "Stop the current external tool first.")
+            return
+        tool = self.external_tool_combo.currentText()
+        target = self.url_input.text().strip()
+        from urllib.parse import urlparse
+        parsed = urlparse(target)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            QMessageBox.warning(self, "Invalid target", "Enter a valid HTTP(S) target URL first.")
+            return
+        wordlist_path = None
+        if tool == "ffuf":
+            selected = self.wordlist_input.text().strip()
+            wordlist_path = selected or str(self._bundled_wordlist_path())
+            if not Path(wordlist_path).is_file():
+                QMessageBox.warning(self, "Wordlist not found", f"Cannot find: {wordlist_path}")
+                return
+        if tool in {"nuclei", "ffuf", "nmap"}:
+            answer = QMessageBox.question(
+                self, "Confirm authorization",
+                f"{tool} sends active requests to {target}. External tools do not share the crawler 429 retry manager. Continue only if this target is "
+                "within your explicit authorization. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.external_tool_output.clear()
+        self.external_tool_status.setText(f"Running {tool} with a 5-minute timeout...")
+        self.run_tool_btn.setEnabled(False)
+        self.stop_tool_btn.setEnabled(True)
+        self.tool_worker = ExternalToolWorker(tool, target, wordlist_path)
+        self.tool_worker.completed.connect(self._on_external_tool_finished)
+        self.tool_worker.error.connect(self._on_external_tool_error)
+        self.tool_worker.start()
+
+    def _stop_external_tool(self):
+        if self.tool_worker and self.tool_worker.isRunning():
+            self.tool_worker.stop()
+            self.external_tool_status.setText("Stop requested; terminating tool process.")
+            self.stop_tool_btn.setEnabled(False)
+
+    def _on_external_tool_finished(self, result: dict):
+        self.external_tool_output.setPlainText("\n".join(result.get("output", [])))
+        tool = result.get("tool", "tool")
+        code = result.get("return_code", "?")
+        status = "stopped" if result.get("stopped") else "timed out" if result.get("timed_out") else f"exit code {code}"
+        self.external_tool_status.setText(f"{tool} finished: {status}.")
+        self.run_tool_btn.setEnabled(True)
+        self.stop_tool_btn.setEnabled(False)
+
+    def _on_external_tool_error(self, message: str):
+        self.external_tool_output.setPlainText(message)
+        self.external_tool_status.setText("External tool failed.")
+        self.run_tool_btn.setEnabled(True)
+        self.stop_tool_btn.setEnabled(False)
+
+    def _refresh_history_for_target(self):
+        """Refresh persistent history for the current URL without starting a network scan."""
+        if not hasattr(self, "history_table"):
+            return
+        target = self.url_input.text().strip()
+        if not target:
+            self.history_table.setRowCount(0)
+            return
+        try:
+            self._populate_history(HistoryStore().recent_scans(target))
+        except (ValueError, OSError) as exc:
+            self.history_table.setRowCount(0)
+        except Exception as exc:
+            self.history_table.setRowCount(0)
+            if hasattr(self, "log_view"):
+                self.log_view.append(f"[History] Unable to read local history: {type(exc).__name__}: {exc}")
+
+    def _populate_history(self, scans):
+        self.history_table.setRowCount(0)
+        for scan in scans or []:
+            row = self.history_table.rowCount()
+            self.history_table.insertRow(row)
+            values = (
+                scan.get("scan_id", ""), scan.get("started_at", scan.get("completed_at", "")),
+                scan.get("status", ""), scan.get("page_count", 0),
+                scan.get("added_count", 0), scan.get("removed_count", 0),
+                scan.get("changed_count", 0),
+            )
+            for column, value in enumerate(values):
+                self.history_table.setItem(row, column, QTableWidgetItem(str(value)))
+
     @staticmethod
     def _style_table(table: QTableWidget):
         table.setAlternatingRowColors(True)
@@ -465,6 +677,27 @@ class MainWindow(QMainWindow):
                 return
             wordlist_path = str(wordlist_path)
 
+        auth_token = self.auth_token_input.text().strip()
+        cookie_header = self.cookie_input.text().strip()
+        basic_user = self.basic_user_input.text()
+        basic_password = self.basic_password_input.text()
+        if bool(basic_user) != bool(basic_password):
+            QMessageBox.warning(self, "Incomplete Basic Auth", "Enter both the Basic username and password.")
+            return
+        if auth_token and basic_user:
+            QMessageBox.warning(self, "Conflicting authentication", "Use either a Bearer token or Basic Auth, not both.")
+            return
+        request_headers = {}
+        if auth_token:
+            request_headers["Authorization"] = (
+                auth_token if auth_token.lower().startswith("bearer ") else "Bearer " + auth_token
+            )
+        elif basic_user:
+            encoded = base64.b64encode(f"{basic_user}:{basic_password}".encode("utf-8")).decode("ascii")
+            request_headers["Authorization"] = "Basic " + encoded
+        if cookie_header:
+            request_headers["Cookie"] = cookie_header
+
         self.active_matcher = matcher
         self.live_results = []
         self.live_discovery_results = []
@@ -476,6 +709,7 @@ class MainWindow(QMainWindow):
         self.recon_report = {}
         self.export_btn.setEnabled(False)
         self.export_txt_btn.setEnabled(False)
+        self.export_csv_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.status_label.setText("Crawling...")
@@ -487,6 +721,9 @@ class MainWindow(QMainWindow):
             concurrency=self.conc_spin.value(),
             wordlist_path=wordlist_path,
             matcher=matcher,
+            render_javascript=self.render_js_check.isChecked(),
+            passive_discovery=self.passive_check.isChecked(),
+            request_headers=request_headers,
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
@@ -649,6 +886,8 @@ class MainWindow(QMainWindow):
         self._render_similarity(report.get("similarity", {}))
         self.export_btn.setEnabled(True)
         self.export_txt_btn.setEnabled(True)
+        self.export_csv_btn.setEnabled(True)
+        self._populate_history(report.get("recent_scans", []))
         self._reset_buttons()
 
         sim = report.get("similarity", {})
@@ -720,6 +959,63 @@ class MainWindow(QMainWindow):
             lines.append(f"    Present: {list(audit['present'].keys()) or 'None'}")
             lines.append(f"    Missing: {audit['missing'] or 'None'}")
 
+        lines.append("=== HTML FORMS (NO SUBMISSION PERFORMED) ===")
+        for form in report.get("forms", []):
+            csrf_note = "CSRF-like field present" if form.get("csrf_field_present") else "No obvious CSRF field"
+            lines.append(
+                f"  [{form.get('method', 'GET')}] {form.get('action', '')} "
+                f"(fields={form.get('field_count', 0)}, {csrf_note})"
+            )
+            for field in form.get("fields", []):
+                lines.append(
+                    f"    - {field.get('name', '')}: {field.get('type', '')}"
+                    + (" [required]" if field.get("required") else "")
+                )
+        lines.append("")
+        lines.append("=== JSON-LD / STRUCTURED DATA ===")
+        for item in report.get("json_ld", []):
+            lines.append(f"  - {item.get('type', '(unknown type)')} | {item.get('name', '')} | {item.get('page', '')}")
+        lines.append("")
+        lines.append("=== SENSITIVE-DATA CANDIDATES (VALUES REDACTED) ===")
+        for item in report.get("sensitive_findings", []):
+            lines.append(
+                f"  [{item.get('severity', 'medium')}] {item.get('type', '')} "
+                f"on {item.get('page', '')} ({item.get('source', '')}) — [REDACTED]"
+            )
+        lines.append("")
+        for section in ("passive_subdomains", "historical_urls"):
+            lines.append(f"=== {section.upper().replace('_', ' ')} ===")
+            for value in report.get(section, []):
+                lines.append(f"  - {value}")
+            lines.append("")
+        lines.append("=== PASSIVE SOURCE NOTES ===")
+        for item in report.get("passive_sources", []):
+            lines.append(f"  - {item.get('name')}: {item.get('status')} ({item.get('count', 0)} items)")
+        for item in report.get("passive_errors", []):
+            lines.append(f"  - Warning: {item}")
+        lines.append("")
+        diff = report.get("history_diff", {})
+        lines.append("=== SCAN HISTORY COMPARISON ===")
+        lines.append(f"  Current scan: {report.get('scan_id', '(not saved)')}")
+        lines.append(f"  Previous scan: {diff.get('previous_scan_id', '(first scan)')}")
+        lines.append(
+            f"  Added: {diff.get('added_count', 0)} | Removed: {diff.get('removed_count', 0)} "
+            f"| Changed: {diff.get('changed_count', 0)}"
+        )
+        for key, label in (("added_urls", "NEW"), ("removed_urls", "REMOVED"), ("changed_urls", "CHANGED")):
+            for url in diff.get(key, []):
+                lines.append(f"  [{label}] {url}")
+        if report.get("history_error"):
+            lines.append(f"  History warning: {report['history_error']}")
+        lines.append("")
+        lines.append("=== CONFIGURATION ===")
+        lines.append(f"  JavaScript rendering enabled: {report.get('rendering_enabled', False)}")
+        lines.append(f"  Rendered pages: {report.get('rendered_pages', 0)}")
+        lines.append(f"  robots.txt: {report.get('robots_url', '(not read)')}")
+        lines.append(f"  Crawl-delay: {report.get('crawl_delay_seconds', 0)} seconds")
+        lines.append(f"  Authentication configured: {report.get('auth_configured', False)}")
+        lines.append(f"  Authentication fields: {', '.join(report.get('auth_types', [])) or '(none)'}")
+
         self.recon_view.setPlainText("\n".join(lines))
 
     def _render_similarity(self, sim: dict):
@@ -772,6 +1068,23 @@ class MainWindow(QMainWindow):
             self._append_log(f"[Export] Text report saved: {path}")
         except OSError as exc:
             QMessageBox.critical(self, "Export failed", f"Could not write TXT report:\n{exc}")
+
+    def _export_csv(self):
+        if not self.recon_report:
+            QMessageBox.information(self, "No report", "Run a scan before exporting a report.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Recon CSV", "recon_report.csv", "CSV (*.csv);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as report_file:
+                report_file.write(render_csv_report(self.recon_report))
+            self.status_label.setText("CSV EXPORTED")
+            self._append_log(f"[Export] CSV report saved: {path}")
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Could not write CSV report:\n{exc}")
 
     def _export_json(self):
         path, _ = QFileDialog.getSaveFileName(

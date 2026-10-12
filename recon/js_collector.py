@@ -16,10 +16,13 @@ MAX_JS_FILES = 200
 
 
 class JSCollector:
-    def __init__(self, base_url: str, on_log=None):
+    def __init__(self, base_url: str, on_log=None, request_headers=None):
         self.base_url = base_url
         self.base_host = (urlparse(base_url).hostname or "").lower()
+        self.base_origin = self._origin(base_url)
         self.on_log = on_log or (lambda msg: None)
+        self.request_headers = dict(request_headers or {})
+        self.rate_limit_stopped = False
         self.js_urls: set = set()
         self.js_contents: dict = {}
         self.inline_scripts: list = []
@@ -27,6 +30,17 @@ class JSCollector:
         self.source_maps: set = set()
         self.route_urls: set = set()
         self._analyzed_js_urls: set = set()
+
+    @staticmethod
+    def _origin(url: str):
+        try:
+            parsed = urlparse(url)
+            scheme = parsed.scheme.lower()
+            host = (parsed.hostname or "").lower().rstrip(".")
+            port = parsed.port or (443 if scheme == "https" else 80 if scheme == "http" else None)
+            return scheme, host, port
+        except (TypeError, ValueError):
+            return None
 
     def _in_scope(self, url: str) -> bool:
         host = urlparse(url).hostname
@@ -56,9 +70,12 @@ class JSCollector:
                     if candidate.startswith(("http://", "https://")) and self._in_scope(candidate):
                         self.route_urls.add(candidate)
 
-    async def download_and_analyze(self, concurrency: int = 5, should_stop=None):
+    async def download_and_analyze(self, concurrency: int = 5, should_stop=None, delay_seconds: float = 0.0):
         stop = should_stop or (lambda: False)
         concurrency = max(1, min(int(concurrency), 10))
+        delay_seconds = max(0.0, min(float(delay_seconds), 86400.0))
+        if delay_seconds > 0:
+            concurrency = 1
         timeout = aiohttp.ClientTimeout(total=15, connect=8)
         connector = aiohttp.TCPConnector(limit=concurrency, ssl=True)
         async with aiohttp.ClientSession(connector=connector) as session:
@@ -66,6 +83,7 @@ class JSCollector:
                 self.js_urls - self._analyzed_js_urls
                 and len(self._analyzed_js_urls) < MAX_JS_FILES
                 and not stop()
+                and not self.rate_limit_stopped
             ):
                 batch = sorted(self.js_urls - self._analyzed_js_urls)[
                     :min(concurrency, MAX_JS_FILES - len(self._analyzed_js_urls))
@@ -76,6 +94,8 @@ class JSCollector:
                 )
                 # Mark attempts once to avoid repeating failing endpoints on a second pass.
                 self._analyzed_js_urls.update(batch)
+                if delay_seconds > 0 and (self.js_urls - self._analyzed_js_urls) and not stop():
+                    await asyncio.sleep(delay_seconds)
 
         if len(self.js_urls) > MAX_JS_FILES:
             self.on_log(f"[JS] File limit reached ({MAX_JS_FILES}).")
@@ -84,10 +104,21 @@ class JSCollector:
         if stop() or not self._in_scope(url):
             return
         try:
+            request_headers = build_headers()
+            if self._origin(url) == self.base_origin:
+                request_headers.update({
+                    str(key): str(value) for key, value in self.request_headers.items()
+                    if str(key).lower() in {"authorization", "cookie", "accept-language"}
+                    and "\r" not in str(value) and "\n" not in str(value)
+                })
             async with session.get(
-                url, headers=build_headers(), timeout=timeout, allow_redirects=False
+                url, headers=request_headers, timeout=timeout, allow_redirects=False
             ) as resp:
                 # Do not follow redirects: their destinations may be outside scope.
+                if resp.status == 429:
+                    self.rate_limit_stopped = True
+                    self.on_log(f"[429] JavaScript download was rate-limited at {url}; stopping JS collection safely.")
+                    return
                 if resp.status != 200:
                     return
                 data = await resp.content.read(MAX_JS_BYTES + 1)

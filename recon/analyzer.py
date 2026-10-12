@@ -1,7 +1,8 @@
-"""Aggregate observations from crawled pages and JavaScript."""
+"""Aggregate observations from crawled pages, JavaScript, and HTML analysis."""
 from urllib.parse import urlparse
 from dataclasses import dataclass, field
 
+from recon.advanced_analysis import analyze_html
 from recon.email_extractor import EmailExtractor
 from recon.subdomain_finder import SubdomainFinder
 from recon.js_endpoint_extractor import JSEndpointExtractor
@@ -18,15 +19,19 @@ class ReconReport:
 
 
 class ReconAnalyzer:
-    def __init__(self, base_domain: str):
+    def __init__(self, base_domain: str, request_headers: dict | None = None, on_log=None):
         parsed_host = urlparse(base_domain).hostname
         host = (parsed_host or base_domain).lower()
         self.subdomain_finder = SubdomainFinder(host)
         self.report = ReconReport()
-        self.js_collector = JSCollector(base_domain)
+        self.js_collector = JSCollector(base_domain, on_log=on_log, request_headers=request_headers)
+        self.request_headers = dict(request_headers or {})
         self.wordlist_hits: list = []
         self.favicon_hash: str = ""
         self.matcher_applied: bool = False
+        self.forms: dict[tuple, dict] = {}
+        self.json_ld: dict[tuple, dict] = {}
+        self.sensitive_findings: dict[tuple, dict] = {}
 
     def analyze_page(self, url: str, html: str, headers: dict = None):
         html = html or ""
@@ -34,15 +39,35 @@ class ReconAnalyzer:
         self.report.subdomains.update(self.subdomain_finder.find(html))
         self.report.endpoints.update(JSEndpointExtractor.extract(html))
         self.js_collector.collect_from_html(url, html)
+
+        advanced = analyze_html(url, html)
+        for form in advanced["forms"]:
+            key = (form.get("page"), form.get("method"), form.get("action"))
+            self.forms[key] = form
+        for item in advanced["json_ld"]:
+            key = (item.get("page"), item.get("type"), item.get("name", ""))
+            self.json_ld[key] = item
+        for item in advanced["sensitive_findings"]:
+            key = (item.get("page"), item.get("type"), item.get("source"), item.get("key_name", ""))
+            self.sensitive_findings[key] = item
+
         if headers:
-            # HeaderAuditor returns a HeaderAuditResult with url/present/missing fields.
             self.report.header_audits.append(HeaderAuditor.audit(url, headers))
 
-    def finalize_js(self, loop, should_stop=None):
+    def finalize_js(self, loop, should_stop=None, delay_seconds: float = 0.0):
         loop.run_until_complete(
-            self.js_collector.download_and_analyze(should_stop=should_stop)
+            self.js_collector.download_and_analyze(should_stop=should_stop, delay_seconds=delay_seconds)
         )
         self.report.endpoints.update(self.js_collector.endpoints)
+        # Secret-pattern checks also inspect downloaded same-host JS assets, but retain
+        # only redacted candidate metadata, never the matching source value.
+        for js_url, js_content in self.js_collector.js_contents.items():
+            self.report.emails.update(EmailExtractor.extract(js_content))
+            self.report.subdomains.update(self.subdomain_finder.find(js_content))
+            js_analysis = analyze_html(js_url, js_content)
+            for item in js_analysis["sensitive_findings"]:
+                key = (item.get("page"), item.get("type"), item.get("source"), item.get("key_name", ""))
+                self.sensitive_findings[key] = item
 
     def to_dict(self) -> dict:
         return {
@@ -58,5 +83,12 @@ class ReconAnalyzer:
             "source_maps": sorted(self.js_collector.source_maps),
             "discovered_routes": sorted(self.js_collector.route_urls),
             "inline_script_count": len(self.js_collector.inline_scripts),
+            "js_rate_limited_stop": self.js_collector.rate_limit_stopped,
             "wordlist_hits": self.wordlist_hits,
+            "forms": sorted(self.forms.values(), key=lambda item: (item["page"], item["action"])),
+            "json_ld": sorted(self.json_ld.values(), key=lambda item: (item["page"], item["type"])),
+            "sensitive_findings": sorted(
+                self.sensitive_findings.values(),
+                key=lambda item: (item["page"], item["type"], item.get("source", "")),
+            ),
         }
