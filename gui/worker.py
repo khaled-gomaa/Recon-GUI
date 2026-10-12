@@ -115,6 +115,7 @@ class CrawlWorker(QThread):
                     analyzer.finalize_js(loop, should_stop=self._stopping)
 
             wordlist_results = []
+            wordlist_rate_limited_stop = False
             if self.wordlist_path and not self._stopping():
                 from recon.wordlist_scanner import WordlistScanner
                 self.log_message.emit(f"[Wordlist] Checking authorized paths: {self.wordlist_path}")
@@ -131,6 +132,9 @@ class CrawlWorker(QThread):
                 )
                 analyzer.wordlist_hits = loop.run_until_complete(scanner.scan())
                 wordlist_results = scanner.responses
+                wordlist_rate_limited_stop = scanner.rate_limit_stopped
+                if scanner.rate_limit_stopped:
+                    self.log_message.emit("[Content Discovery] Stopped safely because rate limiting did not permit a compliant resume.")
 
             all_results = engine.results
             if not self.matcher.is_empty():
@@ -141,8 +145,11 @@ class CrawlWorker(QThread):
                 filtered = all_results
 
             report = analyzer.to_dict()
+            report["target"] = self.url
             report["pages"] = [result.to_dict() for result in all_results]
             report["wordlist_results"] = wordlist_results
+            report["wordlist_rate_limited_stop"] = wordlist_rate_limited_stop
+            report["crawler_rate_limited_stop"] = engine.rate_limit_stopped
             report["filtered_pages"] = [result.to_dict() for result in filtered]
             report["similarity"] = SimilarityDetector().analyze(filtered)
             report["matcher_description"] = self.matcher.describe()

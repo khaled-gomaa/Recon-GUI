@@ -1,6 +1,8 @@
 """Async crawl engine with bounded workers, strict hostname scope, and TLS verification."""
 import asyncio
 import hashlib
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse, urljoin, urldefrag
 
 import aiohttp
@@ -8,6 +10,8 @@ from crawler.parser import PageParser
 
 MAX_BODY_BYTES = 5 * 1024 * 1024
 REDIRECT_CODES = {301, 302, 303, 307, 308}
+MAX_RETRY_AFTER_SECONDS = 120
+MAX_RATE_LIMIT_PAUSES = 3
 
 
 def _hash(text: str) -> str:
@@ -129,6 +133,88 @@ class CrawlEngine:
         self.visited: set = set()
         self.results: list = []
         self._schedule_lock = asyncio.Lock()
+        self.rate_limit_stopped = False
+        self._rate_limit_pauses = 0
+        self._resume_event = None
+        self._rate_limit_lock = None
+        self._rate_limit_cooldown_until = 0.0
+
+    @staticmethod
+    def _parse_retry_after(headers: dict):
+        value = next(
+            (str(v).strip() for k, v in (headers or {}).items()
+             if str(k).lower() == "retry-after"),
+            None,
+        )
+        if not value:
+            return None
+        if value.isdigit():
+            return float(int(value))
+        try:
+            when = parsedate_to_datetime(value)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    async def _handle_429(self, headers: dict, url: str):
+        """Honor Retry-After or stop safely; never attempt to evade rate limiting."""
+        async with self._rate_limit_lock:
+            if self.rate_limit_stopped:
+                return False
+
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            if self._rate_limit_pauses and now <= self._rate_limit_cooldown_until + 2.0:
+                return True
+
+            retry_after = self._parse_retry_after(headers)
+            if retry_after is None:
+                self.rate_limit_stopped = True
+                self._log(
+                    f"[429] {url} returned Too Many Requests without a valid Retry-After. "
+                    "Stopping new crawl requests instead of bypassing the limit."
+                )
+                self._resume_event.set()
+                return False
+            if retry_after > MAX_RETRY_AFTER_SECONDS:
+                self.rate_limit_stopped = True
+                self._log(
+                    f"[429] Server requested a {retry_after:.0f}s wait, above the "
+                    f"{MAX_RETRY_AFTER_SECONDS}s automatic wait ceiling. Stopping rather "
+                    "than retrying early."
+                )
+                self._resume_event.set()
+                return False
+            if self._rate_limit_pauses >= MAX_RATE_LIMIT_PAUSES:
+                self.rate_limit_stopped = True
+                self._log(
+                    f"[429] Rate limit repeated {self._rate_limit_pauses} times. "
+                    "Stopping new crawl requests to avoid additional pressure."
+                )
+                self._resume_event.set()
+                return False
+
+            self._rate_limit_pauses += 1
+            self._rate_limit_cooldown_until = now + retry_after
+            self._resume_event.clear()
+            self._log(
+                f"[429] Pausing new crawl requests for {retry_after:.1f}s per Retry-After "
+                f"(cool-down {self._rate_limit_pauses}/{MAX_RATE_LIMIT_PAUSES})."
+            )
+            deadline = loop.time() + retry_after
+            while loop.time() < deadline:
+                if self.should_stop():
+                    self._resume_event.set()
+                    return False
+                await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
+            if self.should_stop():
+                self._resume_event.set()
+                return False
+            self._resume_event.set()
+            self._log("[429] Cool-down complete; resuming queued crawl requests at the configured rate.")
+            return True
 
     def _in_scope(self, url: str) -> bool:
         try:
@@ -160,7 +246,12 @@ class CrawlEngine:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
         queue = asyncio.Queue()
-        if seed_urls is None:
+        self._resume_event = asyncio.Event()
+        self._resume_event.set()
+        self._rate_limit_lock = asyncio.Lock()
+        if self.rate_limit_stopped:
+            seed_items = []
+        elif seed_urls is None:
             seed_items = [(self.start_url, 0)]
         else:
             try:
@@ -192,6 +283,9 @@ class CrawlEngine:
                         if self.should_stop():
                             continue
                         url, depth = item
+                        await self._resume_event.wait()
+                        if self.should_stop() or self.rate_limit_stopped:
+                            continue
                         result, links = await self._crawl_one(session, url, depth)
                         if result is None:
                             continue
@@ -209,7 +303,11 @@ class CrawlEngine:
                                 # UI/reporting callbacks must not prevent discovery from continuing.
                                 self._log(f"[CALLBACK ERROR] {type(exc).__name__}: {exc}")
 
-                        if result.status != 200 or depth >= self.max_depth or self.should_stop():
+                        if result.status == 429:
+                            await self._handle_429(result.headers, url)
+                            continue
+
+                        if result.status != 200 or depth >= self.max_depth or self.should_stop() or self.rate_limit_stopped:
                             continue
                         for link in links:
                             normalized_link = _normalize_http_url(link)
@@ -233,6 +331,8 @@ class CrawlEngine:
             await queue.join()
             await asyncio.gather(*workers, return_exceptions=True)
 
+        if self.rate_limit_stopped:
+            self._log("[Crawl] Stopped early because a safe Retry-After resume was not available.")
         self._log(f"Crawl finished: {len(self.results)} page responses recorded.")
         return self.results
 

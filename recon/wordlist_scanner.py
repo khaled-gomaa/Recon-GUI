@@ -1,5 +1,7 @@
 """Low-rate optional wordlist path checks for authorized targets."""
 import asyncio
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -9,6 +11,8 @@ from crawler.fetcher import build_headers
 DEFAULT_EXTENSIONS = ["", ".html", ".php", ".bak", ".old", ".txt", ".zip"]
 MAX_WORDS = 500
 MAX_RESPONSE_BYTES = 1024 * 1024
+MAX_RETRY_AFTER_SECONDS = 120
+MAX_RATE_LIMIT_PAUSES = 3
 
 
 class WordlistScanner:
@@ -36,7 +40,11 @@ class WordlistScanner:
         self.responses = []
         self.bad_status = {400, 404, 410, 429, 500, 502, 503, 504}
         self.baseline_size = None
-        self._rate_limited = False
+        self._rate_limited = False  # True means safely stopped, not bypassed.
+        self._rate_limit_pauses = 0
+        self._resume_event = None
+        self._rate_limit_lock = None
+        self._rate_limit_cooldown_until = 0.0
 
     def _log(self, message: str):
         """Logging is best-effort and must not terminate a scan worker."""
@@ -58,6 +66,86 @@ class WordlistScanner:
             self.on_result(result)
         except Exception as exc:
             self._log(f"[Wordlist] Result callback failed: {type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _parse_retry_after(value):
+        """Return Retry-After as seconds, or None when the header is absent/invalid."""
+        if not value:
+            return None
+        value = str(value).strip()
+        if value.isdigit():
+            return float(int(value))
+        try:
+            when = parsedate_to_datetime(value)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    async def _handle_429(self, headers, url):
+        """Pause the queue only for a server-specified cool-down; otherwise stop safely."""
+        async with self._rate_limit_lock:
+            if self._rate_limited:
+                return False
+
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            # Several already-in-flight responses can return 429 together. One shared
+            # wait covers that burst, rather than stacking duplicate sleeps.
+            if self._rate_limit_pauses and now <= self._rate_limit_cooldown_until + 2.0:
+                return True
+
+            retry_after = self._parse_retry_after(headers.get("Retry-After"))
+            if retry_after is None:
+                self._rate_limited = True
+                self._log(
+                    f"[429] {url} returned Too Many Requests without a valid Retry-After. "
+                    "Stopping content discovery; the scan will not try to evade the limit."
+                )
+                self._resume_event.set()
+                return False
+
+            if retry_after > MAX_RETRY_AFTER_SECONDS:
+                self._rate_limited = True
+                self._log(
+                    f"[429] Server requested a {retry_after:.0f}s wait, above the "
+                    f"{MAX_RETRY_AFTER_SECONDS}s automatic wait ceiling. Stopping rather "
+                    "than retrying early or bypassing the limit."
+                )
+                self._resume_event.set()
+                return False
+
+            if self._rate_limit_pauses >= MAX_RATE_LIMIT_PAUSES:
+                self._rate_limited = True
+                self._log(
+                    f"[429] Rate limit repeated {self._rate_limit_pauses} times. "
+                    "Stopping content discovery to avoid continuing to pressure the target."
+                )
+                self._resume_event.set()
+                return False
+
+            self._rate_limit_pauses += 1
+            self._rate_limit_cooldown_until = now + retry_after
+            self._resume_event.clear()
+            self._log(
+                f"[429] Pausing new requests for {retry_after:.1f}s as requested by "
+                f"Retry-After (cool-down {self._rate_limit_pauses}/{MAX_RATE_LIMIT_PAUSES})."
+            )
+            deadline = loop.time() + retry_after
+            while loop.time() < deadline:
+                if self.should_stop():
+                    self._resume_event.set()
+                    return False
+                await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
+
+            if self.should_stop():
+                self._resume_event.set()
+                return False
+
+            self._resume_event.set()
+            self._log("[429] Cool-down complete; resuming remaining queued checks at the configured rate.")
+            return True
 
     def _load_wordlist(self):
         if not self.wordlist_path.is_file():
@@ -87,27 +175,35 @@ class WordlistScanner:
         return result
 
     async def _fetch_baseline(self, session):
-        try:
-            async with session.get(
-                urljoin(self.origin, "this-path-should-not-exist-recon-baseline-74c31"),
-                timeout=aiohttp.ClientTimeout(total=self.timeout),
-                allow_redirects=False,
-            ) as resp:
-                if resp.status == 429:
-                    self._rate_limited = True
+        baseline_url = urljoin(self.origin, "this-path-should-not-exist-recon-baseline-74c31")
+        for attempt in range(2):
+            if self.should_stop() or self._rate_limited:
+                return
+            await self._resume_event.wait()
+            try:
+                async with session.get(
+                    baseline_url,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
+                    allow_redirects=False,
+                ) as resp:
+                    if resp.status == 429:
+                        headers = dict(resp.headers)
+                        self._log(f"[Baseline] Received HTTP 429 from {baseline_url}.")
+                        if attempt == 0 and await self._handle_429(headers, baseline_url):
+                            continue
+                        self._rate_limited = True
+                        self._log("[Baseline] Rate limit persisted; stopping content discovery.")
+                        return
+                    data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
+                    self.baseline_size = len(data[:MAX_RESPONSE_BYTES])
                     self._log(
-                        "[Baseline] HTTP 429 received; stopping wordlist checks "
-                        "to avoid continuing into rate limiting."
+                        f"[Baseline] Reference response: HTTP {resp.status}, "
+                        f"{self.baseline_size} bytes"
                     )
                     return
-                data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
-                self.baseline_size = len(data[:MAX_RESPONSE_BYTES])
-                self._log(
-                    f"[Baseline] Reference response: HTTP {resp.status}, "
-                    f"{self.baseline_size} bytes"
-                )
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            self.baseline_size = None
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                self.baseline_size = None
+                return
 
     async def scan(self):
         words = self._load_wordlist()
@@ -116,6 +212,9 @@ class WordlistScanner:
             f"[Wordlist] Checking {len(targets)} candidates "
             f"(concurrency={self.concurrency}, delay={self.delay_ms}ms)."
         )
+        self._resume_event = asyncio.Event()
+        self._resume_event.set()
+        self._rate_limit_lock = asyncio.Lock()
         queue = asyncio.Queue()
         for target in targets:
             queue.put_nowait(target)
@@ -134,9 +233,11 @@ class WordlistScanner:
                     try:
                         if url is None:
                             return
+                        await self._resume_event.wait()
                         if self.should_stop() or self._rate_limited:
                             continue
                         try:
+                            rate_limit_headers = None
                             async with session.get(url, allow_redirects=False) as resp:
                                 data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
                                 body = data[:MAX_RESPONSE_BYTES]
@@ -163,14 +264,13 @@ class WordlistScanner:
                                 self.responses.append(result)
                                 self._notify_result(result)
                                 if resp.status == 429:
-                                    self._rate_limited = True
-                                    self._log(
-                                        f"[Wordlist] HTTP 429 received at {url}; "
-                                        "remaining checks will be skipped."
-                                    )
+                                    rate_limit_headers = dict(resp.headers)
                                 elif result["potential_hit"]:
                                     self.hits.append(result)
                                     self._notify_hit(url, resp.status, size)
+
+                            if rate_limit_headers is not None:
+                                await self._handle_429(rate_limit_headers, url)
                         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                             self._log(f"[Wordlist] Request failed for {url}: {exc}")
                         except Exception as exc:
@@ -193,5 +293,8 @@ class WordlistScanner:
             await queue.join()
             await asyncio.gather(*workers, return_exceptions=True)
 
+        if self._rate_limited:
+            self._log("[Wordlist] Ended early because the target is rate-limiting requests.")
+        self.rate_limit_stopped = self._rate_limited and not self.should_stop()
         self._log(f"[Wordlist] Finished: {len(self.hits)} potential hits.")
         return self.hits
