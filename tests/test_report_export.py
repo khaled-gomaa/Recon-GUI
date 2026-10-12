@@ -24,8 +24,8 @@ def test_txt_report_includes_core_sections_and_hidden_discovery_results():
     assert "[200] https://example.com/" in text
     assert "security@example.com" in text
     assert "https://example.com/admin" in text
-    assert "Content Discovery - All Responses" in text
-    assert "Potential Content Discovery Hits" in text
+    assert "CONTENT DISCOVERY - ALL RESPONSES" in text
+    assert "POTENTIAL CONTENT DISCOVERY HITS" in text
     assert "MISSING  Content-Security-Policy" in text
 
 
