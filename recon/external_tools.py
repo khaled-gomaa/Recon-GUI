@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-TOOL_NAMES = ("subfinder", "gau", "nuclei", "ffuf")
+TOOL_NAMES = ("subfinder", "gau", "nuclei", "ffuf", "nmap")
 MAX_OUTPUT_LINES = 5000
 
 
@@ -28,6 +28,8 @@ def build_command(tool: str, target: str, wordlist_path: str | None = None) -> l
         return ["subfinder", "-d", host, "-silent"]
     if tool == "gau":
         return ["gau", "--subs", host]
+    if tool == "nmap":
+        return ["nmap", "-sT", "-Pn", "-T3", "--top-ports", "50", "--reason", host]
     if tool == "nuclei":
         return [
             "nuclei", "-u", target, "-jsonl", "-silent",
@@ -97,7 +99,11 @@ def run_tool(tool: str, target: str, wordlist_path: str | None = None,
             process.wait()
         if process.stdout:
             process.stdout.close()
-    lines = str(raw_output or "").splitlines()
+    raw_output = str(raw_output or "")
+    if len(raw_output.encode("utf-8", errors="replace")) > 5 * 1024 * 1024:
+        raw_output = raw_output.encode("utf-8", errors="replace")[:5 * 1024 * 1024].decode("utf-8", errors="ignore")
+        output_truncated = True
+    lines = raw_output.splitlines()
     truncated = output_truncated or len(lines) > MAX_OUTPUT_LINES
     if len(lines) > MAX_OUTPUT_LINES:
         lines = lines[:MAX_OUTPUT_LINES]
