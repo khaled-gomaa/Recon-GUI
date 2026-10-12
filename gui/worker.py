@@ -22,6 +22,7 @@ class CrawlWorker(QThread):
     def __init__(
         self, url, max_depth, max_pages, concurrency=10,
         wordlist_path=None, matcher: MatcherFilter = None,
+        render_javascript=False, passive_discovery=False, request_headers=None,
     ):
         super().__init__()
         self.url = url
@@ -30,6 +31,13 @@ class CrawlWorker(QThread):
         self.concurrency = max(1, min(int(concurrency), 20))
         self.wordlist_path = wordlist_path
         self.matcher = matcher or MatcherFilter()
+        self.render_javascript = bool(render_javascript)
+        self.passive_discovery = bool(passive_discovery)
+        self.request_headers = {
+            str(key): str(value) for key, value in (request_headers or {}).items()
+            if str(key).lower() in {"authorization", "cookie", "accept-language"}
+            and "\r" not in str(value) and "\n" not in str(value)
+        }
         self._stop_event = threading.Event()
 
     def stop(self):
@@ -45,7 +53,7 @@ class CrawlWorker(QThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            analyzer = ReconAnalyzer(self.url)
+            analyzer = ReconAnalyzer(self.url, request_headers=self.request_headers, on_log=self.log_message.emit)
             engine = CrawlEngine(
                 start_url=self.url,
                 max_depth=self.max_depth,
@@ -54,6 +62,8 @@ class CrawlWorker(QThread):
                 on_log=lambda msg: self.log_message.emit(msg),
                 on_page_crawled=lambda result: self.page_crawled.emit(result),
                 should_stop=self._stopping,
+                request_headers=self.request_headers,
+                respect_robots=True,
             )
             loop.run_until_complete(engine.crawl())
 
@@ -129,6 +139,9 @@ class CrawlWorker(QThread):
                     on_log=lambda message: self.log_message.emit(message),
                     should_stop=self._stopping,
                     on_result=lambda result: self.discovery_result.emit(result),
+                    request_headers=self.request_headers,
+                    delay_ms=max(200, int(engine.crawl_delay_seconds * 1000)),
+                    concurrency=1 if engine.crawl_delay_seconds > 0 else self.concurrency,
                 )
                 analyzer.wordlist_hits = loop.run_until_complete(scanner.scan())
                 wordlist_results = scanner.responses
