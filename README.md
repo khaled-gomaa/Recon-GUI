@@ -24,13 +24,17 @@ Inspired by SiteOne Crawler + vyre (Rust subdomain prober).
 - Bounded concurrency (default 5, maximum 20 in the crawler GUI)
 - Worker resilience: logging/reporting callback failures do not break page/path discovery
 - Regression tests run with per-test and overall CI deadlines to avoid multi-hour hangs
-- Export to JSON
+- Export complete results as readable TXT or structured JSON
+- Polished desktop UI with grouped scan controls, dedicated Match/Exclude filters, Clear Filters, and local re-filtering
+- HTTP 429 handling respects Retry-After, pauses queued requests, and stops safely if the server provides no usable retry guidance
 
 ## Using the discovery features
 
 - **Hidden link discovery** runs with the normal crawl. It checks anchors, forms, iframe/frame targets, canonical/alternate links, data attributes, meta refreshes, inline JavaScript, HTML comments, and routes extracted from same-host JavaScript bundles. It then follows discovered same-host routes in up to two bounded passes, subject to the configured page/depth limits.
 - **Content Discovery** is an optional active phase. Tick the Content Discovery checkbox before starting. Leave the wordlist field blank to use the bundled `wordlists/common.txt`, or browse to a custom wordlist. The Content Discovery tab shows each HTTP response (including 404s), response size, approximate word count, status color, and a likely-hit/wildcard classification. Scanning is capped and stops scheduling further requests after HTTP 429.
-- **Filters** can be changed before or after a scan. Enter comma-separated exact values (e.g. `200,301`), numeric ranges (e.g. `1000-2000`), and status classes such as `2xx` or `5xx`, then click **Apply Filters**. “Match” fields include only matching results; “Filter” fields exclude matching results. Applying filters does not repeat network requests.
+- **Filters** can be changed before or after a scan. Enter comma-separated exact values (e.g. `200,301`), numeric ranges (e.g. `1000-2000`), and status classes such as `2xx` or `5xx`, then click **Apply filters**. “Match” fields keep matching results; “Filter” fields exclude matching results. **Clear** resets all fields. Applying filters does not repeat network requests.
+- **HTTP 429**: if the server supplies a valid `Retry-After` of at most 120 seconds, queued requests pause for that duration then resume at the configured rate. If the header is missing/invalid, the wait exceeds that bound, or rate limiting repeats too often, the relevant phase stops safely. The app does not try to bypass rate limits. The Stop button remains responsive during cool-downs.
+- **Export**: use **Export TXT** for a readable report containing all pages, currently filtered pages, recon findings, content-discovery responses, potential hits, header audits, and similarity findings; use **Export JSON** for machine-readable data.
 - Use active Content Discovery only for targets you own or are explicitly authorized to test.
 
 ## Quick Start
