@@ -103,6 +103,7 @@ class WordlistScanner:
                     f"[429] {url} returned Too Many Requests without a valid Retry-After. "
                     "Stopping content discovery; the scan will not try to evade the limit."
                 )
+                self._resume_event.set()
                 return False
 
             if retry_after > MAX_RETRY_AFTER_SECONDS:
@@ -112,6 +113,7 @@ class WordlistScanner:
                     f"{MAX_RETRY_AFTER_SECONDS}s automatic wait ceiling. Stopping rather "
                     "than retrying early or bypassing the limit."
                 )
+                self._resume_event.set()
                 return False
 
             if self._rate_limit_pauses >= MAX_RATE_LIMIT_PAUSES:
@@ -120,6 +122,7 @@ class WordlistScanner:
                     f"[429] Rate limit repeated {self._rate_limit_pauses} times. "
                     "Stopping content discovery to avoid continuing to pressure the target."
                 )
+                self._resume_event.set()
                 return False
 
             self._rate_limit_pauses += 1
@@ -129,14 +132,17 @@ class WordlistScanner:
                 f"[429] Pausing new requests for {retry_after:.1f}s as requested by "
                 f"Retry-After (cool-down {self._rate_limit_pauses}/{MAX_RATE_LIMIT_PAUSES})."
             )
-            try:
-                await asyncio.sleep(retry_after)
-            except asyncio.CancelledError:
-                self._rate_limited = True
-                raise
+            deadline = loop.time() + retry_after
+            while loop.time() < deadline:
+                if self.should_stop():
+                    self._rate_limited = True
+                    self._resume_event.set()
+                    return False
+                await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
 
             if self.should_stop():
                 self._rate_limited = True
+                self._resume_event.set()
                 return False
 
             self._resume_event.set()
