@@ -99,9 +99,8 @@ def analyze_html(url: str, html: str) -> dict:
             break
 
     findings, seen = [], set()
-    text_sources = [("html", html or "")]
-    for index, script in enumerate(soup.find_all("script", src=False)):
-        text_sources.append((f"inline-script-{index + 1}", script.string or script.get_text() or ""))
+    # The full HTML already contains inline scripts, so scan it once to avoid duplicate hits.
+    text_sources = [("document", html or "")]
     for source, content in text_sources:
         for label, pattern, severity in _PATTERNS:
             for match in pattern.finditer(content):
