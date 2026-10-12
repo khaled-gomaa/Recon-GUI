@@ -206,12 +206,10 @@ class CrawlEngine:
             deadline = loop.time() + retry_after
             while loop.time() < deadline:
                 if self.should_stop():
-                    self.rate_limit_stopped = True
                     self._resume_event.set()
                     return False
                 await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
             if self.should_stop():
-                self.rate_limit_stopped = True
                 self._resume_event.set()
                 return False
             self._resume_event.set()
