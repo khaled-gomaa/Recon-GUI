@@ -84,7 +84,7 @@ class CrawlWorker(QThread):
             _analyze_new_results()
 
             rendered_pages = 0
-            if self.render_javascript and not self._stopping():
+            if self.render_javascript and not self._stopping() and not engine.rate_limit_stopped:
                 from recon.browser_renderer import render_pages
                 candidates = [
                     item.url for item in engine.results
@@ -133,7 +133,7 @@ class CrawlWorker(QThread):
                     loop.run_until_complete(engine.crawl(seed_urls=sorted(route_seeds), seed_depth=1))
                     _analyze_new_results()
 
-            if not self._stopping():
+            if not self._stopping() and not engine.rate_limit_stopped:
                 self.log_message.emit("[Favicon] Computing favicon hash...")
                 try:
                     async def _hash_favicon():
@@ -148,7 +148,7 @@ class CrawlWorker(QThread):
                 except Exception as exc:
                     self.log_message.emit(f"[Favicon] Error: {exc}")
 
-            if not self._stopping():
+            if not self._stopping() and not engine.rate_limit_stopped:
                 # Two bounded passes let routes found in external JS enter the page table,
                 # while page limits and exact-host scope remain enforced by CrawlEngine.
                 for discovery_round in range(2):
@@ -156,8 +156,8 @@ class CrawlWorker(QThread):
                         f"[JS] Downloading/analyzing same-host JavaScript "
                         f"(route pass {discovery_round + 1}/2)..."
                     )
-                    analyzer.finalize_js(loop, should_stop=self._stopping)
-                    if self._stopping() or not analyzer.js_collector.route_urls:
+                    analyzer.finalize_js(loop, should_stop=self._stopping, delay_seconds=engine.crawl_delay_seconds)
+                    if self._stopping() or analyzer.js_collector.rate_limit_stopped or not analyzer.js_collector.route_urls:
                         break
 
                     before_count = len(engine.results)
@@ -195,7 +195,7 @@ class CrawlWorker(QThread):
 
             wordlist_results = []
             wordlist_rate_limited_stop = False
-            if self.wordlist_path and not self._stopping():
+            if self.wordlist_path and not self._stopping() and not engine.rate_limit_stopped:
                 from recon.wordlist_scanner import WordlistScanner
                 self.log_message.emit(f"[Wordlist] Checking authorized paths: {self.wordlist_path}")
                 scanner = WordlistScanner(
