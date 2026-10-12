@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import threading
+from datetime import datetime, timezone
 
 import aiohttp
 from PySide6.QtCore import QThread, Signal
@@ -50,6 +51,7 @@ class CrawlWorker(QThread):
 
     def run(self):
         loop = None
+        started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -225,6 +227,20 @@ class CrawlWorker(QThread):
                 filtered = all_results
 
             report = analyzer.to_dict()
+            report.update(passive_results)
+            report["started_at"] = started_at
+            report["rendering_enabled"] = self.render_javascript
+            report["rendered_pages"] = rendered_pages
+            report["robots_url"] = engine.robots_url
+            report["crawl_delay_seconds"] = engine.crawl_delay_seconds
+            report["auth_configured"] = bool(self.request_headers)
+            report["auth_types"] = [
+                label for label, key in (
+                    ("Authorization header", "authorization"),
+                    ("Cookie header", "cookie"),
+                    ("Accept-Language", "accept-language"),
+                ) if any(header.lower() == key for header in self.request_headers)
+            ]
             report["target"] = self.url
             report["pages"] = [result.to_dict() for result in all_results]
             report["wordlist_results"] = wordlist_results
@@ -235,6 +251,20 @@ class CrawlWorker(QThread):
             report["matcher_description"] = self.matcher.describe()
             report["matcher_applied"] = not self.matcher.is_empty()
             report["stopped_by_user"] = self._stopping()
+            try:
+                from recon.history_store import HistoryStore
+                report = HistoryStore().save_report(report)
+                self.log_message.emit(
+                    f"[History] Saved scan #{report['scan_id']}: "
+                    f"{report['history_diff']['added_count']} new, "
+                    f"{report['history_diff']['removed_count']} removed, "
+                    f"{report['history_diff']['changed_count']} changed URLs."
+                )
+            except Exception as exc:
+                report["history_error"] = f"{type(exc).__name__}: {exc}"
+                self.log_message.emit(
+                    f"[History] Could not save local history: {type(exc).__name__}: {exc}"
+                )
             self.finished.emit(report)
 
         except Exception as exc:
