@@ -1,4 +1,5 @@
 """Main application window."""
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,8 @@ from gui.status_style import status_colors
 from gui.worker import CrawlWorker
 from recon.matchers import MatcherFilter
 from recon.similarity_detector import SimilarityDetector
-from gui.report_export import render_text_report
+from gui.report_export import render_text_report, render_csv_report
+from recon.history_store import HistoryStore
 
 
 class MainWindow(QMainWindow):
@@ -28,6 +30,7 @@ class MainWindow(QMainWindow):
         self.live_results = []
         self.live_discovery_results = []
         self._build_ui()
+        self._refresh_history_for_target()
 
     def _build_ui(self):
         central = QWidget()
@@ -131,6 +134,61 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.stop_btn)
         grid.addLayout(action_row, 3, 0, 1, 6)
         root.addWidget(settings)
+
+        # Optional capabilities and session settings; credentials remain in memory only.
+        options = QGroupBox("Optional modules & session")
+        options.setObjectName("sectionCard")
+        options_grid = QGridLayout(options)
+        options_grid.setContentsMargins(16, 18, 16, 12)
+        options_grid.setHorizontalSpacing(12)
+        options_grid.setVerticalSpacing(7)
+        self.render_js_check = QCheckBox("Render JavaScript (optional Playwright)")
+        self.render_js_check.setToolTip(
+            "Renders at most 30 pages; install Playwright and Chromium separately. "
+            "Cross-host browser requests are blocked."
+        )
+        self.passive_check = QCheckBox("Passive sources (crt.sh + Wayback)")
+        self.passive_check.setToolTip(
+            "Queries public indexes only; discovered hosts are not actively probed."
+        )
+        options_grid.addWidget(self.render_js_check, 0, 0, 1, 2)
+        options_grid.addWidget(self.passive_check, 0, 2, 1, 2)
+
+        token_label = QLabel("Bearer token")
+        token_label.setObjectName("fieldLabel")
+        self.auth_token_input = QLineEdit()
+        self.auth_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.auth_token_input.setClearButtonEnabled(True)
+        self.auth_token_input.setPlaceholderText("Optional; kept in memory only")
+        self.auth_token_input.setToolTip("Sent only in the Authorization header; never written to reports.")
+        cookie_label = QLabel("Cookies")
+        cookie_label.setObjectName("fieldLabel")
+        self.cookie_input = QLineEdit()
+        self.cookie_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.cookie_input.setClearButtonEnabled(True)
+        self.cookie_input.setPlaceholderText("name=value; other=value")
+        self.cookie_input.setToolTip("Optional Cookie header; never written to reports.")
+        options_grid.addWidget(token_label, 1, 0)
+        options_grid.addWidget(self.auth_token_input, 1, 1)
+        options_grid.addWidget(cookie_label, 1, 2)
+        options_grid.addWidget(self.cookie_input, 1, 3)
+
+        basic_user_label = QLabel("Basic username")
+        basic_user_label.setObjectName("fieldLabel")
+        self.basic_user_input = QLineEdit()
+        self.basic_user_input.setClearButtonEnabled(True)
+        self.basic_user_input.setPlaceholderText("Optional")
+        basic_password_label = QLabel("Basic password")
+        basic_password_label.setObjectName("fieldLabel")
+        self.basic_password_input = QLineEdit()
+        self.basic_password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.basic_password_input.setClearButtonEnabled(True)
+        self.basic_password_input.setPlaceholderText("Optional")
+        options_grid.addWidget(basic_user_label, 2, 0)
+        options_grid.addWidget(self.basic_user_input, 2, 1)
+        options_grid.addWidget(basic_password_label, 2, 2)
+        options_grid.addWidget(self.basic_password_input, 2, 3)
+        root.addWidget(options)
 
         # Filters are grouped by intent so Match/Exclude semantics are obvious.
         filters = QGroupBox("Result filters")
@@ -250,7 +308,17 @@ class MainWindow(QMainWindow):
         self.recon_view.setReadOnly(True)
         self.tabs.addTab(self.recon_view, "Recon findings")
 
-        for table in (self.table, self.discovery_table):
+        self.history_table = QTableWidget(0, 7)
+        self.history_table.setHorizontalHeaderLabels([
+            "Scan #", "Started", "Status", "Pages", "Added", "Removed", "Changed",
+        ])
+        self.history_table.setColumnWidth(0, 70)
+        self.history_table.setColumnWidth(1, 240)
+        self.history_table.setColumnWidth(2, 120)
+        self.tabs.addTab(self.history_table, "Scan History")
+        self.url_input.editingFinished.connect(self._refresh_history_for_target)
+
+        for table in (self.table, self.discovery_table, self.history_table):
             self._style_table(table)
 
         # Export and status footer
@@ -266,8 +334,13 @@ class MainWindow(QMainWindow):
         self.export_btn.setObjectName("secondaryButton")
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._export_json)
+        self.export_csv_btn = QPushButton("Export CSV")
+        self.export_csv_btn.setObjectName("secondaryButton")
+        self.export_csv_btn.setEnabled(False)
+        self.export_csv_btn.clicked.connect(self._export_csv)
         footer.addWidget(self.export_txt_btn)
         footer.addWidget(self.export_btn)
+        footer.addWidget(self.export_csv_btn)
         footer.addStretch(1)
         root.addLayout(footer)
 
@@ -465,6 +538,27 @@ class MainWindow(QMainWindow):
                 return
             wordlist_path = str(wordlist_path)
 
+        auth_token = self.auth_token_input.text().strip()
+        cookie_header = self.cookie_input.text().strip()
+        basic_user = self.basic_user_input.text()
+        basic_password = self.basic_password_input.text()
+        if bool(basic_user) != bool(basic_password):
+            QMessageBox.warning(self, "Incomplete Basic Auth", "Enter both the Basic username and password.")
+            return
+        if auth_token and basic_user:
+            QMessageBox.warning(self, "Conflicting authentication", "Use either a Bearer token or Basic Auth, not both.")
+            return
+        request_headers = {}
+        if auth_token:
+            request_headers["Authorization"] = (
+                auth_token if auth_token.lower().startswith("bearer ") else "Bearer " + auth_token
+            )
+        elif basic_user:
+            encoded = base64.b64encode(f"{basic_user}:{basic_password}".encode("utf-8")).decode("ascii")
+            request_headers["Authorization"] = "Basic " + encoded
+        if cookie_header:
+            request_headers["Cookie"] = cookie_header
+
         self.active_matcher = matcher
         self.live_results = []
         self.live_discovery_results = []
@@ -476,6 +570,7 @@ class MainWindow(QMainWindow):
         self.recon_report = {}
         self.export_btn.setEnabled(False)
         self.export_txt_btn.setEnabled(False)
+        self.export_csv_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.status_label.setText("Crawling...")
@@ -487,6 +582,9 @@ class MainWindow(QMainWindow):
             concurrency=self.conc_spin.value(),
             wordlist_path=wordlist_path,
             matcher=matcher,
+            render_javascript=self.render_js_check.isChecked(),
+            passive_discovery=self.passive_check.isChecked(),
+            request_headers=request_headers,
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
@@ -649,6 +747,8 @@ class MainWindow(QMainWindow):
         self._render_similarity(report.get("similarity", {}))
         self.export_btn.setEnabled(True)
         self.export_txt_btn.setEnabled(True)
+        self.export_csv_btn.setEnabled(True)
+        self._populate_history(report.get("recent_scans", []))
         self._reset_buttons()
 
         sim = report.get("similarity", {})
