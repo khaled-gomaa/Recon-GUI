@@ -21,6 +21,7 @@ class JSCollector:
         self.base_host = (urlparse(base_url).hostname or "").lower()
         self.on_log = on_log or (lambda msg: None)
         self.request_headers = dict(request_headers or {})
+        self.rate_limit_stopped = False
         self.js_urls: set = set()
         self.js_contents: dict = {}
         self.inline_scripts: list = []
@@ -57,9 +58,12 @@ class JSCollector:
                     if candidate.startswith(("http://", "https://")) and self._in_scope(candidate):
                         self.route_urls.add(candidate)
 
-    async def download_and_analyze(self, concurrency: int = 5, should_stop=None):
+    async def download_and_analyze(self, concurrency: int = 5, should_stop=None, delay_seconds: float = 0.0):
         stop = should_stop or (lambda: False)
         concurrency = max(1, min(int(concurrency), 10))
+        delay_seconds = max(0.0, min(float(delay_seconds), 86400.0))
+        if delay_seconds > 0:
+            concurrency = 1
         timeout = aiohttp.ClientTimeout(total=15, connect=8)
         connector = aiohttp.TCPConnector(limit=concurrency, ssl=True)
         async with aiohttp.ClientSession(connector=connector) as session:
@@ -67,6 +71,7 @@ class JSCollector:
                 self.js_urls - self._analyzed_js_urls
                 and len(self._analyzed_js_urls) < MAX_JS_FILES
                 and not stop()
+                and not self.rate_limit_stopped
             ):
                 batch = sorted(self.js_urls - self._analyzed_js_urls)[
                     :min(concurrency, MAX_JS_FILES - len(self._analyzed_js_urls))
@@ -77,6 +82,8 @@ class JSCollector:
                 )
                 # Mark attempts once to avoid repeating failing endpoints on a second pass.
                 self._analyzed_js_urls.update(batch)
+                if delay_seconds > 0 and (self.js_urls - self._analyzed_js_urls) and not stop():
+                    await asyncio.sleep(delay_seconds)
 
         if len(self.js_urls) > MAX_JS_FILES:
             self.on_log(f"[JS] File limit reached ({MAX_JS_FILES}).")
@@ -95,6 +102,10 @@ class JSCollector:
                 url, headers=request_headers, timeout=timeout, allow_redirects=False
             ) as resp:
                 # Do not follow redirects: their destinations may be outside scope.
+                if resp.status == 429:
+                    self.rate_limit_stopped = True
+                    self.on_log(f"[429] JavaScript download was rate-limited at {url}; stopping JS collection safely.")
+                    return
                 if resp.status != 200:
                     return
                 data = await resp.content.read(MAX_JS_BYTES + 1)
