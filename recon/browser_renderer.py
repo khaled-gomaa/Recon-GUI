@@ -11,13 +11,6 @@ NAVIGATION_TIMEOUT_MS = 15000
 async def render_pages(urls, headers=None, should_stop=None, on_log=None,
                        max_pages: int = MAX_RENDER_PAGES, concurrency: int = MAX_RENDER_CONCURRENCY):
     """Render a bounded list of URLs and return their post-JavaScript DOM HTML."""
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError as exc:
-        raise RuntimeError(
-            "Playwright is optional. Install the playwright package and run "
-            "playwright install chromium to enable JavaScript rendering."
-        ) from exc
     stop = should_stop or (lambda: False)
     log = on_log or (lambda _message: None)
     limited_urls = list(dict.fromkeys(
@@ -25,6 +18,13 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None,
     ))[:max(1, min(int(max_pages), MAX_RENDER_PAGES))]
     if not limited_urls:
         return {}
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as exc:
+        raise RuntimeError(
+            "Playwright is optional. Install the playwright package and run "
+            "playwright install chromium to enable JavaScript rendering."
+        ) from exc
     expected_host = (urlparse(limited_urls[0]).hostname or "").lower()
     safe_headers = {
         str(k): str(v) for k, v in (headers or {}).items()
