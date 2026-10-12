@@ -16,10 +16,11 @@ MAX_JS_FILES = 200
 
 
 class JSCollector:
-    def __init__(self, base_url: str, on_log=None):
+    def __init__(self, base_url: str, on_log=None, request_headers=None):
         self.base_url = base_url
         self.base_host = (urlparse(base_url).hostname or "").lower()
         self.on_log = on_log or (lambda msg: None)
+        self.request_headers = dict(request_headers or {})
         self.js_urls: set = set()
         self.js_contents: dict = {}
         self.inline_scripts: list = []
@@ -84,8 +85,14 @@ class JSCollector:
         if stop() or not self._in_scope(url):
             return
         try:
+            request_headers = build_headers()
+            request_headers.update({
+                str(key): str(value) for key, value in self.request_headers.items()
+                if str(key).lower() in {"authorization", "cookie", "accept-language"}
+                and "\r" not in str(value) and "\n" not in str(value)
+            })
             async with session.get(
-                url, headers=build_headers(), timeout=timeout, allow_redirects=False
+                url, headers=request_headers, timeout=timeout, allow_redirects=False
             ) as resp:
                 # Do not follow redirects: their destinations may be outside scope.
                 if resp.status != 200:
