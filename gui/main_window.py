@@ -325,7 +325,7 @@ class MainWindow(QMainWindow):
         tool_layout = QVBoxLayout(tool_page)
         tool_controls = QHBoxLayout()
         self.external_tool_combo = QComboBox()
-        self.external_tool_combo.addItems(["subfinder", "gau", "nuclei", "ffuf"])
+        self.external_tool_combo.addItems(["subfinder", "gau", "nuclei", "ffuf", "nmap"])
         self.check_tools_btn = QPushButton("Check installed tools")
         self.check_tools_btn.clicked.connect(self._check_external_tools)
         self.run_tool_btn = QPushButton("Run selected tool")
@@ -532,10 +532,10 @@ class MainWindow(QMainWindow):
             if not Path(wordlist_path).is_file():
                 QMessageBox.warning(self, "Wordlist not found", f"Cannot find: {wordlist_path}")
                 return
-        if tool in {"nuclei", "ffuf"}:
+        if tool in {"nuclei", "ffuf", "nmap"}:
             answer = QMessageBox.question(
                 self, "Confirm authorization",
-                f"{tool} sends active requests to {target}. Continue only if this target is "
+                f"{tool} sends active requests to {target}. External tools do not share the crawler 429 retry manager. Continue only if this target is "
                 "within your explicit authorization. Continue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
