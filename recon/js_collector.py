@@ -19,6 +19,7 @@ class JSCollector:
     def __init__(self, base_url: str, on_log=None, request_headers=None):
         self.base_url = base_url
         self.base_host = (urlparse(base_url).hostname or "").lower()
+        self.base_origin = self._origin(base_url)
         self.on_log = on_log or (lambda msg: None)
         self.request_headers = dict(request_headers or {})
         self.rate_limit_stopped = False
@@ -29,6 +30,17 @@ class JSCollector:
         self.source_maps: set = set()
         self.route_urls: set = set()
         self._analyzed_js_urls: set = set()
+
+    @staticmethod
+    def _origin(url: str):
+        try:
+            parsed = urlparse(url)
+            scheme = parsed.scheme.lower()
+            host = (parsed.hostname or "").lower().rstrip(".")
+            port = parsed.port or (443 if scheme == "https" else 80 if scheme == "http" else None)
+            return scheme, host, port
+        except (TypeError, ValueError):
+            return None
 
     def _in_scope(self, url: str) -> bool:
         host = urlparse(url).hostname
@@ -93,11 +105,12 @@ class JSCollector:
             return
         try:
             request_headers = build_headers()
-            request_headers.update({
-                str(key): str(value) for key, value in self.request_headers.items()
-                if str(key).lower() in {"authorization", "cookie", "accept-language"}
-                and "\r" not in str(value) and "\n" not in str(value)
-            })
+            if self._origin(url) == self.base_origin:
+                request_headers.update({
+                    str(key): str(value) for key, value in self.request_headers.items()
+                    if str(key).lower() in {"authorization", "cookie", "accept-language"}
+                    and "\r" not in str(value) and "\n" not in str(value)
+                })
             async with session.get(
                 url, headers=request_headers, timeout=timeout, allow_redirects=False
             ) as resp:
