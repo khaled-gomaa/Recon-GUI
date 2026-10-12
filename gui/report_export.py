@@ -1,4 +1,5 @@
-"""Plain-text rendering for exported recon reports."""
+"""Human-readable and spreadsheet-friendly recon report exporters."""
+import json
 
 
 def _section(lines, title):
