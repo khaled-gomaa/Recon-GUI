@@ -282,6 +282,9 @@ class CrawlEngine:
         self.robots_url = parsed._replace(path="/robots.txt", params="", query="", fragment="").geturl()
         try:
             async with session.get(self.robots_url, allow_redirects=False) as response:
+                if response.status == 429:
+                    await self._handle_429(dict(response.headers), self.robots_url)
+                    return
                 if response.status != 200:
                     self._log(f"[robots.txt] HTTP {response.status}; no Crawl-delay directive applied.")
                     return
