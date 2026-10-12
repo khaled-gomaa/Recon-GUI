@@ -45,37 +45,73 @@ def build_command(tool: str, target: str, wordlist_path: str | None = None) -> l
 
 
 def run_tool(tool: str, target: str, wordlist_path: str | None = None,
-             timeout: int = 300) -> dict:
-    """Run one explicit tool invocation without a shell and cap the captured output."""
+             timeout: int = 300, should_stop=None) -> dict:
+    """Run one explicit tool without a shell; poll cancellation and bound runtime/output."""
     executable = shutil.which(tool)
     if not executable:
         raise FileNotFoundError(f"{tool} is not installed or is not on PATH")
     args = build_command(tool, target, wordlist_path)
     args[0] = executable
     limit = max(1, min(int(timeout), 900))
+    stop = should_stop or (lambda: False)
+    process = subprocess.Popen(
+        args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", shell=False,
+    )
+    deadline = __import__("time").monotonic() + limit
+    raw_output, timed_out, stopped = "", False, False
+    output_truncated = False
     try:
-        completed = subprocess.run(
-            args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", timeout=limit, shell=False,
-            check=False,
-        )
-        code = completed.returncode
-        raw_output = completed.stdout or ""
-        timed_out = False
-    except subprocess.TimeoutExpired as exc:
-        code = -1
-        raw_output = exc.stdout or ""
-        if isinstance(raw_output, bytes):
-            raw_output = raw_output.decode("utf-8", errors="replace")
-        raw_output += "\n[runner] Process timed out and was terminated."
-        timed_out = True
-    lines = str(raw_output).splitlines()
-    truncated = len(lines) > MAX_OUTPUT_LINES
-    if truncated:
+        while True:
+            if stop():
+                stopped = True
+                process.terminate()
+                try:
+                    raw_output, _ = process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    raw_output, _ = process.communicate()
+                break
+            remaining = deadline - __import__("time").monotonic()
+            if remaining <= 0:
+                timed_out = True
+                process.kill()
+                raw_output, _ = process.communicate()
+                break
+            try:
+                raw_output, _ = process.communicate(timeout=min(1.0, remaining))
+                break
+            except subprocess.TimeoutExpired as exc:
+                output = exc.output or ""
+                if isinstance(output, bytes):
+                    output = output.decode("utf-8", errors="replace")
+                raw_output = output
+                if len(raw_output) > 5 * 1024 * 1024:
+                    output_truncated = True
+                    process.kill()
+                    raw_output, _ = process.communicate()
+                    break
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        if process.stdout:
+            process.stdout.close()
+    lines = str(raw_output or "").splitlines()
+    truncated = output_truncated or len(lines) > MAX_OUTPUT_LINES
+    if len(lines) > MAX_OUTPUT_LINES:
         lines = lines[:MAX_OUTPUT_LINES]
-        lines.append(f"[runner] Output truncated at {MAX_OUTPUT_LINES} lines.")
+    if timed_out:
+        lines.append("[runner] Process timed out and was terminated.")
+    if stopped:
+        lines.append("[runner] Stopped by user.")
+    if truncated:
+        lines.append(f"[runner] Output capped (maximum {MAX_OUTPUT_LINES} lines / 5 MiB).")
     return {
         "tool": tool, "target": target, "command": args,
-        "return_code": code, "timed_out": timed_out,
+        "return_code": process.returncode if not (timed_out or stopped or truncated) else (
+            -2 if stopped else -1 if timed_out else process.returncode
+        ),
+        "timed_out": timed_out, "stopped": stopped,
         "output_truncated": truncated, "output": lines,
     }
