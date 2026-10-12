@@ -1,6 +1,7 @@
 """Async crawl engine with bounded workers, strict hostname scope, and TLS verification."""
 import asyncio
 import hashlib
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse, urljoin, urldefrag
@@ -117,6 +118,8 @@ class CrawlEngine:
         on_page_crawled=None,
         on_log=None,
         should_stop=None,
+        request_headers=None,
+        respect_robots=True,
     ):
         normalized = _normalize_http_url(start_url)
         if not normalized:
@@ -130,6 +133,13 @@ class CrawlEngine:
         self.on_page_crawled = on_page_crawled
         self.on_log = on_log or (lambda msg: None)
         self.should_stop = should_stop or (lambda: False)
+        self.request_headers = dict(request_headers or {})
+        self.respect_robots = bool(respect_robots)
+        self.crawl_delay_seconds = 0.0
+        self.robots_url = ""
+        self._robots_loaded = False
+        self._request_gate_lock = asyncio.Lock()
+        self._next_request_time = 0.0
         self.visited: set = set()
         self.results: list = []
         self._schedule_lock = asyncio.Lock()
@@ -228,6 +238,78 @@ class CrawlEngine:
         except (UnicodeError, ValueError):
             return False
 
+    @staticmethod
+    def _parse_crawl_delay(robots_text: str) -> float:
+        """Read the applicable non-standard Crawl-delay directive."""
+        groups = []
+        agents, delays, has_directive = [], [], False
+        for raw_line in (robots_text or "").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if not line or ":" not in line:
+                continue
+            key, value = (part.strip() for part in line.split(":", 1))
+            if key.lower() == "user-agent":
+                if agents and has_directive:
+                    groups.append((agents, delays))
+                    agents, delays, has_directive = [], [], False
+                agents.append(value.lower())
+            elif agents:
+                has_directive = True
+                if key.lower() == "crawl-delay":
+                    try:
+                        delay = float(value)
+                        if 0 <= delay <= 86400:
+                            delays.append(delay)
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+        if agents:
+            groups.append((agents, delays))
+        specific, wildcard = [], []
+        for group_agents, group_delays in groups:
+            if not group_delays:
+                continue
+            if any(agent != "*" and agent and "recon-gui" in "recon-gui/3.0" for agent in group_agents):
+                specific.extend(group_delays)
+            elif "*" in group_agents:
+                wildcard.extend(group_delays)
+        candidates = specific or wildcard
+        return max(candidates) if candidates else 0.0
+
+    async def _load_robots(self, session):
+        """Fetch robots.txt once and adopt Crawl-delay when present."""
+        self._robots_loaded = True
+        parsed = urlparse(self.start_url)
+        self.robots_url = parsed._replace(path="/robots.txt", params="", query="", fragment="").geturl()
+        try:
+            async with session.get(self.robots_url, allow_redirects=False) as response:
+                if response.status != 200:
+                    self._log(f"[robots.txt] HTTP {response.status}; no Crawl-delay directive applied.")
+                    return
+                data = await response.content.read(1024 * 1024 + 1)
+                text = data[:1024 * 1024].decode(response.charset or "utf-8", errors="replace")
+                self.crawl_delay_seconds = self._parse_crawl_delay(text)
+                if self.crawl_delay_seconds:
+                    self._log(f"[robots.txt] Respecting Crawl-delay={self.crawl_delay_seconds:g}s.")
+                else:
+                    self._log("[robots.txt] No applicable Crawl-delay directive.")
+        except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError, ValueError) as exc:
+            self._log(f"[robots.txt] Could not read Crawl-delay: {type(exc).__name__}: {exc}")
+
+    async def _request_gate(self) -> bool:
+        """Serialize request start times when robots.txt asks for a delay."""
+        delay = self.crawl_delay_seconds
+        if delay <= 0:
+            return not self.should_stop()
+        async with self._request_gate_lock:
+            loop = asyncio.get_running_loop()
+            while not self.should_stop():
+                wait = self._next_request_time - loop.time()
+                if wait <= 0:
+                    self._next_request_time = loop.time() + delay
+                    return True
+                await asyncio.sleep(min(0.25, wait))
+            return False
+
     def _log(self, message: str):
         """Best-effort logging: a GUI callback must never break crawl workers."""
         try:
@@ -242,9 +324,14 @@ class CrawlEngine:
         # Keep certificate verification enabled. Never disable TLS verification for recon.
         connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=True)
         headers = {
-            "User-Agent": "Recon-GUI/2.1 (+authorized security testing)",
+            "User-Agent": "Recon-GUI/3.0 (+authorized security testing)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
+        headers.update({
+            str(key): str(value) for key, value in self.request_headers.items()
+            if str(key).lower() in {"authorization", "cookie", "accept-language"}
+            and "\r" not in str(value) and "\n" not in str(value)
+        })
         queue = asyncio.Queue()
         self._resume_event = asyncio.Event()
         self._resume_event.set()
@@ -274,6 +361,9 @@ class CrawlEngine:
             connector=connector, timeout=timeout, headers=headers,
             raise_for_status=False,
         ) as session:
+            if self.respect_robots and not self._robots_loaded:
+                await self._load_robots(session)
+
             async def worker():
                 while True:
                     item = await queue.get()
@@ -346,7 +436,7 @@ class CrawlEngine:
 
         try:
             for _ in range(6):
-                if self.should_stop():
+                if self.should_stop() or not await self._request_gate():
                     return None, []
                 async with session.get(current_url, allow_redirects=False) as response:
                     final_status = response.status
