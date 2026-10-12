@@ -11,7 +11,7 @@ def render_text_report(report: dict) -> str:
     lines = [
         "RECON-GUI - RECONNAISSANCE REPORT",
         f"Target: {report.get('target', '(not recorded)')}",
-        f"Status: {'Stopped by user' if report.get('stopped_by_user') else 'Completed'}",
+        f"Status: {'Stopped by user' if report.get('stopped_by_user') else 'Partial (rate limited)' if report.get('crawler_rate_limited_stop') or report.get('wordlist_rate_limited_stop') else 'Completed'}",
         f"Pages crawled: {len(report.get('pages', []))}",
         f"Pages after filters: {len(report.get('filtered_pages', []))}",
         f"Filter: {report.get('matcher_description', '(no filters)')}",
@@ -114,6 +114,71 @@ def render_text_report(report: dict) -> str:
             lines.append("(none)")
         for group in groups:
             lines.append(str(group))
+
+    _section(lines, "HTML Forms (No Submission Performed)")
+    forms = report.get("forms", [])
+    if not forms:
+        lines.append("(none found)")
+    for form in forms:
+        lines.append(
+            f"[{form.get('method', 'GET')}] {form.get('action', '')} | "
+            f"fields={form.get('field_count', 0)} | "
+            f"csrf_field_present={form.get('csrf_field_present', False)} | "
+            f"same_origin={form.get('same_origin_action', False)}"
+        )
+        for field in form.get("fields", []):
+            lines.append(
+                f"    {field.get('name', '')}: {field.get('type', '')}"
+                + (" [required]" if field.get("required") else "")
+            )
+
+    _section(lines, "JSON-LD / Structured Data")
+    for item in report.get("json_ld", []):
+        lines.append(f"{item.get('type', '(unknown type)')} | {item.get('name', '')} | {item.get('page', '')}")
+    if not report.get("json_ld"):
+        lines.append("(none found)")
+
+    _section(lines, "Sensitive Data Candidates (Values Redacted)")
+    findings = report.get("sensitive_findings", [])
+    if not findings:
+        lines.append("(none found)")
+    for item in findings:
+        lines.append(
+            f"[{item.get('severity', 'medium')}] {item.get('type', '')} | "
+            f"{item.get('page', '')} | source={item.get('source', '')} | [REDACTED]"
+        )
+
+    for title, key in (("Passive Subdomains", "passive_subdomains"), ("Historical URLs", "historical_urls")):
+        _section(lines, title)
+        values = report.get(key, [])
+        lines.extend(f"- {value}" for value in values) if values else lines.append("(none found)")
+    _section(lines, "Passive Sources")
+    for item in report.get("passive_sources", []):
+        lines.append(f"{item.get('name')}: {item.get('status')} ({item.get('count', 0)} items)")
+    for item in report.get("passive_errors", []):
+        lines.append(f"Warning: {item}")
+
+    _section(lines, "Scan History Comparison")
+    diff = report.get("history_diff", {})
+    lines.append(f"Current scan: {report.get('scan_id', '(not saved)')}")
+    lines.append(f"Previous scan: {diff.get('previous_scan_id', '(first scan)')}")
+    lines.append(
+        f"Added: {diff.get('added_count', 0)} | Removed: {diff.get('removed_count', 0)} "
+        f"| Changed: {diff.get('changed_count', 0)}"
+    )
+    for key, label in (("added_urls", "NEW"), ("removed_urls", "REMOVED"), ("changed_urls", "CHANGED")):
+        for url in diff.get(key, []):
+            lines.append(f"[{label}] {url}")
+    if report.get("history_error"):
+        lines.append(f"History warning: {report['history_error']}")
+
+    _section(lines, "Optional Module Status")
+    lines.append(f"JavaScript rendering enabled: {report.get('rendering_enabled', False)}")
+    lines.append(f"Rendered pages: {report.get('rendered_pages', 0)}")
+    lines.append(f"robots.txt: {report.get('robots_url', '(not read)')}")
+    lines.append(f"Crawl-delay: {report.get('crawl_delay_seconds', 0)} seconds")
+    lines.append(f"Authentication configured: {report.get('auth_configured', False)}")
+    lines.append(f"Authentication fields: {', '.join(report.get('auth_types', [])) or '(none)'}")
 
     lines.extend(("", "End of report."))
     return "\n".join(lines)
