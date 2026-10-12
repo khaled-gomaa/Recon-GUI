@@ -268,7 +268,7 @@ class CrawlEngine:
         for group_agents, group_delays in groups:
             if not group_delays:
                 continue
-            if any(agent != "*" and agent and "recon-gui" in "recon-gui/3.0" for agent in group_agents):
+            if any(agent in {"recon-gui", "recon-gui/3.0"} for agent in group_agents):
                 specific.extend(group_delays)
             elif "*" in group_agents:
                 wildcard.extend(group_delays)
