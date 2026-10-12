@@ -4,9 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QSpinBox, QPushButton, QTextEdit, QTableWidget,
-    QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
+    QGridLayout, QGroupBox, QLineEdit, QSpinBox, QPushButton, QTextEdit,
+    QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox,
 )
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtCore import Qt
@@ -635,9 +635,8 @@ class MainWindow(QMainWindow):
                         result.content_hash, "--",
                     )
             self._rebuild_content_discovery_table(self.live_discovery_results)
-            self.status_label.setText(
-                f"Filters applied to current results: {self.active_matcher.describe()}"
-            )
+            self.status_label.setText("FILTERS APPLIED")
+            self._append_log(f"[Filters] Applied locally: {self.active_matcher.describe()}")
 
     def _on_finished(self, report: dict):
         self.recon_report = report
@@ -664,18 +663,30 @@ class MainWindow(QMainWindow):
             f" | content discovery {len(path_results)} responses/{len(path_hits)} potential hits"
             if path_results or self.content_discovery_check.isChecked() else ""
         )
-        self.status_label.setText(
-            f"Done -- {total} pages crawled{matcher_note}, "
-            f"favicon={favicon or 'n/a'} | "
-            f"{len(sim.get('exact_duplicates', []))} dup groups, "
-            f"{len(sim.get('soft_404_candidates', []))} soft-404s"
-            f"{discovery_note}."
+        crawler_limited = report.get("crawler_rate_limited_stop", False)
+        discovery_limited = report.get("wordlist_rate_limited_stop", False)
+        if crawler_limited or discovery_limited:
+            self.status_label.setText("PARTIAL  ·  RATE LIMITED")
+        else:
+            self.status_label.setText(f"COMPLETE  ·  {total} pages")
+
+        summary = (
+            f"[Summary] {total} pages crawled; {kept} match current filters; "
+            f"{len(path_results)} content-discovery responses; {len(path_hits)} potential hits; "
+            f"{len(sim.get('exact_duplicates', []))} duplicate groups; "
+            f"{len(sim.get('soft_404_candidates', []))} soft-404 candidates."
         )
+        self._append_log(summary)
+        if crawler_limited or discovery_limited:
+            self._append_log(
+                "[429] Scanning stopped or partially resumed to respect the target's "
+                "rate limit. No rate-limit bypass was attempted."
+            )
 
     def _on_error(self, msg: str):
         self._append_log(f"[FATAL] {msg}")
         self._reset_buttons()
-        self.status_label.setText("Error.")
+        self.status_label.setText("SCAN ERROR")
 
     def _reset_buttons(self):
         self.start_btn.setEnabled(True)
@@ -767,4 +778,5 @@ class MainWindow(QMainWindow):
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self.recon_report, f, indent=2, ensure_ascii=False)
-            self.status_label.setText(f"Exported: {path}")
+            self.status_label.setText("JSON EXPORTED")
+            self._append_log(f"[Export] JSON report saved: {path}")
