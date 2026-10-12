@@ -201,7 +201,7 @@ class CrawlWorker(QThread):
                 scanner = WordlistScanner(
                     base_url=self.url,
                     wordlist_path=self.wordlist_path,
-                    concurrency=self.concurrency,
+                    concurrency=1 if engine.crawl_delay_seconds > 0 else self.concurrency,
                     on_hit=lambda url, status, size: self.log_message.emit(
                         f"[HIT {status}] {url} ({size} bytes)"
                     ),
@@ -210,7 +210,6 @@ class CrawlWorker(QThread):
                     on_result=lambda result: self.discovery_result.emit(result),
                     request_headers=self.request_headers,
                     delay_ms=max(200, int(engine.crawl_delay_seconds * 1000)),
-                    concurrency=1 if engine.crawl_delay_seconds > 0 else self.concurrency,
                 )
                 analyzer.wordlist_hits = loop.run_until_complete(scanner.scan())
                 wordlist_results = scanner.responses
