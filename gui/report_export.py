@@ -117,3 +117,56 @@ def render_text_report(report: dict) -> str:
 
     lines.extend(("", "End of report."))
     return "\n".join(lines)
+
+
+def render_csv_report(report: dict) -> str:
+    """Render a flat spreadsheet-friendly CSV without raw page bodies or credentials."""
+    import csv
+    import io
+
+    report = report or {}
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["record_type", "url", "status", "title", "severity", "details"])
+
+    for page in report.get("pages", []) or []:
+        writer.writerow([
+            "page", page.get("url", ""), page.get("status", ""), page.get("title", ""),
+            "", "words={}; bytes={}; final_url={}; content_type={}; depth={}".format(
+                page.get("word_count", 0), page.get("content_length", 0),
+                page.get("final_url", ""), page.get("content_type", ""), page.get("depth", 0),
+            ),
+        ])
+    for item in report.get("wordlist_results", []) or []:
+        writer.writerow([
+            "content_discovery", item.get("url", ""), item.get("status", ""),
+            "", "potential" if item.get("potential_hit") else "",
+            "bytes={}; words={}; type={}; baseline_match={}".format(
+                item.get("size", 0), item.get("word_count", 0),
+                item.get("content_type", ""), item.get("baseline_match", False),
+            ),
+        ])
+    for kind in (
+        "emails", "subdomains", "endpoints", "discovered_routes", "js_files",
+        "source_maps", "passive_subdomains", "historical_urls",
+    ):
+        for value in report.get(kind, []) or []:
+            writer.writerow(["finding:" + kind, "", "", "", "", value])
+    for kind in ("forms", "json_ld", "sensitive_findings"):
+        for item in report.get(kind, []) or []:
+            details = dict(item)
+            # Defensive redaction if a future module adds raw secret-like keys.
+            for key in list(details):
+                if any(word in key.lower() for word in ("password_value", "secret_value", "token_value", "raw_secret")):
+                    details[key] = "[REDACTED]"
+            writer.writerow([
+                "finding:" + kind, item.get("page", item.get("url", "")), "",
+                item.get("name", item.get("type", "")), item.get("severity", ""),
+                json.dumps(details, ensure_ascii=False, sort_keys=True, default=str),
+            ])
+    for audit in report.get("header_audits", []) or []:
+        writer.writerow([
+            "security_headers", audit.get("url", ""), "", "", "",
+            "missing=" + ", ".join(audit.get("missing", []) or []),
+        ])
+    return output.getvalue()
