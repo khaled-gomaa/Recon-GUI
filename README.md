@@ -44,8 +44,9 @@ Install the tools you need separately using their official installation instruct
 - **GAU** — historical URL discovery.
 - **Nuclei** — template-based security checks, explicitly initiated from the GUI with a conservative rate limit.
 - **ffuf** — wordlist path discovery, explicitly initiated from the GUI with a conservative rate limit and a selected local wordlist.
+- **Nmap** — optional top-50 TCP port scan (`-sT`, `-T3`) on the entered host; the GUI requires confirmation before launching it.
 
-The GUI's External Tools tab can check which tools are installed. Nuclei and ffuf require a confirmation before execution. Their CLI processes have a bounded runtime and output size and can be stopped from the GUI. CLI integrations do not inherit the GUI's session token or cookies; configure them separately only when appropriate for your authorized test.
+The GUI's External Tools tab can check which tools are installed. External CLIs have independent rate-limit handling and do not share the built-in crawler's HTTP 429 Retry-After manager; stop active CLI tools and respect the target's retry guidance if rate limiting is observed. Nuclei and ffuf require a confirmation before execution. Their CLI processes have a bounded runtime and output size and can be stopped from the GUI. CLI integrations do not inherit the GUI's session token or cookies; configure them separately only when appropriate for your authorized test.
 
 ## Authentication and data handling
 
