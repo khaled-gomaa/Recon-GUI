@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -59,8 +60,17 @@ class HistoryStore:
         con.execute("PRAGMA busy_timeout = 10000")
         return con
 
+    @contextmanager
+    def _connection(self):
+        con = self._connect()
+        try:
+            with con:
+                yield con
+        finally:
+            con.close()
+
     def _initialize(self):
-        with self._connect() as con:
+        with self._connection() as con:
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS projects (
                     id INTEGER PRIMARY KEY,
