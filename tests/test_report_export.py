@@ -33,3 +33,14 @@ def test_txt_report_handles_empty_report():
     text = render_text_report({})
     assert "Pages crawled: 0" in text
     assert "(not enabled or no responses)" in text
+
+
+def test_txt_report_includes_rate_limit_outcomes():
+    text = render_text_report({
+        "crawler_rate_limited_stop": True,
+        "wordlist_rate_limited_stop": False,
+    })
+    assert "Crawler rate limit: stopped safely" in text
+    assert "Content Discovery rate limit: not triggered / resumed after Retry-After" in text
+
+
