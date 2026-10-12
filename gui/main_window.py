@@ -464,6 +464,37 @@ class MainWindow(QMainWindow):
             QCheckBox { color: #344863; font-weight: 600; spacing: 6px; }
         """)
 
+    def _refresh_history_for_target(self):
+        """Refresh persistent history for the current URL without starting a network scan."""
+        if not hasattr(self, "history_table"):
+            return
+        target = self.url_input.text().strip()
+        if not target:
+            self.history_table.setRowCount(0)
+            return
+        try:
+            self._populate_history(HistoryStore().recent_scans(target))
+        except (ValueError, OSError) as exc:
+            self.history_table.setRowCount(0)
+        except Exception as exc:
+            self.history_table.setRowCount(0)
+            if hasattr(self, "log_view"):
+                self.log_view.append(f"[History] Unable to read local history: {type(exc).__name__}: {exc}")
+
+    def _populate_history(self, scans):
+        self.history_table.setRowCount(0)
+        for scan in scans or []:
+            row = self.history_table.rowCount()
+            self.history_table.insertRow(row)
+            values = (
+                scan.get("scan_id", ""), scan.get("started_at", scan.get("completed_at", "")),
+                scan.get("status", ""), scan.get("page_count", 0),
+                scan.get("added_count", 0), scan.get("removed_count", 0),
+                scan.get("changed_count", 0),
+            )
+            for column, value in enumerate(values):
+                self.history_table.setItem(row, column, QTableWidgetItem(str(value)))
+
     @staticmethod
     def _style_table(table: QTableWidget):
         table.setAlternatingRowColors(True)
@@ -820,7 +851,64 @@ class MainWindow(QMainWindow):
             lines.append(f"    Present: {list(audit['present'].keys()) or 'None'}")
             lines.append(f"    Missing: {audit['missing'] or 'None'}")
 
-        self.recon_view.setPlainText("\n".join(lines))
+        lines.append("=== HTML FORMS (NO SUBMISSION PERFORMED) ===")
+        for form in report.get("forms", []):
+            csrf_note = "CSRF-like field present" if form.get("csrf_field_present") else "No obvious CSRF field"
+            lines.append(
+                f"  [{form.get('method', 'GET')}] {form.get('action', '')} "
+                f"(fields={form.get('field_count', 0)}, {csrf_note})"
+            )
+            for field in form.get("fields", []):
+                lines.append(
+                    f"    - {field.get('name', '')}: {field.get('type', '')}"
+                    + (" [required]" if field.get("required") else "")
+                )
+        lines.append("")
+        lines.append("=== JSON-LD / STRUCTURED DATA ===")
+        for item in report.get("json_ld", []):
+            lines.append(f"  - {item.get('type', '(unknown type)')} | {item.get('name', '')} | {item.get('page', '')}")
+        lines.append("")
+        lines.append("=== SENSITIVE-DATA CANDIDATES (VALUES REDACTED) ===")
+        for item in report.get("sensitive_findings", []):
+            lines.append(
+                f"  [{item.get('severity', 'medium')}] {item.get('type', '')} "
+                f"on {item.get('page', '')} ({item.get('source', '')}) — [REDACTED]"
+            )
+        lines.append("")
+        for section in ("passive_subdomains", "historical_urls"):
+            lines.append(f"=== {section.upper().replace('_', ' ')} ===")
+            for value in report.get(section, []):
+                lines.append(f"  - {value}")
+            lines.append("")
+        lines.append("=== PASSIVE SOURCE NOTES ===")
+        for item in report.get("passive_sources", []):
+            lines.append(f"  - {item.get('name')}: {item.get('status')} ({item.get('count', 0)} items)")
+        for item in report.get("passive_errors", []):
+            lines.append(f"  - Warning: {item}")
+        lines.append("")
+        diff = report.get("history_diff", {})
+        lines.append("=== SCAN HISTORY COMPARISON ===")
+        lines.append(f"  Current scan: {report.get('scan_id', '(not saved)')}")
+        lines.append(f"  Previous scan: {diff.get('previous_scan_id', '(first scan)')}")
+        lines.append(
+            f"  Added: {diff.get('added_count', 0)} | Removed: {diff.get('removed_count', 0)} "
+            f"| Changed: {diff.get('changed_count', 0)}"
+        )
+        for key, label in (("added_urls", "NEW"), ("removed_urls", "REMOVED"), ("changed_urls", "CHANGED")):
+            for url in diff.get(key, []):
+                lines.append(f"  [{label}] {url}")
+        if report.get("history_error"):
+            lines.append(f"  History warning: {report['history_error']}")
+        lines.append("")
+        lines.append("=== CONFIGURATION ===")
+        lines.append(f"  JavaScript rendering enabled: {report.get('rendering_enabled', False)}")
+        lines.append(f"  Rendered pages: {report.get('rendered_pages', 0)}")
+        lines.append(f"  robots.txt: {report.get('robots_url', '(not read)')}")
+        lines.append(f"  Crawl-delay: {report.get('crawl_delay_seconds', 0)} seconds")
+        lines.append(f"  Authentication configured: {report.get('auth_configured', False)}")
+        lines.append(f"  Authentication fields: {', '.join(report.get('auth_types', [])) or '(none)'}")
+
+        self.recon_view.setPlainText("\\n".join(lines))
 
     def _render_similarity(self, sim: dict):
         lines = []
@@ -872,6 +960,23 @@ class MainWindow(QMainWindow):
             self._append_log(f"[Export] Text report saved: {path}")
         except OSError as exc:
             QMessageBox.critical(self, "Export failed", f"Could not write TXT report:\n{exc}")
+
+    def _export_csv(self):
+        if not self.recon_report:
+            QMessageBox.information(self, "No report", "Run a scan before exporting a report.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Recon CSV", "recon_report.csv", "CSV (*.csv);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as report_file:
+                report_file.write(render_csv_report(self.recon_report))
+            self.status_label.setText("CSV EXPORTED")
+            self._append_log(f"[Export] CSV report saved: {path}")
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Could not write CSV report:\n{exc}")
 
     def _export_json(self):
         path, _ = QFileDialog.getSaveFileName(
