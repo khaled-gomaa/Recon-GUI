@@ -33,3 +33,15 @@ def test_target_validation_and_unknown_tools_are_rejected():
         build_command("nuclei", "javascript:alert(1)")
     with pytest.raises(ValueError):
         build_command("unknown", "https://example.com")
+
+
+def test_nmap_scans_only_a_bounded_top_port_set():
+    command = build_command("nmap", "https://example.com/path")
+    assert command == [
+        "nmap", "-sT", "-Pn", "-T3", "--top-ports", "50", "--reason", "example.com"
+    ]
+
+
+def test_nmap_rejects_non_http_targets():
+    with pytest.raises(ValueError):
+        build_command("nmap", "file:///etc/passwd")
