@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QGridLayout, QGroupBox, QLineEdit, QSpinBox, QPushButton, QTextEdit,
-    QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox,
+    QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox, QComboBox,
 )
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtCore import Qt
@@ -17,6 +17,8 @@ from recon.matchers import MatcherFilter
 from recon.similarity_detector import SimilarityDetector
 from gui.report_export import render_text_report, render_csv_report
 from recon.history_store import HistoryStore
+from recon.external_tools import available_tools
+from gui.tool_worker import ExternalToolWorker
 
 
 class MainWindow(QMainWindow):
@@ -25,6 +27,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Recon Crawler v2 - Desktop Website Reconnaissance")
         self.resize(1300, 800)
         self.worker = None
+        self.tool_worker = None
         self.recon_report = {}
         self.active_matcher = MatcherFilter()
         self.live_results = []
@@ -318,6 +321,41 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.history_table, "Scan History")
         self.url_input.editingFinished.connect(self._refresh_history_for_target)
 
+        tool_page = QWidget()
+        tool_layout = QVBoxLayout(tool_page)
+        tool_controls = QHBoxLayout()
+        self.external_tool_combo = QComboBox()
+        self.external_tool_combo.addItems(["subfinder", "gau", "nuclei", "ffuf"])
+        self.check_tools_btn = QPushButton("Check installed tools")
+        self.check_tools_btn.clicked.connect(self._check_external_tools)
+        self.run_tool_btn = QPushButton("Run selected tool")
+        self.run_tool_btn.setObjectName("primaryButton")
+        self.run_tool_btn.clicked.connect(self._run_external_tool)
+        self.stop_tool_btn = QPushButton("Stop tool")
+        self.stop_tool_btn.setObjectName("dangerButton")
+        self.stop_tool_btn.setEnabled(False)
+        self.stop_tool_btn.clicked.connect(self._stop_external_tool)
+        tool_controls.addWidget(QLabel("Tool"))
+        tool_controls.addWidget(self.external_tool_combo)
+        tool_controls.addWidget(self.check_tools_btn)
+        tool_controls.addWidget(self.run_tool_btn)
+        tool_controls.addWidget(self.stop_tool_btn)
+        tool_layout.addLayout(tool_controls)
+        self.external_tool_status = QLabel(
+            "Optional CLI integrations. Active tools use conservative request rates; "
+            "GUI session cookies/tokens are not passed to CLI tools."
+        )
+        self.external_tool_status.setWordWrap(True)
+        self.external_tool_status.setObjectName("mutedText")
+        tool_layout.addWidget(self.external_tool_status)
+        self.external_tool_output = QTextEdit()
+        self.external_tool_output.setReadOnly(True)
+        self.external_tool_output.setPlaceholderText(
+            "Installed-tool status and output appear here. Tools run only when explicitly selected."
+        )
+        tool_layout.addWidget(self.external_tool_output, 1)
+        self.tabs.addTab(tool_page, "External Tools")
+
         for table in (self.table, self.discovery_table, self.history_table):
             self._style_table(table)
 
@@ -463,6 +501,76 @@ class MainWindow(QMainWindow):
             }
             QCheckBox { color: #344863; font-weight: 600; spacing: 6px; }
         """)
+
+    def _check_external_tools(self):
+        tools = available_tools()
+        lines = ["Optional command-line integrations:"]
+        for name, path in tools.items():
+            lines.append(f"{name}: {path if path else 'not installed / not on PATH'}")
+        self.external_tool_output.setPlainText("\n".join(lines))
+        missing = sum(1 for path in tools.values() if not path)
+        self.external_tool_status.setText(
+            f"{len(tools) - missing}/{len(tools)} tools available. "
+            "Install missing tools separately and ensure they are on PATH."
+        )
+
+    def _run_external_tool(self):
+        if self.tool_worker and self.tool_worker.isRunning():
+            QMessageBox.information(self, "Tool already running", "Stop the current external tool first.")
+            return
+        tool = self.external_tool_combo.currentText()
+        target = self.url_input.text().strip()
+        from urllib.parse import urlparse
+        parsed = urlparse(target)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            QMessageBox.warning(self, "Invalid target", "Enter a valid HTTP(S) target URL first.")
+            return
+        wordlist_path = None
+        if tool == "ffuf":
+            selected = self.wordlist_input.text().strip()
+            wordlist_path = selected or str(self._bundled_wordlist_path())
+            if not Path(wordlist_path).is_file():
+                QMessageBox.warning(self, "Wordlist not found", f"Cannot find: {wordlist_path}")
+                return
+        if tool in {"nuclei", "ffuf"}:
+            answer = QMessageBox.question(
+                self, "Confirm authorization",
+                f"{tool} sends active requests to {target}. Continue only if this target is "
+                "within your explicit authorization. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.external_tool_output.clear()
+        self.external_tool_status.setText(f"Running {tool} with a 5-minute timeout...")
+        self.run_tool_btn.setEnabled(False)
+        self.stop_tool_btn.setEnabled(True)
+        self.tool_worker = ExternalToolWorker(tool, target, wordlist_path)
+        self.tool_worker.completed.connect(self._on_external_tool_finished)
+        self.tool_worker.error.connect(self._on_external_tool_error)
+        self.tool_worker.start()
+
+    def _stop_external_tool(self):
+        if self.tool_worker and self.tool_worker.isRunning():
+            self.tool_worker.stop()
+            self.external_tool_status.setText("Stop requested; terminating tool process.")
+            self.stop_tool_btn.setEnabled(False)
+
+    def _on_external_tool_finished(self, result: dict):
+        self.external_tool_output.setPlainText("\n".join(result.get("output", [])))
+        tool = result.get("tool", "tool")
+        code = result.get("return_code", "?")
+        status = "stopped" if result.get("stopped") else "timed out" if result.get("timed_out") else f"exit code {code}"
+        self.external_tool_status.setText(f"{tool} finished: {status}.")
+        self.run_tool_btn.setEnabled(True)
+        self.stop_tool_btn.setEnabled(False)
+
+    def _on_external_tool_error(self, message: str):
+        self.external_tool_output.setPlainText(message)
+        self.external_tool_status.setText("External tool failed.")
+        self.run_tool_btn.setEnabled(True)
+        self.stop_tool_btn.setEnabled(False)
 
     def _refresh_history_for_target(self):
         """Refresh persistent history for the current URL without starting a network scan."""
