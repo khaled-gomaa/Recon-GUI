@@ -3,6 +3,17 @@ from __future__ import annotations
 import asyncio
 from urllib.parse import urlparse
 
+def _origin(url):
+    try:
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port or (443 if scheme == "https" else 80 if scheme == "http" else None)
+        return scheme, host, port
+    except (TypeError, ValueError):
+        return None
+
+
 MAX_RENDER_PAGES = 30
 MAX_RENDER_CONCURRENCY = 2
 NAVIGATION_TIMEOUT_MS = 15000
@@ -26,6 +37,7 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None,
             "playwright install chromium to enable JavaScript rendering."
         ) from exc
     expected_host = (urlparse(limited_urls[0]).hostname or "").lower()
+    expected_origin = _origin(limited_urls[0])
     safe_headers = {
         str(k): str(v) for k, v in (headers or {}).items()
         if str(k).lower() in {"authorization", "cookie", "accept-language"}
@@ -37,7 +49,7 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None,
         browser = await playwright.chromium.launch(headless=True)
         try:
             async def render_one(url):
-                if stop() or (urlparse(url).hostname or "").lower() != expected_host:
+                if stop() or (urlparse(url).hostname or "").lower() != expected_host or _origin(url) != expected_origin:
                     return
                 async with semaphore:
                     if stop():
@@ -46,7 +58,7 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None,
                     page = await context.new_page()
                     async def scope_guard(route):
                         request_host = (urlparse(route.request.url).hostname or "").lower()
-                        if request_host != expected_host:
+                        if request_host != expected_host or _origin(route.request.url) != expected_origin:
                             await route.abort()
                         else:
                             await route.continue_()
