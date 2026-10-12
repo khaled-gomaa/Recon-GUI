@@ -59,6 +59,15 @@ class ReconAnalyzer:
             self.js_collector.download_and_analyze(should_stop=should_stop)
         )
         self.report.endpoints.update(self.js_collector.endpoints)
+        # Secret-pattern checks also inspect downloaded same-host JS assets, but retain
+        # only redacted candidate metadata, never the matching source value.
+        for js_url, js_content in self.js_collector.js_contents.items():
+            self.report.emails.update(EmailExtractor.extract(js_content))
+            self.report.subdomains.update(self.subdomain_finder.find(js_content))
+            js_analysis = analyze_html(js_url, js_content)
+            for item in js_analysis["sensitive_findings"]:
+                key = (item.get("page"), item.get("type"), item.get("source"), item.get("key_name", ""))
+                self.sensitive_findings[key] = item
 
     def to_dict(self) -> dict:
         return {
