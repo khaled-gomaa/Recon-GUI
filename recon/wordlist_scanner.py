@@ -291,5 +291,6 @@ class WordlistScanner:
 
         if self._rate_limited:
             self._log("[Wordlist] Ended early because the target is rate-limiting requests.")
+        self.rate_limit_stopped = self._rate_limited
         self._log(f"[Wordlist] Finished: {len(self.hits)} potential hits.")
         return self.hits
