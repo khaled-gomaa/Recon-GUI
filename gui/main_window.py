@@ -1016,7 +1016,7 @@ class MainWindow(QMainWindow):
         lines.append(f"  Authentication configured: {report.get('auth_configured', False)}")
         lines.append(f"  Authentication fields: {', '.join(report.get('auth_types', [])) or '(none)'}")
 
-        self.recon_view.setPlainText("\\n".join(lines))
+        self.recon_view.setPlainText("\n".join(lines))
 
     def _render_similarity(self, sim: dict):
         lines = []
