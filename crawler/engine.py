@@ -133,7 +133,11 @@ class CrawlEngine:
         self.on_page_crawled = on_page_crawled
         self.on_log = on_log or (lambda msg: None)
         self.should_stop = should_stop or (lambda: False)
-        self.request_headers = dict(request_headers or {})
+        self.request_headers = {
+            str(key): str(value) for key, value in (request_headers or {}).items()
+            if str(key).lower() in {"authorization", "cookie", "accept-language"}
+            and "\r" not in str(value) and "\n" not in str(value)
+        }
         self.respect_robots = bool(respect_robots)
         self.crawl_delay_seconds = 0.0
         self.robots_url = ""
@@ -226,6 +230,23 @@ class CrawlEngine:
             self._log("[429] Cool-down complete; resuming queued crawl requests at the configured rate.")
             return True
 
+    @staticmethod
+    def _origin(url: str):
+        try:
+            parsed = urlparse(url)
+            scheme = parsed.scheme.lower()
+            host = (parsed.hostname or "").lower().rstrip(".")
+            port = parsed.port or (443 if scheme == "https" else 80 if scheme == "http" else None)
+            return scheme, host, port
+        except (TypeError, ValueError):
+            return None
+
+    def _headers_for_url(self, url: str) -> dict:
+        """Never send session credentials to a different scheme/host/port."""
+        if self._origin(url) == self._origin(self.start_url):
+            return dict(self.request_headers)
+        return {}
+
     def _in_scope(self, url: str) -> bool:
         try:
             host = urlparse(url).hostname
@@ -281,7 +302,7 @@ class CrawlEngine:
         parsed = urlparse(self.start_url)
         self.robots_url = parsed._replace(path="/robots.txt", params="", query="", fragment="").geturl()
         try:
-            async with session.get(self.robots_url, allow_redirects=False) as response:
+            async with session.get(self.robots_url, headers=self._headers_for_url(self.robots_url) or None, allow_redirects=False) as response:
                 if response.status == 429:
                     await self._handle_429(dict(response.headers), self.robots_url)
                     return
@@ -330,11 +351,6 @@ class CrawlEngine:
             "User-Agent": "Recon-GUI/3.0 (+authorized security testing)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
-        headers.update({
-            str(key): str(value) for key, value in self.request_headers.items()
-            if str(key).lower() in {"authorization", "cookie", "accept-language"}
-            and "\r" not in str(value) and "\n" not in str(value)
-        })
         queue = asyncio.Queue()
         self._resume_event = asyncio.Event()
         self._resume_event.set()
@@ -441,7 +457,7 @@ class CrawlEngine:
             for _ in range(6):
                 if self.should_stop() or not await self._request_gate():
                     return None, []
-                async with session.get(current_url, allow_redirects=False) as response:
+                async with session.get(current_url, headers=self._headers_for_url(current_url) or None, allow_redirects=False) as response:
                     final_status = response.status
                     content_type = response.headers.get("Content-Type", "")
                     response_headers = dict(response.headers)
