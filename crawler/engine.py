@@ -203,12 +203,13 @@ class CrawlEngine:
                 f"[429] Pausing new crawl requests for {retry_after:.1f}s per Retry-After "
                 f"(cool-down {self._rate_limit_pauses}/{MAX_RATE_LIMIT_PAUSES})."
             )
-            try:
-                await asyncio.sleep(retry_after)
-            except asyncio.CancelledError:
-                self.rate_limit_stopped = True
-                self._resume_event.set()
-                raise
+            deadline = loop.time() + retry_after
+            while loop.time() < deadline:
+                if self.should_stop():
+                    self.rate_limit_stopped = True
+                    self._resume_event.set()
+                    return False
+                await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
             if self.should_stop():
                 self.rate_limit_stopped = True
                 self._resume_event.set()
