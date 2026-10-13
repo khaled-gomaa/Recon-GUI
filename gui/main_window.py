@@ -176,6 +176,12 @@ class MainWindow(QMainWindow):
         self.passive_check.setToolTip("Queries public indexes only; discovered hosts are not actively probed.")
         options_grid.addWidget(self.render_js_check, 0, 0, 1, 2)
         options_grid.addWidget(self.passive_check, 0, 2, 1, 2)
+        self.crawl_historical_check = QCheckBox("Crawl same-host historical URLs")
+        self.crawl_historical_check.setToolTip(
+            "Active requests to up to 50 historical URLs from public indexes. "
+            "Off by default; normal host scope, page limits, and rate limits still apply."
+        )
+        options_grid.addWidget(self.crawl_historical_check, 3, 0, 1, 4)
 
         token_label = QLabel("Bearer token")
         token_label.setObjectName("fieldLabel")
@@ -288,6 +294,20 @@ class MainWindow(QMainWindow):
         filter_outer.addLayout(filter_grid)
         root.addWidget(filters)
 
+        # A single search field filters visible rows across the result tables.
+        search_row = QHBoxLayout()
+        search_label = QLabel("Search results")
+        search_label.setObjectName("fieldLabel")
+        self.results_search = QLineEdit()
+        self.results_search.setClearButtonEnabled(True)
+        self.results_search.setPlaceholderText("Search URL, endpoint, parameter, status, finding…")
+        self.results_search.setMinimumHeight(29)
+        self.results_search.setMaximumHeight(33)
+        self.results_search.textChanged.connect(self._filter_result_tables)
+        search_row.addWidget(search_label)
+        search_row.addWidget(self.results_search, 1)
+        root.addLayout(search_row)
+
         # Main results
         self.tabs = QTabWidget()
         self.tabs.setObjectName("resultsTabs")
@@ -316,6 +336,41 @@ class MainWindow(QMainWindow):
         page_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         page_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.table, "Pages")
+
+        self.endpoint_table = QTableWidget(0, 5)
+        self.endpoint_table.setHorizontalHeaderLabels([
+            "Endpoint", "Sources", "Parameters", "Pages", "Locations",
+        ])
+        self.endpoint_table.setColumnWidth(1, 180)
+        self.endpoint_table.setColumnWidth(2, 100)
+        self.endpoint_table.setColumnWidth(3, 80)
+        self.endpoint_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.endpoint_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.tabs.addTab(self.endpoint_table, "Endpoints")
+
+        self.parameter_table = QTableWidget(0, 6)
+        self.parameter_table.setHorizontalHeaderLabels([
+            "Parameter", "Classification", "Sources", "Occurrences", "Methods", "Pages",
+        ])
+        self.parameter_table.setColumnWidth(0, 150)
+        self.parameter_table.setColumnWidth(1, 130)
+        self.parameter_table.setColumnWidth(3, 95)
+        self.parameter_table.setColumnWidth(4, 90)
+        self.parameter_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.parameter_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.tabs.addTab(self.parameter_table, "Parameters")
+
+        self.findings_table = QTableWidget(0, 6)
+        self.findings_table.setHorizontalHeaderLabels([
+            "Severity", "Category", "Finding", "Confidence", "Evidence", "Recommendation",
+        ])
+        self.findings_table.setColumnWidth(0, 85)
+        self.findings_table.setColumnWidth(1, 130)
+        self.findings_table.setColumnWidth(2, 260)
+        self.findings_table.setColumnWidth(3, 100)
+        self.findings_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.findings_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.tabs.addTab(self.findings_table, "Findings")
 
         self.discovery_table = QTableWidget(0, 6)
         self.discovery_table.setHorizontalHeaderLabels([
@@ -353,7 +408,7 @@ class MainWindow(QMainWindow):
         tool_layout = QVBoxLayout(tool_page)
         tool_controls = QHBoxLayout()
         self.external_tool_combo = QComboBox()
-        self.external_tool_combo.addItems(["subfinder", "gau", "nuclei", "ffuf", "nmap"])
+        self.external_tool_combo.addItems(["gau", "nuclei", "ffuf"])
         self.check_tools_btn = QPushButton("Check installed tools")
         self.check_tools_btn.clicked.connect(self._check_external_tools)
         self.run_tool_btn = QPushButton("Run selected tool")
@@ -384,7 +439,10 @@ class MainWindow(QMainWindow):
         tool_layout.addWidget(self.external_tool_output, 1)
         self.tabs.addTab(tool_page, "External Tools")
 
-        for table in (self.table, self.discovery_table, self.history_table):
+        for table in (
+            self.table, self.endpoint_table, self.parameter_table, self.findings_table,
+            self.discovery_table, self.history_table,
+        ):
             self._style_table(table)
 
         # Export and status footer
@@ -759,11 +817,18 @@ class MainWindow(QMainWindow):
         self.live_discovery_results = []
         self.log_view.clear()
         self.table.setRowCount(0)
+        self.endpoint_table.setRowCount(0)
+        self.parameter_table.setRowCount(0)
+        self.findings_table.setRowCount(0)
         self.discovery_table.setRowCount(0)
+        self.results_search.clear()
         self.recon_view.clear()
         self.similarity_view.clear()
         self.recon_report = {}
         self.tabs.setTabText(self.tabs.indexOf(self.table), "Pages")
+        self.tabs.setTabText(self.tabs.indexOf(self.endpoint_table), "Endpoints")
+        self.tabs.setTabText(self.tabs.indexOf(self.parameter_table), "Parameters")
+        self.tabs.setTabText(self.tabs.indexOf(self.findings_table), "Findings")
         self.tabs.setTabText(self.tabs.indexOf(self.discovery_table), "Content Discovery")
         self.tabs.setCurrentWidget(self.log_view)
         self.export_btn.setEnabled(False)
@@ -783,6 +848,7 @@ class MainWindow(QMainWindow):
             render_javascript=self.render_js_check.isChecked(),
             passive_discovery=self.passive_check.isChecked(),
             request_headers=request_headers,
+            crawl_historical_urls=self.crawl_historical_check.isChecked(),
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
@@ -941,6 +1007,7 @@ class MainWindow(QMainWindow):
         filtered = report.get("filtered_pages", [])
         self._rebuild_table_from_filtered(filtered, favicon)
         self._rebuild_content_discovery_table(report.get("wordlist_results", []))
+        self._populate_endpoint_parameter_findings(report)
         self._render_recon(report)
         self._render_similarity(report.get("similarity", {}))
         self.export_btn.setEnabled(True)
@@ -949,9 +1016,22 @@ class MainWindow(QMainWindow):
         self._populate_history(report.get("recent_scans", []))
         self.tabs.setTabText(self.tabs.indexOf(self.table), f"Pages ({len(filtered)})")
         self.tabs.setTabText(
+            self.tabs.indexOf(self.endpoint_table),
+            f"Endpoints ({len(report.get('endpoint_inventory', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.parameter_table),
+            f"Parameters ({len(report.get('parameters', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.findings_table),
+            f"Findings ({len(report.get('related_findings', []))})",
+        )
+        self.tabs.setTabText(
             self.tabs.indexOf(self.discovery_table),
             f"Content Discovery ({len(report.get('wordlist_results', []))})",
         )
+        self._filter_result_tables(self.results_search.text())
         self.tabs.setCurrentWidget(self.table)
         self._reset_buttons()
 
