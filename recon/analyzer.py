@@ -26,6 +26,7 @@ class ReconAnalyzer:
         parsed_host = urlparse(base_domain).hostname
         host = (parsed_host or base_domain).lower()
         self.base_host = host
+        self.base_url = base_domain if "://" in base_domain else "https://" + base_domain
         self.subdomain_finder = SubdomainFinder(host)
         self.report = ReconReport()
         self.js_collector = JSCollector(base_domain, on_log=on_log, request_headers=request_headers)
@@ -46,6 +47,14 @@ class ReconAnalyzer:
     def _record_endpoint(self, endpoint: str, source: str, location: str):
         endpoint = str(endpoint or "").strip()
         if not endpoint:
+            return
+        parsed = urlparse(endpoint)
+        if not (parsed.scheme and parsed.netloc):
+            endpoint = urljoin(location or self.base_url, endpoint)
+            parsed = urlparse(endpoint)
+        # External references are not app endpoints. The crawler's in-scope HTML links
+        # and route candidates should all resolve to the target hostname.
+        if parsed.scheme.lower() not in ("http", "https") or (parsed.hostname or "").lower() != self.base_host:
             return
         key = (endpoint, source, location)
         if key in self._observation_keys:
