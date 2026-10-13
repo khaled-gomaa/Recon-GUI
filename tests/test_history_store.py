@@ -43,7 +43,7 @@ def test_scan_history_persists_reports_and_compares_previous_pages(tmp_path):
     assert diff["changed_urls"] == ["https://example.com/change"]
     assert diff["added_count"] == diff["removed_count"] == diff["changed_count"] == 1
     assert diff["added_endpoints"] == ["/api/new"]
-    assert diff["removed_endpoints"] == []
+    assert diff["removed_endpoints"] == ["/api/old"]
     assert diff["added_parameters"] == ["tenant"]
     assert diff["added_endpoint_count"] == 1
     assert diff["added_parameter_count"] == 1
