@@ -113,7 +113,10 @@ class CrawlWorker(QThread):
                 for result in engine.results:
                     if result.url in analyzed_urls:
                         continue
-                    analyzer.analyze_page(result.url, result.html, headers=result.headers)
+                    analyzer.analyze_page(
+                        result.url, result.html, headers=result.headers,
+                        discovered_links=getattr(result, "links", []),
+                    )
                     analyzed_urls.add(result.url)
 
             # Analyze response metadata as well as HTML.
@@ -145,6 +148,7 @@ class CrawlWorker(QThread):
                     if result is None or self._stopping():
                         continue
                     parsed = engine.parser.parse(html, url)
+                    result.links = parsed.get("links", [])
                     result.html = html
                     result.title = parsed.get("title", result.title)
                     result.word_count = len((parsed.get("text") or "").split())
