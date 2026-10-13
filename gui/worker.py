@@ -70,7 +70,25 @@ class CrawlWorker(QThread):
                 request_headers=self.request_headers,
                 respect_robots=True,
             )
-            loop.run_until_complete(engine.crawl())
+            historical_seeds = []
+            if self.crawl_historical_urls and not self._stopping():
+                from urllib.parse import urlparse
+                target_host = (urlparse(self.url).hostname or "").lower()
+                historical_seeds = sorted({
+                    candidate for candidate in passive_results.get("historical_urls", [])
+                    if (urlparse(candidate).hostname or "").lower() == target_host
+                    and urlparse(candidate).scheme.lower() in ("http", "https")
+                })[:min(50, max(0, self.max_pages - 1))]
+                if historical_seeds:
+                    self.log_message.emit(
+                        f"[History] Added {len(historical_seeds)} same-host historical URL candidates "
+                        "to the initial bounded crawl."
+                    )
+                else:
+                    self.log_message.emit("[History] No same-host historical URLs available to crawl.")
+
+            scan_seeds = [self.url, *historical_seeds]
+            loop.run_until_complete(engine.crawl(seed_urls=scan_seeds, seed_depth=0))
 
             analyzed_urls = set()
 
@@ -84,24 +102,6 @@ class CrawlWorker(QThread):
 
             # Analyze response metadata as well as HTML.
             _analyze_new_results()
-
-            if self.crawl_historical_urls and not self._stopping() and not engine.rate_limit_stopped:
-                from urllib.parse import urlparse
-                target_host = (urlparse(self.url).hostname or "").lower()
-                history_seeds = sorted({
-                    url for url in passive_results.get("historical_urls", [])
-                    if (urlparse(url).hostname or "").lower() == target_host
-                    and urlparse(url).scheme.lower() in ("http", "https")
-                })[:min(50, self.max_pages)]
-                if history_seeds:
-                    self.log_message.emit(
-                        f"[History] Crawling {len(history_seeds)} same-host historical URL candidates "
-                        "(explicit option; normal page and scope limits still apply)."
-                    )
-                    loop.run_until_complete(engine.crawl(seed_urls=history_seeds, seed_depth=1))
-                    _analyze_new_results()
-                elif self.passive_discovery:
-                    self.log_message.emit("[History] No same-host historical URL candidates to crawl.")
 
             rendered_pages = 0
             if self.render_javascript and not self._stopping() and not engine.rate_limit_stopped:
@@ -194,8 +194,10 @@ class CrawlWorker(QThread):
 
                 # Analyze any JS assets discovered on the final extra batch without
                 # adding an unbounded third route crawl.
-                if not self._stopping():
-                    analyzer.finalize_js(loop, should_stop=self._stopping)
+                if not self._stopping() and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped:
+                    analyzer.finalize_js(
+                        loop, should_stop=self._stopping, delay_seconds=engine.crawl_delay_seconds
+                    )
 
             passive_results = {
                 "passive_subdomains": [], "historical_urls": [],
