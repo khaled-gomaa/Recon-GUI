@@ -36,6 +36,7 @@ class ReconAnalyzer:
         self.json_ld: dict[tuple, dict] = {}
         self.sensitive_findings: dict[tuple, dict] = {}
         self.page_urls: set[str] = set()
+        self.discovered_links: set[str] = set()
         # Raw endpoint candidates exist only in memory so parameter names can be extracted.
         # Reported endpoint paths remove query strings and their potentially sensitive values.
         self.endpoint_observations: list[dict] = []
@@ -56,9 +57,15 @@ class ReconAnalyzer:
         if safe_endpoint:
             self.report.endpoints.add(safe_endpoint)
 
-    def analyze_page(self, url: str, html: str, headers: dict = None):
+    def analyze_page(self, url: str, html: str, headers: dict = None, discovered_links=None):
         html = html or ""
         self.page_urls.add(url)
+        for link in discovered_links or []:
+            if not isinstance(link, str) or not link.startswith(("http://", "https://")):
+                continue
+            self.discovered_links.add(link)
+            if urlparse(link).query:
+                self._record_endpoint(link, "discovered-link-query", url)
         self.report.emails.update(EmailExtractor.extract(html))
         self.report.subdomains.update(self.subdomain_finder.find(html))
         for endpoint in JSEndpointExtractor.extract(html):
@@ -116,6 +123,7 @@ class ReconAnalyzer:
         parameters = build_parameter_inventory(
             self.page_urls, forms, self.endpoint_observations,
             discovered_routes=self.js_collector.route_urls,
+            candidate_urls=self.discovered_links,
         )
         # Never expose parameter values extracted from endpoint/query strings.
         safe_routes = sorted({_normalize_endpoint(route) for route in self.js_collector.route_urls if _normalize_endpoint(route)})
@@ -127,6 +135,7 @@ class ReconAnalyzer:
             "endpoints": safe_endpoints,
             "endpoint_inventory": endpoint_inventory,
             "endpoint_observations_count": len(self.endpoint_observations),
+            "discovered_link_count": len(self.discovered_links),
             "parameters": parameters,
             "parameter_count": len(parameters),
             "header_audits": [
