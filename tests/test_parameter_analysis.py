@@ -19,8 +19,9 @@ def test_analyzer_exposes_parameter_and_endpoint_inventories_without_query_value
 
     names = {item["name"] for item in report["parameters"]}
     assert {"q", "redirect", "tenant_id", "password", "access_token", "userId"} <= names
-    assert any(item["endpoint"] == "/api/users" for item in report["endpoint_inventory"])
+    assert any(item["endpoint"].endswith("/api/users") for item in report["endpoint_inventory"])
     assert any(item["endpoint"].endswith("/admin/users") for item in report["endpoint_inventory"])
+    assert sum(item["endpoint"].endswith("/api/users") for item in report["endpoint_inventory"]) == 1
     safe_inventory = repr({
         "endpoints": report["endpoints"],
         "endpoint_inventory": report["endpoint_inventory"],
