@@ -397,10 +397,14 @@ class MainWindow(QMainWindow):
         self.history_table.setHorizontalHeaderLabels([
             "Scan #", "Started", "Status", "Pages", "Added", "Removed", "Changed",
         ])
+        self.history_table.setHorizontalHeaderLabels([
+            "Scan #", "Started", "Status", "Pages", "New URLs", "Removed",
+            "Changed", "New endpoints", "New parameters", "New findings",
+        ])
         self.history_table.setColumnWidth(0, 70)
-        self.history_table.setColumnWidth(1, 240)
-        self.history_table.setColumnWidth(2, 120)
-        self.history_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.history_table.setColumnWidth(1, 180)
+        self.history_table.setColumnWidth(2, 105)
+        self.history_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.history_table, "Scan History")
         self.url_input.editingFinished.connect(self._refresh_history_for_target)
 
@@ -603,6 +607,92 @@ class MainWindow(QMainWindow):
             QToolButton#advancedToggle:hover { color: #1e40af; }
         """)
 
+    def _filter_result_tables(self, query: str):
+        """Filter visible rows across data tables without triggering another scan."""
+        needle = (query or "").strip().casefold()
+        tables = [
+            getattr(self, name, None) for name in (
+                "table", "endpoint_table", "parameter_table", "findings_table",
+                "discovery_table", "history_table",
+            )
+        ]
+        for table in (item for item in tables if item is not None):
+            for row in range(table.rowCount()):
+                self._filter_table_row(table, row, needle)
+
+    @staticmethod
+    def _filter_table_row(table: QTableWidget, row: int, needle: str):
+        if not needle:
+            table.setRowHidden(row, False)
+            return
+        values = []
+        for column in range(table.columnCount()):
+            item = table.item(row, column)
+            if item is not None:
+                values.append(item.text())
+        table.setRowHidden(row, needle not in " ".join(values).casefold())
+
+    def _populate_endpoint_parameter_findings(self, report: dict):
+        """Populate structured result tables from the unified scan report."""
+        self.endpoint_table.setRowCount(0)
+        for record in report.get("endpoint_inventory", []) or []:
+            values = (
+                record.get("endpoint", ""),
+                ", ".join(record.get("sources", []) or []),
+                ", ".join(record.get("parameters", []) or []),
+                record.get("location_count", 0),
+                " | ".join(record.get("locations", []) or []),
+            )
+            row = self.endpoint_table.rowCount()
+            self.endpoint_table.insertRow(row)
+            for column, value in enumerate(values):
+                self.endpoint_table.setItem(row, column, QTableWidgetItem(str(value)))
+            self._filter_table_row(self.endpoint_table, row, self.results_search.text().strip().casefold())
+
+        self.parameter_table.setRowCount(0)
+        for record in report.get("parameters", []) or []:
+            values = (
+                record.get("name", ""),
+                record.get("classification", ""),
+                ", ".join(record.get("sources", []) or []),
+                record.get("occurrences", 0),
+                ", ".join(record.get("methods", []) or []),
+                " | ".join(record.get("locations", []) or []),
+            )
+            row = self.parameter_table.rowCount()
+            self.parameter_table.insertRow(row)
+            for column, value in enumerate(values):
+                self.parameter_table.setItem(row, column, QTableWidgetItem(str(value)))
+            self._filter_table_row(self.parameter_table, row, self.results_search.text().strip().casefold())
+
+        self.findings_table.setRowCount(0)
+        severity_colors = {
+            "critical": ("#7f1d1d", "#fee2e2"),
+            "high": ("#991b1b", "#fee2e2"),
+            "medium": ("#92400e", "#fef3c7"),
+            "low": ("#1e40af", "#dbeafe"),
+            "info": ("#334155", "#f1f5f9"),
+        }
+        for finding in report.get("related_findings", []) or []:
+            evidence = " | ".join(str(item) for item in finding.get("evidence", []) or [])
+            values = (
+                finding.get("severity", "info"), finding.get("category", ""),
+                finding.get("title", ""), finding.get("confidence", ""),
+                evidence, finding.get("recommendation", ""),
+            )
+            row = self.findings_table.rowCount()
+            self.findings_table.insertRow(row)
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                self.findings_table.setItem(row, column, item)
+                foreground, background = severity_colors.get(
+                    str(finding.get("severity", "info")).lower(), severity_colors["info"]
+                )
+                if column == 0:
+                    item.setForeground(QBrush(QColor(foreground)))
+                    item.setBackground(QBrush(QColor(background)))
+            self._filter_table_row(self.findings_table, row, self.results_search.text().strip().casefold())
+
     def _set_advanced_visible(self, visible: bool):
         """Show optional renderer/passive/auth fields only when explicitly requested."""
         self.advanced_options_group.setVisible(visible)
@@ -707,7 +797,8 @@ class MainWindow(QMainWindow):
                 scan.get("scan_id", ""), scan.get("started_at", scan.get("completed_at", "")),
                 scan.get("status", ""), scan.get("page_count", 0),
                 scan.get("added_count", 0), scan.get("removed_count", 0),
-                scan.get("changed_count", 0),
+                scan.get("changed_count", 0), scan.get("added_endpoint_count", 0),
+                scan.get("added_parameter_count", 0), scan.get("added_finding_count", 0),
             )
             for column, value in enumerate(values):
                 self.history_table.setItem(row, column, QTableWidgetItem(str(value)))
@@ -893,6 +984,7 @@ class MainWindow(QMainWindow):
         for column, value in enumerate(values):
             self.table.setItem(row, column, QTableWidgetItem(value))
         self._color_row(self.table, row, status)
+        self._filter_table_row(self.table, row, self.results_search.text().strip().casefold())
 
     def _rebuild_table_from_filtered(self, filtered, favicon_hash):
         self.table.setRowCount(0)
@@ -945,6 +1037,9 @@ class MainWindow(QMainWindow):
         for column, value in enumerate(values):
             self.discovery_table.setItem(row, column, QTableWidgetItem(value))
         self._color_row(self.discovery_table, row, result.get("status", 0))
+        self._filter_table_row(
+            self.discovery_table, row, self.results_search.text().strip().casefold()
+        )
 
     def _rebuild_content_discovery_table(self, results):
         self.discovery_table.setRowCount(0)
