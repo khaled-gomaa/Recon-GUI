@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox, QComboBox, QToolButton, QHeaderView,
 )
 from PySide6.QtGui import QColor, QBrush
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from gui.status_style import status_colors
 from gui.worker import CrawlWorker
 from recon.matchers import MatcherFilter
@@ -33,7 +33,12 @@ class MainWindow(QMainWindow):
         self.active_matcher = MatcherFilter()
         self.live_results = []
         self.live_discovery_results = []
+        self._pending_page_results = []
+        self._pending_discovery_results = []
         self._build_ui()
+        self._result_batch_timer = QTimer(self)
+        self._result_batch_timer.setInterval(100)
+        self._result_batch_timer.timeout.connect(self._flush_pending_rows)
         self._refresh_history_for_target()
 
     def _build_ui(self):
@@ -903,6 +908,9 @@ class MainWindow(QMainWindow):
         self.active_matcher = matcher
         self.live_results = []
         self.live_discovery_results = []
+        self._pending_page_results.clear()
+        self._pending_discovery_results.clear()
+        self._result_batch_timer.stop()
         self.log_view.clear()
         self.table.setRowCount(0)
         self.endpoint_table.setRowCount(0)
@@ -955,14 +963,39 @@ class MainWindow(QMainWindow):
         self.log_view.append(msg)
 
     def _on_page_crawled(self, result):
-        # Keep every result so the user can change filters without repeating the scan.
+        # Queue UI work so a fast crawl cannot stall on thousands of individual row insertions.
         self.live_results.append(result)
-        if not self.active_matcher.matches(result):
-            return
-        self._append_page_row(
-            result.url, result.status, result.redirect_chain, result.final_url,
-            result.word_count, result.title, result.content_hash, "--",
-        )
+        self._pending_page_results.append(result)
+        if not self._result_batch_timer.isActive():
+            self._result_batch_timer.start()
+
+    def _flush_pending_rows(self):
+        """Render a bounded batch of pending results while keeping painting responsive."""
+        page_batch = self._pending_page_results[:120]
+        discovery_batch = self._pending_discovery_results[:120]
+        del self._pending_page_results[:len(page_batch)]
+        del self._pending_discovery_results[:len(discovery_batch)]
+        if not self._pending_page_results and not self._pending_discovery_results:
+            self._result_batch_timer.stop()
+        for table in (self.table, self.discovery_table):
+            table.setUpdatesEnabled(False)
+        try:
+            for result in page_batch:
+                if self.active_matcher.matches(result):
+                    self._append_page_row(
+                        result.url, result.status, result.redirect_chain, result.final_url,
+                        result.word_count, result.title, result.content_hash, "--",
+                    )
+            for result in discovery_batch:
+                self._append_content_discovery_row(result)
+        finally:
+            for table in (self.table, self.discovery_table):
+                table.setUpdatesEnabled(True)
+
+    def _clear_pending_result_batches(self):
+        self._result_batch_timer.stop()
+        self._pending_page_results.clear()
+        self._pending_discovery_results.clear()
 
     def _append_page_row(
         self, url, status, redirect_chain, final_url,
@@ -1003,7 +1036,9 @@ class MainWindow(QMainWindow):
 
     def _on_discovery_result(self, result: dict):
         self.live_discovery_results.append(result)
-        self._append_content_discovery_row(result)
+        self._pending_discovery_results.append(result)
+        if not self._result_batch_timer.isActive():
+            self._result_batch_timer.start()
 
     def _append_content_discovery_row(self, result: dict):
         proxy = SimpleNamespace(
@@ -1080,6 +1115,7 @@ class MainWindow(QMainWindow):
             # Filtering is local: no network requests or repeat scan are needed.
             self._on_finished(self.recon_report)
         else:
+            self._clear_pending_result_batches()
             self.table.setRowCount(0)
             for result in self.live_results:
                 if self.active_matcher.matches(result):
@@ -1093,6 +1129,7 @@ class MainWindow(QMainWindow):
             self._append_log(f"[Filters] Applied locally: {self.active_matcher.describe()}")
 
     def _on_finished(self, report: dict):
+        self._clear_pending_result_batches()
         self.recon_report = report
         self._refresh_report_filters()
         favicon = report.get("favicon_hash", "")
@@ -1162,6 +1199,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_error(self, msg: str):
+        self._flush_pending_rows()
         self._append_log(f"[FATAL] {msg}")
         self._reset_buttons()
         self.status_label.setText("SCAN ERROR")
