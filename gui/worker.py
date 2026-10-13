@@ -70,6 +70,22 @@ class CrawlWorker(QThread):
                 request_headers=self.request_headers,
                 respect_robots=True,
             )
+            passive_results = {
+                "passive_subdomains": [], "historical_urls": [],
+                "passive_sources": [], "passive_errors": [],
+            }
+            if self.passive_discovery and not self._stopping():
+                self.log_message.emit(
+                    "[Passive] Querying Certificate Transparency and Wayback (no target probing)."
+                )
+                try:
+                    from recon.passive_sources import collect_passive
+                    passive_results = collect_passive(self.url, on_log=self.log_message.emit)
+                    analyzer.report.subdomains.update(passive_results.get("passive_subdomains", []))
+                except Exception as exc:
+                    self.log_message.emit(f"[Passive] {type(exc).__name__}: {exc}")
+                    passive_results["passive_errors"].append(f"{type(exc).__name__}: {exc}")
+
             historical_seeds = []
             if self.crawl_historical_urls and not self._stopping():
                 from urllib.parse import urlparse
@@ -198,22 +214,6 @@ class CrawlWorker(QThread):
                     analyzer.finalize_js(
                         loop, should_stop=self._stopping, delay_seconds=engine.crawl_delay_seconds
                     )
-
-            passive_results = {
-                "passive_subdomains": [], "historical_urls": [],
-                "passive_sources": [], "passive_errors": [],
-            }
-            if self.passive_discovery and not self._stopping():
-                self.log_message.emit(
-                    "[Passive] Querying Certificate Transparency and Wayback (no target probing)."
-                )
-                try:
-                    from recon.passive_sources import collect_passive
-                    passive_results = collect_passive(self.url, on_log=self.log_message.emit)
-                    analyzer.report.subdomains.update(passive_results.get("passive_subdomains", []))
-                except Exception as exc:
-                    self.log_message.emit(f"[Passive] {type(exc).__name__}: {exc}")
-                    passive_results["passive_errors"].append(f"{type(exc).__name__}: {exc}")
 
             wordlist_results = []
             wordlist_rate_limited_stop = False
