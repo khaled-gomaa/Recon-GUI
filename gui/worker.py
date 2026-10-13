@@ -288,6 +288,8 @@ class CrawlWorker(QThread):
                 )
             except Exception as exc:
                 report["history_error"] = f"{type(exc).__name__}: {exc}"
+                from recon.finding_correlator import correlate_findings
+                report["related_findings"] = correlate_findings(report)
                 self.log_message.emit(
                     f"[History] Could not save local history: {type(exc).__name__}: {exc}"
                 )
