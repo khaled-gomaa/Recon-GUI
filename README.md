@@ -17,7 +17,7 @@ Recon-GUI is a Python desktop application for mapping and documenting web assets
 - Optional in-memory Bearer token, Basic Auth, and Cookie headers for the built-in crawler, JavaScript collection, and Content Discovery.
 - Local SQLite scan history grouped by origin, including newly added, removed, and changed URL comparisons between scans.
 - Filterable results and readable TXT, machine-readable JSON, and spreadsheet-friendly CSV reports.
-- Optional external CLI integrations for Subfinder, GAU, Nuclei, and ffuf. They run only when explicitly selected in the External Tools tab.
+- Optional external CLI integrations for GAU, Nuclei, and ffuf. They run only when explicitly selected in the External Tools tab. Subfinder and Nmap are intentionally excluded from the core crawler workflow: passive hostname discovery is provided by crt.sh, while port scanning is a different scope of activity.
 - Honors a valid Crawl-delay in robots.txt. On HTTP 429, the crawler waits only when the response provides a supported Retry-After; otherwise it stops safely rather than bypassing rate limits.
 
 ## Quick start (Windows)
@@ -40,11 +40,9 @@ The renderer is bounded to 30 pages and two concurrent tabs. Cross-host browser 
 
 Install the tools you need separately using their official installation instructions and make sure their executable is available on PATH.
 
-- **Subfinder** — passive subdomain enumeration.
 - **GAU** — historical URL discovery.
 - **Nuclei** — template-based security checks, explicitly initiated from the GUI with a conservative rate limit.
 - **ffuf** — wordlist path discovery, explicitly initiated from the GUI with a conservative rate limit and a selected local wordlist.
-- **Nmap** — optional top-50 TCP port scan (`-sT`, `-T3`) on the entered host; the GUI requires confirmation before launching it.
 
 The GUI's External Tools tab can check which tools are installed. External CLIs have independent rate-limit handling and do not share the built-in crawler's HTTP 429 Retry-After manager; stop active CLI tools and respect the target's retry guidance if rate limiting is observed. Nuclei and ffuf require a confirmation before execution. Their CLI processes have a bounded runtime and output size and can be stopped from the GUI. CLI integrations do not inherit the GUI's session token or cookies; configure them separately only when appropriate for your authorized test.
 
