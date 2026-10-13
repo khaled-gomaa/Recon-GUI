@@ -186,6 +186,8 @@ class MainWindow(QMainWindow):
             "Active requests to up to 50 historical URLs from public indexes. "
             "Off by default; normal host scope, page limits, and rate limits still apply."
         )
+        self.crawl_historical_check.setEnabled(False)
+        self.passive_check.toggled.connect(self.crawl_historical_check.setEnabled)
         options_grid.addWidget(self.crawl_historical_check, 3, 0, 1, 4)
 
         token_label = QLabel("Bearer token")
