@@ -277,7 +277,14 @@ class HistoryStore:
             # endpoints/parameters can become transparent review leads.
             from recon.finding_correlator import correlate_findings
             report["related_findings"] = correlate_findings(report)
-            if not prior:
+            if prior:
+                current_findings = self._finding_keys(report)
+                previous_findings = self._finding_keys(previous)
+                diff["added_findings"] = sorted(current_findings - previous_findings)
+                diff["removed_findings"] = sorted(previous_findings - current_findings) if complete else []
+                diff["added_finding_count"] = len(diff["added_findings"])
+                diff["removed_finding_count"] = len(diff["removed_findings"])
+            else:
                 diff["added_findings"] = [
                     f"{item.get('category', '')}|{item.get('title', '')}"
                     for item in report["related_findings"]
@@ -285,7 +292,7 @@ class HistoryStore:
                 diff["added_finding_count"] = len(diff["added_findings"])
                 diff["removed_findings"] = []
                 diff["removed_finding_count"] = 0
-                report["history_diff"] = diff
+            report["history_diff"] = diff
             stored_report["history_diff"] = diff
             stored_report["previous_scan_id"] = diff.get("previous_scan_id")
             stored_report["related_findings"] = report["related_findings"]
