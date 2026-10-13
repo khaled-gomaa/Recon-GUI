@@ -25,6 +25,7 @@ class ReconAnalyzer:
     def __init__(self, base_domain: str, request_headers: dict | None = None, on_log=None):
         parsed_host = urlparse(base_domain).hostname
         host = (parsed_host or base_domain).lower()
+        self.base_host = host
         self.subdomain_finder = SubdomainFinder(host)
         self.report = ReconReport()
         self.js_collector = JSCollector(base_domain, on_log=on_log, request_headers=request_headers)
@@ -63,9 +64,15 @@ class ReconAnalyzer:
         for link in discovered_links or []:
             if not isinstance(link, str) or not link.startswith(("http://", "https://")):
                 continue
+            parsed_link = urlparse(link)
+            if (parsed_link.hostname or "").lower() != self.base_host:
+                continue
             self.discovered_links.add(link)
-            if urlparse(link).query:
-                self._record_endpoint(link, "discovered-link-query", url)
+            self._record_endpoint(
+                link,
+                "discovered-link-query" if parsed_link.query else "html-link",
+                url,
+            )
         self.report.emails.update(EmailExtractor.extract(html))
         self.report.subdomains.update(self.subdomain_finder.find(html))
         for endpoint in JSEndpointExtractor.extract(html):
