@@ -26,7 +26,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Recon Crawler v2 - Desktop Website Reconnaissance")
         self.resize(1400, 900)
-        self.setMinimumSize(1050, 680)
+        self.setMinimumSize(1050, 700)
         self.worker = None
         self.tool_worker = None
         self.recon_report = {}
@@ -345,6 +345,7 @@ class MainWindow(QMainWindow):
         self.history_table.setColumnWidth(0, 70)
         self.history_table.setColumnWidth(1, 240)
         self.history_table.setColumnWidth(2, 120)
+        self.history_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.history_table, "Scan History")
         self.url_input.editingFinished.connect(self._refresh_history_for_target)
 
@@ -660,11 +661,16 @@ class MainWindow(QMainWindow):
         table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setWordWrap(False)
+        table.setMinimumHeight(220)
         table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(26)
         table.setShowGrid(False)
         table.setSortingEnabled(False)
-        table.horizontalHeader().setStretchLastSection(True)
-        table.horizontalHeader().setMinimumSectionSize(75)
+        table.horizontalHeader().setStretchLastSection(False)
+        table.horizontalHeader().setMinimumHeight(29)
+        table.horizontalHeader().setMinimumSectionSize(72)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
     def _pick_wordlist(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -757,6 +763,9 @@ class MainWindow(QMainWindow):
         self.recon_view.clear()
         self.similarity_view.clear()
         self.recon_report = {}
+        self.tabs.setTabText(self.tabs.indexOf(self.table), "Pages")
+        self.tabs.setTabText(self.tabs.indexOf(self.discovery_table), "Content Discovery")
+        self.tabs.setCurrentWidget(self.log_view)
         self.export_btn.setEnabled(False)
         self.export_txt_btn.setEnabled(False)
         self.export_csv_btn.setEnabled(False)
@@ -938,6 +947,12 @@ class MainWindow(QMainWindow):
         self.export_txt_btn.setEnabled(True)
         self.export_csv_btn.setEnabled(True)
         self._populate_history(report.get("recent_scans", []))
+        self.tabs.setTabText(self.tabs.indexOf(self.table), f"Pages ({len(filtered)})")
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.discovery_table),
+            f"Content Discovery ({len(report.get('wordlist_results', []))})",
+        )
+        self.tabs.setCurrentWidget(self.table)
         self._reset_buttons()
 
         sim = report.get("similarity", {})
