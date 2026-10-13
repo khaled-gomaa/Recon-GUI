@@ -315,6 +315,16 @@ class HistoryStore:
                 ),
             )
             scan_id = int(cursor.lastrowid)
+            report["scan_id"] = scan_id
+            report["history_database"] = str(self.db_path)
+            report["history_status"] = status
+            stored_report["scan_id"] = scan_id
+            stored_report["history_database"] = str(self.db_path)
+            stored_report["history_status"] = status
+            con.execute(
+                "UPDATE scans SET report_json=? WHERE id=?",
+                (_json(stored_report), scan_id),
+            )
             for page in pages:
                 if not page.get("url"):
                     continue
