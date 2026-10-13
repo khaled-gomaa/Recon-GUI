@@ -1190,6 +1190,9 @@ class MainWindow(QMainWindow):
         summary = (
             f"[Summary] {total} pages crawled; {kept} match current filters; "
             f"{len(path_results)} content-discovery responses; {len(path_hits)} potential hits; "
+            f"{len(report.get('endpoint_inventory', []))} endpoints; "
+            f"{len(report.get('parameters', []))} parameter names; "
+            f"{len(report.get('related_findings', []))} review findings; "
             f"{len(sim.get('exact_duplicates', []))} duplicate groups; "
             f"{len(sim.get('soft_404_candidates', []))} soft-404 candidates."
         )
