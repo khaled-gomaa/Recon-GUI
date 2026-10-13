@@ -26,15 +26,26 @@ def correlate_findings(report: dict) -> list[dict]:
         })
 
     for item in report.get("sensitive_findings", []) or []:
-        add(
-            ("sensitive", item.get("page"), item.get("type"), item.get("source")),
-            f"Potential exposed value pattern: {item.get('type', 'unknown')}",
-            item.get("severity", "medium"), "low-to-medium",
-            [f"Page: {item.get('page', '')}", f"Source: {item.get('source', '')}",
-             "Matched value is intentionally redacted."],
-            "Inspect the referenced file manually, confirm whether the value is real, and revoke it if exposed.",
-            "sensitive-data",
-        )
+        # Keep these candidates explicit in the returned collection; raw matches must
+        # remain redacted even when the report passes through more correlation passes.
+        title = f"Potential exposed value pattern: {item.get('type') or 'unknown'}"
+        evidence = [
+            f"Page: {item.get('page') or ''}",
+            f"Source: {item.get('source') or ''}",
+            "Matched value is intentionally redacted.",
+        ]
+        findings.append({
+            "id": f"R-{len(findings) + 1:04d}",
+            "title": title,
+            "category": "sensitive-data",
+            "severity": item.get("severity") or "medium",
+            "confidence": "low-to-medium",
+            "evidence": evidence,
+            "recommendation": (
+                "Inspect the referenced file manually, confirm whether the value is real, "
+                "and revoke it if exposed."
+            ),
+        })
 
     for form in report.get("forms", []) or []:
         fields = form.get("fields", []) or []
