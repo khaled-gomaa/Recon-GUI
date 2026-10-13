@@ -29,3 +29,15 @@ def test_correlator_uses_evidence_and_does_not_claim_form_fields_prove_a_vulnera
     assert external["evidence"]
     assert external["recommendation"]
     assert "definitely vulnerable" not in repr(findings).lower()
+
+
+def test_first_scan_does_not_label_baseline_entities_as_new():
+    findings = correlate_findings({
+        "parameters": [],
+        "history_diff": {
+            "previous_scan_id": None,
+            "added_endpoints": ["/api/users"],
+            "added_parameters": ["id"],
+        },
+    })
+    assert findings == []
