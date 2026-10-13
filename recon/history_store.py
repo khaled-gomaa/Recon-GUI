@@ -214,7 +214,7 @@ class HistoryStore:
         stored_report = dict(report)
         # This is a local history, not a raw response archive: never persist response bodies.
         stored_report.pop("page_html", None)
-        with self._connect() as con:
+        with self._connection() as con:
             con.execute(
                 "INSERT INTO projects(origin, created_at, updated_at) VALUES(?,?,?) "
                 "ON CONFLICT(origin) DO UPDATE SET updated_at=excluded.updated_at",
@@ -259,12 +259,33 @@ class HistoryStore:
                 diff["removed_findings"] = sorted(previous_findings - current_findings) if complete else []
                 diff["added_finding_count"] = len(diff["added_findings"])
                 diff["removed_finding_count"] = len(diff["removed_findings"])
+            if not prior:
+                endpoint_diff = self._entity_diff(report, {}, "endpoint_inventory", "endpoint", complete)
+                parameter_diff = self._entity_diff(report, {}, "parameters", "name", complete)
+                diff.update({
+                    "added_endpoints": endpoint_diff["added"], "removed_endpoints": [],
+                    "changed_endpoints": [], "added_parameters": parameter_diff["added"],
+                    "removed_parameters": [], "changed_parameters": [],
+                    "added_endpoint_count": len(endpoint_diff["added"]),
+                    "removed_endpoint_count": 0, "changed_endpoint_count": 0,
+                    "added_parameter_count": len(parameter_diff["added"]),
+                    "removed_parameter_count": 0, "changed_parameter_count": 0,
+                })
             report["history_diff"] = diff
             report["previous_scan_id"] = diff.get("previous_scan_id")
             # Correlate after the previous-scan comparison exists, so newly discovered
             # endpoints/parameters can become transparent review leads.
             from recon.finding_correlator import correlate_findings
             report["related_findings"] = correlate_findings(report)
+            if not prior:
+                diff["added_findings"] = [
+                    f"{item.get('category', '')}|{item.get('title', '')}"
+                    for item in report["related_findings"]
+                ]
+                diff["added_finding_count"] = len(diff["added_findings"])
+                diff["removed_findings"] = []
+                diff["removed_finding_count"] = 0
+                report["history_diff"] = diff
             stored_report["history_diff"] = diff
             stored_report["previous_scan_id"] = diff.get("previous_scan_id")
             stored_report["related_findings"] = report["related_findings"]
