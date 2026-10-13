@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QGridLayout, QGroupBox, QLineEdit, QSpinBox, QPushButton, QTextEdit,
-    QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox, QComboBox,
+    QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox, QComboBox, QToolButton, QHeaderView,
 )
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtCore import Qt
@@ -25,7 +25,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Recon Crawler v2 - Desktop Website Reconnaissance")
-        self.resize(1300, 800)
+        self.resize(1400, 900)
+        self.setMinimumSize(1050, 700)
         self.worker = None
         self.tool_worker = None
         self.recon_report = {}
@@ -40,14 +41,14 @@ class MainWindow(QMainWindow):
         central.setObjectName("central")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(18, 16, 18, 14)
-        root.setSpacing(12)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(5)
 
         # Header
         header = QFrame()
         header.setObjectName("hero")
         hero_layout = QHBoxLayout(header)
-        hero_layout.setContentsMargins(18, 14, 18, 14)
+        hero_layout.setContentsMargins(14, 7, 14, 7)
         hero_copy = QVBoxLayout()
         title = QLabel("RECON CRAWLER")
         title.setObjectName("appTitle")
@@ -58,28 +59,44 @@ class MainWindow(QMainWindow):
         hero_layout.addLayout(hero_copy, 1)
         self.status_label = QLabel("READY")
         self.status_label.setObjectName("statusBadge")
-        self.status_label.setMinimumWidth(160)
+        self.status_label.setMinimumWidth(126)
+        self.status_label.setMaximumHeight(36)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hero_layout.addWidget(self.status_label)
+        header.setMaximumHeight(78)
         root.addWidget(header)
 
-        # Target and scan controls
-        settings = QGroupBox("Target & scan setup")
+        # Compact scan bar: keep the target and primary controls visible.
+        settings = QGroupBox("Scan setup")
         settings.setObjectName("sectionCard")
         grid = QGridLayout(settings)
-        grid.setContentsMargins(16, 22, 16, 14)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(10)
+        grid.setContentsMargins(12, 18, 12, 8)
+        grid.setHorizontalSpacing(9)
+        grid.setVerticalSpacing(5)
 
-        target_label = QLabel("Target URL")
+        target_label = QLabel("Target")
         target_label.setObjectName("fieldLabel")
         self.url_input = QLineEdit("https://example.com")
         self.url_input.setClearButtonEnabled(True)
         self.url_input.setPlaceholderText("https://target-you-are-authorized-to-test.example")
+        self.url_input.setMinimumHeight(30)
+        self.url_input.setMaximumHeight(34)
         grid.addWidget(target_label, 0, 0)
         grid.addWidget(self.url_input, 0, 1, 1, 5)
 
-        depth_label = QLabel("Crawl depth")
+        self.start_btn = QPushButton("▶ Start")
+        self.start_btn.setObjectName("primaryButton")
+        self.start_btn.setMinimumHeight(31)
+        self.start_btn.clicked.connect(self._start_crawl)
+        self.stop_btn = QPushButton("■ Stop")
+        self.stop_btn.setObjectName("dangerButton")
+        self.stop_btn.setMinimumHeight(31)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self._stop_crawl)
+        grid.addWidget(self.start_btn, 0, 6)
+        grid.addWidget(self.stop_btn, 0, 7)
+
+        depth_label = QLabel("Depth")
         depth_label.setObjectName("fieldLabel")
         self.depth_spin = QSpinBox()
         self.depth_spin.setRange(1, 5)
@@ -91,12 +108,15 @@ class MainWindow(QMainWindow):
         self.pages_spin.setRange(10, 5000)
         self.pages_spin.setValue(200)
         self.pages_spin.setToolTip("Hard cap on pages fetched by the crawl engine.")
-        concurrency_label = QLabel("Concurrency")
+        concurrency_label = QLabel("Parallel")
         concurrency_label.setObjectName("fieldLabel")
         self.conc_spin = QSpinBox()
         self.conc_spin.setRange(1, 20)
         self.conc_spin.setValue(5)
-        self.conc_spin.setToolTip("Parallel requests; lower this if the server is sensitive to load.")
+        self.conc_spin.setToolTip("Lower this if the server is sensitive to load.")
+        for widget in (self.depth_spin, self.pages_spin, self.conc_spin):
+            widget.setMinimumHeight(29)
+            widget.setMaximumHeight(33)
         grid.addWidget(depth_label, 1, 0)
         grid.addWidget(self.depth_spin, 1, 1)
         grid.addWidget(pages_label, 1, 2)
@@ -104,56 +124,56 @@ class MainWindow(QMainWindow):
         grid.addWidget(concurrency_label, 1, 4)
         grid.addWidget(self.conc_spin, 1, 5)
 
+        self.content_discovery_check = QCheckBox("Content Discovery")
+        self.content_discovery_check.setChecked(False)
+        self.content_discovery_check.setToolTip(
+            "Checks wordlist paths on authorized targets. HTTP 429 invokes a compliant pause or safe stop."
+        )
+        grid.addWidget(self.content_discovery_check, 1, 6, 1, 2)
+
         wordlist_label = QLabel("Wordlist")
         wordlist_label.setObjectName("fieldLabel")
         self.wordlist_input = QLineEdit()
         self.wordlist_input.setClearButtonEnabled(True)
-        self.wordlist_input.setPlaceholderText("Blank uses the bundled common list when Content Discovery is enabled")
+        self.wordlist_input.setPlaceholderText("Optional .txt path; blank uses the bundled list when Content Discovery is enabled")
         self.wordlist_input.setToolTip("Optional path to a custom newline-delimited wordlist.")
         self.wordlist_input.textChanged.connect(self._wordlist_path_changed)
+        self.wordlist_input.setMinimumHeight(29)
+        self.wordlist_input.setMaximumHeight(33)
         browse_btn = QPushButton("Browse…")
+        browse_btn.setMinimumHeight(29)
+        browse_btn.setMaximumHeight(33)
         browse_btn.clicked.connect(self._pick_wordlist)
-        self.content_discovery_check = QCheckBox("Enable Content Discovery")
-        self.content_discovery_check.setChecked(False)
-        self.content_discovery_check.setToolTip(
-            "Actively check paths from a wordlist. Use only for authorized targets. "
-            "HTTP 429 responses trigger a Retry-After cool-down or a safe stop."
-        )
         grid.addWidget(wordlist_label, 2, 0)
-        grid.addWidget(self.wordlist_input, 2, 1, 1, 3)
-        grid.addWidget(browse_btn, 2, 4)
-        grid.addWidget(self.content_discovery_check, 2, 5)
-
-        self.start_btn = QPushButton("▶  Start scan")
-        self.start_btn.setObjectName("primaryButton")
-        self.start_btn.clicked.connect(self._start_crawl)
-        self.stop_btn = QPushButton("■  Stop")
-        self.stop_btn.setObjectName("dangerButton")
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(self._stop_crawl)
-        action_row = QHBoxLayout()
-        action_row.addStretch(1)
-        action_row.addWidget(self.start_btn)
-        action_row.addWidget(self.stop_btn)
-        grid.addLayout(action_row, 3, 0, 1, 6)
+        grid.addWidget(self.wordlist_input, 2, 1, 1, 6)
+        grid.addWidget(browse_btn, 2, 7)
+        for column, stretch in ((1, 2), (3, 1), (5, 1), (6, 1), (7, 0)):
+            grid.setColumnStretch(column, stretch)
         root.addWidget(settings)
 
-        # Optional capabilities and session settings; credentials remain in memory only.
+        # Keep advanced modules hidden until requested so results remain the main workspace.
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setObjectName("advancedToggle")
+        self.advanced_toggle.setText("Advanced options & session  ▸")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setChecked(False)
+        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.advanced_toggle.toggled.connect(self._set_advanced_visible)
+        root.addWidget(self.advanced_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+
         options = QGroupBox("Optional modules & session")
         options.setObjectName("sectionCard")
+        self.advanced_options_group = options
         options_grid = QGridLayout(options)
-        options_grid.setContentsMargins(16, 18, 16, 12)
-        options_grid.setHorizontalSpacing(12)
-        options_grid.setVerticalSpacing(7)
-        self.render_js_check = QCheckBox("Render JavaScript (optional Playwright)")
+        options_grid.setContentsMargins(12, 16, 12, 8)
+        options_grid.setHorizontalSpacing(9)
+        options_grid.setVerticalSpacing(5)
+        self.render_js_check = QCheckBox("Render JavaScript (Playwright)")
         self.render_js_check.setToolTip(
-            "Renders at most 30 pages; install Playwright and Chromium separately. "
-            "Cross-host browser requests are blocked."
+            "Renders at most 30 pages. Install Playwright and Chromium separately; cross-host requests are blocked."
         )
         self.passive_check = QCheckBox("Passive sources (crt.sh + Wayback)")
-        self.passive_check.setToolTip(
-            "Queries public indexes only; discovered hosts are not actively probed."
-        )
+        self.passive_check.setToolTip("Queries public indexes only; discovered hosts are not actively probed.")
         options_grid.addWidget(self.render_js_check, 0, 0, 1, 2)
         options_grid.addWidget(self.passive_check, 0, 2, 1, 2)
 
@@ -162,7 +182,7 @@ class MainWindow(QMainWindow):
         self.auth_token_input = QLineEdit()
         self.auth_token_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.auth_token_input.setClearButtonEnabled(True)
-        self.auth_token_input.setPlaceholderText("Optional; kept in memory only")
+        self.auth_token_input.setPlaceholderText("Optional; memory only")
         self.auth_token_input.setToolTip("Sent only in the Authorization header; never written to reports.")
         cookie_label = QLabel("Cookies")
         cookie_label.setObjectName("fieldLabel")
@@ -171,12 +191,7 @@ class MainWindow(QMainWindow):
         self.cookie_input.setClearButtonEnabled(True)
         self.cookie_input.setPlaceholderText("name=value; other=value")
         self.cookie_input.setToolTip("Optional Cookie header; never written to reports.")
-        options_grid.addWidget(token_label, 1, 0)
-        options_grid.addWidget(self.auth_token_input, 1, 1)
-        options_grid.addWidget(cookie_label, 1, 2)
-        options_grid.addWidget(self.cookie_input, 1, 3)
-
-        basic_user_label = QLabel("Basic username")
+        basic_user_label = QLabel("Basic user")
         basic_user_label.setObjectName("fieldLabel")
         self.basic_user_input = QLineEdit()
         self.basic_user_input.setClearButtonEnabled(True)
@@ -187,97 +202,97 @@ class MainWindow(QMainWindow):
         self.basic_password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.basic_password_input.setClearButtonEnabled(True)
         self.basic_password_input.setPlaceholderText("Optional")
+        for widget in (
+            self.auth_token_input, self.cookie_input, self.basic_user_input,
+            self.basic_password_input,
+        ):
+            widget.setMinimumHeight(29)
+            widget.setMaximumHeight(33)
+        options_grid.addWidget(token_label, 1, 0)
+        options_grid.addWidget(self.auth_token_input, 1, 1)
+        options_grid.addWidget(cookie_label, 1, 2)
+        options_grid.addWidget(self.cookie_input, 1, 3)
         options_grid.addWidget(basic_user_label, 2, 0)
         options_grid.addWidget(self.basic_user_input, 2, 1)
         options_grid.addWidget(basic_password_label, 2, 2)
         options_grid.addWidget(self.basic_password_input, 2, 3)
+        options.setVisible(False)
         root.addWidget(options)
 
-        # Filters are grouped by intent so Match/Exclude semantics are obvious.
+        # Compact filter bar: two rows of matching/exclusion fields instead of nested cards.
         filters = QGroupBox("Result filters")
         filters.setObjectName("sectionCard")
         filter_outer = QVBoxLayout(filters)
-        filter_outer.setContentsMargins(16, 22, 16, 14)
-        filter_outer.setSpacing(8)
+        filter_outer.setContentsMargins(10, 16, 10, 8)
+        filter_outer.setSpacing(4)
         filter_header = QHBoxLayout()
-        filter_help = QLabel(
-            "Keep matching results, or exclude matching results. Values: 200,301  •  "
-            "status classes: 2xx,5xx  •  ranges: 1000-2000. Apply locally without rescanning."
-        )
+        filter_help = QLabel("Keep / exclude values, status classes (2xx) and numeric ranges. Filters apply locally.")
         filter_help.setObjectName("mutedText")
-        filter_help.setWordWrap(True)
         filter_header.addWidget(filter_help, 1)
-        self.apply_filters_btn = QPushButton("Apply filters")
+        self.apply_filters_btn = QPushButton("Apply")
         self.apply_filters_btn.setObjectName("primaryButton")
+        self.apply_filters_btn.setMinimumHeight(29)
+        self.apply_filters_btn.setMaximumHeight(32)
         self.apply_filters_btn.clicked.connect(self._apply_filters_to_current_results)
         self.clear_filters_btn = QPushButton("Clear")
+        self.clear_filters_btn.setMinimumHeight(29)
+        self.clear_filters_btn.setMaximumHeight(32)
         self.clear_filters_btn.clicked.connect(self._clear_filters)
         filter_header.addWidget(self.apply_filters_btn)
         filter_header.addWidget(self.clear_filters_btn)
         filter_outer.addLayout(filter_header)
 
-        filter_columns = QHBoxLayout()
-        filter_columns.setSpacing(12)
-
-        keep_group = QGroupBox("MATCH  ·  Keep results that match")
-        keep_grid = QGridLayout(keep_group)
-        keep_grid.setContentsMargins(12, 18, 12, 10)
-        keep_grid.setHorizontalSpacing(10)
-        keep_grid.setVerticalSpacing(5)
-        exclude_group = QGroupBox("FILTER  ·  Exclude results that match")
-        exclude_grid = QGridLayout(exclude_group)
-        exclude_grid.setContentsMargins(12, 18, 12, 10)
-        exclude_grid.setHorizontalSpacing(10)
-        exclude_grid.setVerticalSpacing(5)
-
+        filter_grid = QGridLayout()
+        filter_grid.setContentsMargins(0, 0, 0, 0)
+        filter_grid.setHorizontalSpacing(8)
+        filter_grid.setVerticalSpacing(4)
+        keep_label = QLabel("KEEP")
+        keep_label.setObjectName("fieldLabel")
+        exclude_label = QLabel("EXCLUDE")
+        exclude_label.setObjectName("fieldLabel")
         self.match_status = QLineEdit()
-        self.match_status.setPlaceholderText("200, 2xx")
+        self.match_status.setPlaceholderText("Status: 200, 2xx")
         self.match_status.setToolTip("Keep response status codes, e.g. 200,301 or 2xx.")
         self.match_words = QLineEdit()
-        self.match_words.setPlaceholderText("100-250")
+        self.match_words.setPlaceholderText("Words: 100-250")
         self.match_words.setToolTip("Keep pages with word counts in these values/ranges.")
         self.match_length = QLineEdit()
-        self.match_length.setPlaceholderText("1000-2000")
+        self.match_length.setPlaceholderText("Size: 1000-2000")
         self.match_length.setToolTip("Keep response sizes (bytes) in these values/ranges.")
         self.filter_status = QLineEdit()
-        self.filter_status.setPlaceholderText("404, 5xx")
-        self.filter_status.setToolTip("Remove matching response status codes.")
+        self.filter_status.setPlaceholderText("Status: 404, 5xx")
+        self.filter_status.setToolTip("Exclude matching response status codes.")
         self.filter_words = QLineEdit()
-        self.filter_words.setPlaceholderText("0-5")
-        self.filter_words.setToolTip("Remove responses with word counts in these values/ranges.")
+        self.filter_words.setPlaceholderText("Words: 0-5")
+        self.filter_words.setToolTip("Exclude responses with word counts in these values/ranges.")
         self.filter_length = QLineEdit()
-        self.filter_length.setPlaceholderText("0-500")
-        self.filter_length.setToolTip("Remove responses with sizes (bytes) in these values/ranges.")
-
-        keep_fields = (
-            ("Status", self.match_status),
-            ("Words", self.match_words),
-            ("Size (bytes)", self.match_length),
-        )
-        exclude_fields = (
-            ("Status", self.filter_status),
-            ("Words", self.filter_words),
-            ("Size (bytes)", self.filter_length),
-        )
-        for column, (label, field) in enumerate(keep_fields):
-            caption = QLabel(label)
-            caption.setObjectName("fieldLabel")
-            keep_grid.addWidget(caption, 0, column)
-            keep_grid.addWidget(field, 1, column)
-        for column, (label, field) in enumerate(exclude_fields):
-            caption = QLabel(label)
-            caption.setObjectName("fieldLabel")
-            exclude_grid.addWidget(caption, 0, column)
-            exclude_grid.addWidget(field, 1, column)
-
-        filter_columns.addWidget(keep_group, 1)
-        filter_columns.addWidget(exclude_group, 1)
-        filter_outer.addLayout(filter_columns)
+        self.filter_length.setPlaceholderText("Size: 0-500")
+        self.filter_length.setToolTip("Exclude responses with sizes (bytes) in these values/ranges.")
+        for widget in (
+            self.match_status, self.match_words, self.match_length,
+            self.filter_status, self.filter_words, self.filter_length,
+        ):
+            widget.setMinimumHeight(29)
+            widget.setMaximumHeight(33)
+        filter_grid.addWidget(keep_label, 0, 0)
+        filter_grid.addWidget(self.match_status, 0, 1)
+        filter_grid.addWidget(self.match_words, 0, 2)
+        filter_grid.addWidget(self.match_length, 0, 3)
+        filter_grid.addWidget(exclude_label, 1, 0)
+        filter_grid.addWidget(self.filter_status, 1, 1)
+        filter_grid.addWidget(self.filter_words, 1, 2)
+        filter_grid.addWidget(self.filter_length, 1, 3)
+        filter_grid.setColumnMinimumWidth(0, 58)
+        for column in (1, 2, 3):
+            filter_grid.setColumnStretch(column, 1)
+        filter_outer.addLayout(filter_grid)
         root.addWidget(filters)
 
         # Main results
         self.tabs = QTabWidget()
         self.tabs.setObjectName("resultsTabs")
+        self.tabs.setDocumentMode(True)
+        self.tabs.setMinimumHeight(260)
         root.addWidget(self.tabs, 1)
 
         self.log_view = QTextEdit()
@@ -290,17 +305,29 @@ class MainWindow(QMainWindow):
             "URL", "Status", "Redirect chain", "Final URL",
             "Words", "Title", "Content hash", "Favicon",
         ])
-        self.table.setColumnWidth(0, 320)
+        self.table.setColumnWidth(1, 74)
         self.table.setColumnWidth(2, 130)
-        self.table.setColumnWidth(3, 220)
+        self.table.setColumnWidth(4, 70)
+        self.table.setColumnWidth(6, 125)
+        self.table.setColumnWidth(7, 110)
+        page_header = self.table.horizontalHeader()
+        page_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        page_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        page_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        page_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.table, "Pages")
 
         self.discovery_table = QTableWidget(0, 6)
         self.discovery_table.setHorizontalHeaderLabels([
             "URL", "Status", "Size", "Words", "Content type", "Classification",
         ])
-        self.discovery_table.setColumnWidth(0, 360)
-        self.discovery_table.setColumnWidth(4, 190)
+        self.discovery_table.setColumnWidth(1, 74)
+        self.discovery_table.setColumnWidth(2, 80)
+        self.discovery_table.setColumnWidth(3, 70)
+        self.discovery_table.setColumnWidth(5, 150)
+        discovery_header = self.discovery_table.horizontalHeader()
+        discovery_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        discovery_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.discovery_table, "Content Discovery")
 
         self.similarity_view = QTextEdit()
@@ -318,6 +345,7 @@ class MainWindow(QMainWindow):
         self.history_table.setColumnWidth(0, 70)
         self.history_table.setColumnWidth(1, 240)
         self.history_table.setColumnWidth(2, 120)
+        self.history_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.history_table, "Scan History")
         self.url_input.editingFinished.connect(self._refresh_history_for_target)
 
@@ -392,11 +420,11 @@ class MainWindow(QMainWindow):
             QFrame#hero {
                 background: #172b4d;
                 border: 1px solid #203b65;
-                border-radius: 12px;
+                border-radius: 10px;
             }
             QLabel#appTitle {
                 color: #ffffff;
-                font-size: 19pt;
+                font-size: 15pt;
                 font-weight: 800;
                 letter-spacing: 1px;
             }
@@ -412,10 +440,10 @@ class MainWindow(QMainWindow):
             QGroupBox#sectionCard {
                 background: #ffffff;
                 border: 1px solid #dbe3ef;
-                border-radius: 10px;
-                margin-top: 10px;
+                border-radius: 8px;
+                margin-top: 7px;
                 font-weight: 700;
-                padding-top: 4px;
+                padding-top: 2px;
             }
             QGroupBox#sectionCard::title {
                 subcontrol-origin: margin;
@@ -425,8 +453,8 @@ class MainWindow(QMainWindow):
             }
             QGroupBox {
                 border: 1px solid #dbe3ef;
-                border-radius: 8px;
-                margin-top: 7px;
+                border-radius: 7px;
+                margin-top: 6px;
                 font-weight: 600;
             }
             QGroupBox::title {
@@ -439,9 +467,15 @@ class MainWindow(QMainWindow):
             QLineEdit, QSpinBox, QTextEdit {
                 background: #ffffff;
                 border: 1px solid #cbd5e1;
-                border-radius: 6px;
-                padding: 7px 9px;
+                border-radius: 5px;
                 selection-background-color: #2563eb;
+            }
+            QLineEdit, QSpinBox {
+                padding: 2px 7px;
+                min-height: 25px;
+            }
+            QTextEdit {
+                padding: 5px;
             }
             QLineEdit:focus, QSpinBox:focus, QTextEdit:focus {
                 border: 1px solid #3b82f6;
@@ -451,7 +485,8 @@ class MainWindow(QMainWindow):
                 color: #24364f;
                 border: 1px solid #cbd5e1;
                 border-radius: 7px;
-                padding: 8px 13px;
+                padding: 4px 10px;
+                min-height: 25px;
                 font-weight: 600;
             }
             QPushButton:hover { background: #edf4ff; border-color: #93b4e8; }
@@ -476,7 +511,7 @@ class MainWindow(QMainWindow):
             QTabBar::tab {
                 background: #e8edf5;
                 color: #53647e;
-                padding: 10px 16px;
+                padding: 6px 12px;
                 margin-right: 3px;
                 border-top-left-radius: 6px;
                 border-top-right-radius: 6px;
@@ -494,13 +529,29 @@ class MainWindow(QMainWindow):
             QHeaderView::section {
                 background: #edf2f8;
                 color: #344863;
-                padding: 8px;
+                padding: 4px 6px;
                 border: none;
                 border-bottom: 1px solid #d7e0ec;
                 font-weight: 700;
             }
-            QCheckBox { color: #344863; font-weight: 600; spacing: 6px; }
+            QCheckBox { color: #344863; font-weight: 600; spacing: 5px; }
+            QToolButton#advancedToggle {
+                color: #1d4ed8;
+                font-weight: 600;
+                padding: 2px 5px;
+                border: none;
+                background: transparent;
+            }
+            QToolButton#advancedToggle:hover { color: #1e40af; }
         """)
+
+    def _set_advanced_visible(self, visible: bool):
+        """Show optional renderer/passive/auth fields only when explicitly requested."""
+        self.advanced_options_group.setVisible(visible)
+        self.advanced_toggle.setText(
+            "Advanced options & session  ▾" if visible
+            else "Advanced options & session  ▸"
+        )
 
     def _check_external_tools(self):
         tools = available_tools()
@@ -610,11 +661,16 @@ class MainWindow(QMainWindow):
         table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setWordWrap(False)
+        table.setMinimumHeight(220)
         table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(26)
         table.setShowGrid(False)
         table.setSortingEnabled(False)
-        table.horizontalHeader().setStretchLastSection(True)
-        table.horizontalHeader().setMinimumSectionSize(75)
+        table.horizontalHeader().setStretchLastSection(False)
+        table.horizontalHeader().setMinimumHeight(29)
+        table.horizontalHeader().setMinimumSectionSize(72)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
     def _pick_wordlist(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -707,6 +763,9 @@ class MainWindow(QMainWindow):
         self.recon_view.clear()
         self.similarity_view.clear()
         self.recon_report = {}
+        self.tabs.setTabText(self.tabs.indexOf(self.table), "Pages")
+        self.tabs.setTabText(self.tabs.indexOf(self.discovery_table), "Content Discovery")
+        self.tabs.setCurrentWidget(self.log_view)
         self.export_btn.setEnabled(False)
         self.export_txt_btn.setEnabled(False)
         self.export_csv_btn.setEnabled(False)
@@ -888,6 +947,12 @@ class MainWindow(QMainWindow):
         self.export_txt_btn.setEnabled(True)
         self.export_csv_btn.setEnabled(True)
         self._populate_history(report.get("recent_scans", []))
+        self.tabs.setTabText(self.tabs.indexOf(self.table), f"Pages ({len(filtered)})")
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.discovery_table),
+            f"Content Discovery ({len(report.get('wordlist_results', []))})",
+        )
+        self.tabs.setCurrentWidget(self.table)
         self._reset_buttons()
 
         sim = report.get("similarity", {})
