@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-TOOL_NAMES = ("subfinder", "gau", "nuclei", "ffuf", "nmap")
+TOOL_NAMES = ("gau", "nuclei", "ffuf")
 MAX_OUTPUT_LINES = 5000
 
 
@@ -24,12 +24,8 @@ def build_command(tool: str, target: str, wordlist_path: str | None = None) -> l
     if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
         raise ValueError("target must be a full HTTP(S) URL")
     host = parsed.hostname.encode("idna").decode("ascii").lower()
-    if tool == "subfinder":
-        return ["subfinder", "-d", host, "-silent"]
     if tool == "gau":
         return ["gau", "--subs", host]
-    if tool == "nmap":
-        return ["nmap", "-sT", "-Pn", "-T3", "--top-ports", "50", "--reason", host]
     if tool == "nuclei":
         return [
             "nuclei", "-u", target, "-jsonl", "-silent",
