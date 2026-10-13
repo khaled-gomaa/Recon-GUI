@@ -17,7 +17,7 @@ def test_correlator_uses_evidence_and_does_not_claim_form_fields_prove_a_vulnera
             "name": "access_token", "classification": "sensitive-name",
             "sources": ["javascript"], "occurrences": 1, "locations": ["/app.js"],
         }],
-        "history_diff": {"added_endpoints": ["/api/new"], "added_parameters": ["tenant"]},
+        "history_diff": {"previous_scan_id": 1, "added_endpoints": ["/api/new"], "added_parameters": ["tenant"]},
     }
     findings = correlate_findings(report)
     titles = [item["title"] for item in findings]
