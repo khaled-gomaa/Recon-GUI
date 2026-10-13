@@ -3,10 +3,7 @@ import pytest
 from recon.external_tools import build_command
 
 
-def test_passive_tool_commands_use_hostnames_not_shell_strings():
-    assert build_command("subfinder", "https://sub.example.com/path") == [
-        "subfinder", "-d", "sub.example.com", "-silent"
-    ]
+def test_historical_url_tool_uses_hostname_not_a_shell_string():
     assert build_command("gau", "https://sub.example.com") == [
         "gau", "--subs", "sub.example.com"
     ]
@@ -35,13 +32,9 @@ def test_target_validation_and_unknown_tools_are_rejected():
         build_command("unknown", "https://example.com")
 
 
-def test_nmap_scans_only_a_bounded_top_port_set():
-    command = build_command("nmap", "https://example.com/path")
-    assert command == [
-        "nmap", "-sT", "-Pn", "-T3", "--top-ports", "50", "--reason", "example.com"
-    ]
 
-
-def test_nmap_rejects_non_http_targets():
+def test_subfinder_and_nmap_are_not_in_the_crawler_toolchain():
     with pytest.raises(ValueError):
-        build_command("nmap", "file:///etc/passwd")
+        build_command("subfinder", "https://example.com")
+    with pytest.raises(ValueError):
+        build_command("nmap", "https://example.com")

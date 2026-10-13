@@ -62,6 +62,43 @@ def render_text_report(report: dict) -> str:
         values = report.get(key, [])
         lines.extend(f"- {value}" for value in values) if values else lines.append("(none found)")
 
+    _section(lines, "Endpoint Inventory")
+    endpoint_inventory = report.get("endpoint_inventory", [])
+    if not endpoint_inventory:
+        lines.append("(none found)")
+    for item in endpoint_inventory:
+        lines.append(
+            f"{item.get('endpoint', '')} | sources={', '.join(item.get('sources', []))} | "
+            f"parameters={', '.join(item.get('parameters', []))} | "
+            f"locations={item.get('location_count', 0)}"
+        )
+
+    _section(lines, "Parameter Inventory (Names Only; Values Omitted)")
+    parameters = report.get("parameters", [])
+    if not parameters:
+        lines.append("(none found)")
+    for item in parameters:
+        lines.append(
+            f"{item.get('name', '')} | class={item.get('classification', '')} | "
+            f"sources={', '.join(item.get('sources', []))} | occurrences={item.get('occurrences', 0)} | "
+            f"methods={', '.join(item.get('methods', []))}"
+        )
+        for location in item.get("locations", [])[:5]:
+            lines.append(f"    Location: {location}")
+
+    _section(lines, "Correlated Review Findings")
+    related_findings = report.get("related_findings", [])
+    if not related_findings:
+        lines.append("(none generated)")
+    for item in related_findings:
+        lines.append(
+            f"[{item.get('severity', 'info')}] {item.get('title', '')} | "
+            f"confidence={item.get('confidence', '')} | category={item.get('category', '')}"
+        )
+        for evidence in item.get("evidence", []) or []:
+            lines.append(f"    Evidence: {evidence}")
+        lines.append(f"    Recommendation: {item.get('recommendation', '')}")
+
     _section(lines, "Content Discovery - All Responses")
     results = report.get("wordlist_results", [])
     if not results:
@@ -170,12 +207,35 @@ def render_text_report(report: dict) -> str:
     for key, label in (("added_urls", "NEW"), ("removed_urls", "REMOVED"), ("changed_urls", "CHANGED")):
         for url in diff.get(key, []):
             lines.append(f"[{label}] {url}")
+    _section(lines, "Endpoint and Parameter Changes")
+    lines.append(f"Comparison status: {diff.get('comparison_status', '(no previous scan)')}")
+    lines.append(f"New endpoints: {diff.get('added_endpoint_count', len(diff.get('added_endpoints', [])))}")
+    for endpoint in diff.get("added_endpoints", []):
+        lines.append(f"[NEW ENDPOINT] {endpoint}")
+    lines.append(f"Removed endpoints: {diff.get('removed_endpoint_count', len(diff.get('removed_endpoints', [])))}")
+    for endpoint in diff.get("removed_endpoints", []):
+        lines.append(f"[REMOVED ENDPOINT] {endpoint}")
+    lines.append(f"Changed endpoints: {diff.get('changed_endpoint_count', len(diff.get('changed_endpoints', [])))}")
+    for endpoint in diff.get("changed_endpoints", []):
+        lines.append(f"[CHANGED ENDPOINT] {endpoint}")
+    lines.append(f"New parameters: {diff.get('added_parameter_count', len(diff.get('added_parameters', [])))}")
+    for name in diff.get("added_parameters", []):
+        lines.append(f"[NEW PARAMETER] {name}")
+    lines.append(f"Removed parameters: {diff.get('removed_parameter_count', len(diff.get('removed_parameters', [])))}")
+    for name in diff.get("removed_parameters", []):
+        lines.append(f"[REMOVED PARAMETER] {name}")
+    lines.append(f"New review findings: {diff.get('added_finding_count', len(diff.get('added_findings', [])))}")
+
     if report.get("history_error"):
         lines.append(f"History warning: {report['history_error']}")
 
     _section(lines, "Optional Module Status")
     lines.append(f"JavaScript rendering enabled: {report.get('rendering_enabled', False)}")
     lines.append(f"Rendered pages: {report.get('rendered_pages', 0)}")
+    lines.append(f"Historical URLs actively crawled: {report.get('historical_urls_crawled', False)}")
+    lines.append(f"Endpoint records: {len(report.get('endpoint_inventory', []))}")
+    lines.append(f"Parameter names: {len(report.get('parameters', []))}")
+    lines.append(f"Correlated review findings: {len(report.get('related_findings', []))}")
     lines.append(f"robots.txt: {report.get('robots_url', '(not read)')}")
     lines.append(f"Crawl-delay: {report.get('crawl_delay_seconds', 0)} seconds")
     lines.append(f"Authentication configured: {report.get('auth_configured', False)}")
@@ -230,6 +290,38 @@ def render_csv_report(report: dict) -> str:
                 item.get("name", item.get("type", "")), item.get("severity", ""),
                 json.dumps(details, ensure_ascii=False, sort_keys=True, default=str),
             ])
+    for item in report.get("endpoint_inventory", []) or []:
+        writer.writerow([
+            "endpoint", item.get("endpoint", ""), "", "", "",
+            json.dumps({
+                "sources": item.get("sources", []),
+                "parameters": item.get("parameters", []),
+                "locations": item.get("locations", []),
+            }, ensure_ascii=False, sort_keys=True),
+        ])
+    for item in report.get("parameters", []) or []:
+        writer.writerow([
+            "parameter", "", "", item.get("name", ""), "",
+            json.dumps({
+                "classification": item.get("classification", ""),
+                "sources": item.get("sources", []),
+                "occurrences": item.get("occurrences", 0),
+                "methods": item.get("methods", []),
+                "locations": item.get("locations", []),
+            }, ensure_ascii=False, sort_keys=True),
+        ])
+    for item in report.get("related_findings", []) or []:
+        writer.writerow([
+            "correlated_finding", "", "", item.get("title", ""),
+            item.get("severity", ""),
+            json.dumps({
+                "category": item.get("category", ""),
+                "confidence": item.get("confidence", ""),
+                "evidence": item.get("evidence", []),
+                "recommendation": item.get("recommendation", ""),
+            }, ensure_ascii=False, sort_keys=True),
+        ])
+
     for audit in report.get("header_audits", []) or []:
         writer.writerow([
             "security_headers", audit.get("url", ""), "", "", "",

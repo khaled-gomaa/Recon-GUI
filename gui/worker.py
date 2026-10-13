@@ -25,6 +25,7 @@ class CrawlWorker(QThread):
         self, url, max_depth, max_pages, concurrency=10,
         wordlist_path=None, matcher: MatcherFilter = None,
         render_javascript=False, passive_discovery=False, request_headers=None,
+        crawl_historical_urls=False,
     ):
         super().__init__()
         self.url = url
@@ -35,6 +36,7 @@ class CrawlWorker(QThread):
         self.matcher = matcher or MatcherFilter()
         self.render_javascript = bool(render_javascript)
         self.passive_discovery = bool(passive_discovery)
+        self.crawl_historical_urls = bool(crawl_historical_urls)
         self.request_headers = {
             str(key): str(value) for key, value in (request_headers or {}).items()
             if str(key).lower() in {"authorization", "cookie", "accept-language"}
@@ -68,7 +70,41 @@ class CrawlWorker(QThread):
                 request_headers=self.request_headers,
                 respect_robots=True,
             )
-            loop.run_until_complete(engine.crawl())
+            passive_results = {
+                "passive_subdomains": [], "historical_urls": [],
+                "passive_sources": [], "passive_errors": [],
+            }
+            if self.passive_discovery and not self._stopping():
+                self.log_message.emit(
+                    "[Passive] Querying Certificate Transparency and Wayback (no target probing)."
+                )
+                try:
+                    from recon.passive_sources import collect_passive
+                    passive_results = collect_passive(self.url, on_log=self.log_message.emit)
+                    analyzer.report.subdomains.update(passive_results.get("passive_subdomains", []))
+                except Exception as exc:
+                    self.log_message.emit(f"[Passive] {type(exc).__name__}: {exc}")
+                    passive_results["passive_errors"].append(f"{type(exc).__name__}: {exc}")
+
+            historical_seeds = []
+            if self.crawl_historical_urls and not self._stopping():
+                from urllib.parse import urlparse
+                target_host = (urlparse(self.url).hostname or "").lower()
+                historical_seeds = sorted({
+                    candidate for candidate in passive_results.get("historical_urls", [])
+                    if (urlparse(candidate).hostname or "").lower() == target_host
+                    and urlparse(candidate).scheme.lower() in ("http", "https")
+                })[:min(50, max(0, self.max_pages - 1))]
+                if historical_seeds:
+                    self.log_message.emit(
+                        f"[History] Added {len(historical_seeds)} same-host historical URL candidates "
+                        "to the initial bounded crawl."
+                    )
+                else:
+                    self.log_message.emit("[History] No same-host historical URLs available to crawl.")
+
+            scan_seeds = [self.url, *historical_seeds]
+            loop.run_until_complete(engine.crawl(seed_urls=scan_seeds, seed_depth=0))
 
             analyzed_urls = set()
 
@@ -77,7 +113,10 @@ class CrawlWorker(QThread):
                 for result in engine.results:
                     if result.url in analyzed_urls:
                         continue
-                    analyzer.analyze_page(result.url, result.html, headers=result.headers)
+                    analyzer.analyze_page(
+                        result.url, result.html, headers=result.headers,
+                        discovered_links=getattr(result, "links", []),
+                    )
                     analyzed_urls.add(result.url)
 
             # Analyze response metadata as well as HTML.
@@ -109,6 +148,7 @@ class CrawlWorker(QThread):
                     if result is None or self._stopping():
                         continue
                     parsed = engine.parser.parse(html, url)
+                    result.links = parsed.get("links", [])
                     result.html = html
                     result.title = parsed.get("title", result.title)
                     result.word_count = len((parsed.get("text") or "").split())
@@ -174,24 +214,10 @@ class CrawlWorker(QThread):
 
                 # Analyze any JS assets discovered on the final extra batch without
                 # adding an unbounded third route crawl.
-                if not self._stopping():
-                    analyzer.finalize_js(loop, should_stop=self._stopping)
-
-            passive_results = {
-                "passive_subdomains": [], "historical_urls": [],
-                "passive_sources": [], "passive_errors": [],
-            }
-            if self.passive_discovery and not self._stopping():
-                self.log_message.emit(
-                    "[Passive] Querying Certificate Transparency and Wayback (no target probing)."
-                )
-                try:
-                    from recon.passive_sources import collect_passive
-                    passive_results = collect_passive(self.url, on_log=self.log_message.emit)
-                    analyzer.report.subdomains.update(passive_results.get("passive_subdomains", []))
-                except Exception as exc:
-                    self.log_message.emit(f"[Passive] {type(exc).__name__}: {exc}")
-                    passive_results["passive_errors"].append(f"{type(exc).__name__}: {exc}")
+                if not self._stopping() and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped:
+                    analyzer.finalize_js(
+                        loop, should_stop=self._stopping, delay_seconds=engine.crawl_delay_seconds
+                    )
 
             wordlist_results = []
             wordlist_rate_limited_stop = False
@@ -229,6 +255,7 @@ class CrawlWorker(QThread):
             report.update(passive_results)
             report["started_at"] = started_at
             report["rendering_enabled"] = self.render_javascript
+            report["historical_urls_crawled"] = self.crawl_historical_urls
             report["rendered_pages"] = rendered_pages
             report["robots_url"] = engine.robots_url
             report["crawl_delay_seconds"] = engine.crawl_delay_seconds
@@ -261,6 +288,8 @@ class CrawlWorker(QThread):
                 )
             except Exception as exc:
                 report["history_error"] = f"{type(exc).__name__}: {exc}"
+                from recon.finding_correlator import correlate_findings
+                report["related_findings"] = correlate_findings(report)
                 self.log_message.emit(
                     f"[History] Could not save local history: {type(exc).__name__}: {exc}"
                 )

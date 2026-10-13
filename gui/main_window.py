@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox, QComboBox, QToolButton, QHeaderView,
 )
 from PySide6.QtGui import QColor, QBrush
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from gui.status_style import status_colors
 from gui.worker import CrawlWorker
 from recon.matchers import MatcherFilter
@@ -33,7 +33,12 @@ class MainWindow(QMainWindow):
         self.active_matcher = MatcherFilter()
         self.live_results = []
         self.live_discovery_results = []
+        self._pending_page_results = []
+        self._pending_discovery_results = []
         self._build_ui()
+        self._result_batch_timer = QTimer(self)
+        self._result_batch_timer.setInterval(100)
+        self._result_batch_timer.timeout.connect(self._flush_pending_rows)
         self._refresh_history_for_target()
 
     def _build_ui(self):
@@ -176,6 +181,14 @@ class MainWindow(QMainWindow):
         self.passive_check.setToolTip("Queries public indexes only; discovered hosts are not actively probed.")
         options_grid.addWidget(self.render_js_check, 0, 0, 1, 2)
         options_grid.addWidget(self.passive_check, 0, 2, 1, 2)
+        self.crawl_historical_check = QCheckBox("Crawl same-host historical URLs")
+        self.crawl_historical_check.setToolTip(
+            "Active requests to up to 50 historical URLs from public indexes. "
+            "Off by default; normal host scope, page limits, and rate limits still apply."
+        )
+        self.crawl_historical_check.setEnabled(False)
+        self.passive_check.toggled.connect(self.crawl_historical_check.setEnabled)
+        options_grid.addWidget(self.crawl_historical_check, 3, 0, 1, 4)
 
         token_label = QLabel("Bearer token")
         token_label.setObjectName("fieldLabel")
@@ -288,6 +301,20 @@ class MainWindow(QMainWindow):
         filter_outer.addLayout(filter_grid)
         root.addWidget(filters)
 
+        # A single search field filters visible rows across the result tables.
+        search_row = QHBoxLayout()
+        search_label = QLabel("Search results")
+        search_label.setObjectName("fieldLabel")
+        self.results_search = QLineEdit()
+        self.results_search.setClearButtonEnabled(True)
+        self.results_search.setPlaceholderText("Search URL, endpoint, parameter, status, finding…")
+        self.results_search.setMinimumHeight(29)
+        self.results_search.setMaximumHeight(33)
+        self.results_search.textChanged.connect(self._filter_result_tables)
+        search_row.addWidget(search_label)
+        search_row.addWidget(self.results_search, 1)
+        root.addLayout(search_row)
+
         # Main results
         self.tabs = QTabWidget()
         self.tabs.setObjectName("resultsTabs")
@@ -317,6 +344,41 @@ class MainWindow(QMainWindow):
         page_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.table, "Pages")
 
+        self.endpoint_table = QTableWidget(0, 5)
+        self.endpoint_table.setHorizontalHeaderLabels([
+            "Endpoint", "Sources", "Parameters", "Pages", "Locations",
+        ])
+        self.endpoint_table.setColumnWidth(1, 180)
+        self.endpoint_table.setColumnWidth(2, 100)
+        self.endpoint_table.setColumnWidth(3, 80)
+        self.endpoint_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.endpoint_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.tabs.addTab(self.endpoint_table, "Endpoints")
+
+        self.parameter_table = QTableWidget(0, 6)
+        self.parameter_table.setHorizontalHeaderLabels([
+            "Parameter", "Classification", "Sources", "Occurrences", "Methods", "Pages",
+        ])
+        self.parameter_table.setColumnWidth(0, 150)
+        self.parameter_table.setColumnWidth(1, 130)
+        self.parameter_table.setColumnWidth(3, 95)
+        self.parameter_table.setColumnWidth(4, 90)
+        self.parameter_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.parameter_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.tabs.addTab(self.parameter_table, "Parameters")
+
+        self.findings_table = QTableWidget(0, 6)
+        self.findings_table.setHorizontalHeaderLabels([
+            "Severity", "Category", "Finding", "Confidence", "Evidence", "Recommendation",
+        ])
+        self.findings_table.setColumnWidth(0, 85)
+        self.findings_table.setColumnWidth(1, 130)
+        self.findings_table.setColumnWidth(2, 260)
+        self.findings_table.setColumnWidth(3, 100)
+        self.findings_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.findings_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.tabs.addTab(self.findings_table, "Findings")
+
         self.discovery_table = QTableWidget(0, 6)
         self.discovery_table.setHorizontalHeaderLabels([
             "URL", "Status", "Size", "Words", "Content type", "Classification",
@@ -336,16 +398,17 @@ class MainWindow(QMainWindow):
 
         self.recon_view = QTextEdit()
         self.recon_view.setReadOnly(True)
-        self.tabs.addTab(self.recon_view, "Recon findings")
+        self.tabs.addTab(self.recon_view, "Recon summary")
 
-        self.history_table = QTableWidget(0, 7)
+        self.history_table = QTableWidget(0, 10)
         self.history_table.setHorizontalHeaderLabels([
-            "Scan #", "Started", "Status", "Pages", "Added", "Removed", "Changed",
+            "Scan #", "Started", "Status", "Pages", "New URLs", "Removed",
+            "Changed", "New endpoints", "New parameters", "New findings",
         ])
         self.history_table.setColumnWidth(0, 70)
-        self.history_table.setColumnWidth(1, 240)
-        self.history_table.setColumnWidth(2, 120)
-        self.history_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.history_table.setColumnWidth(1, 180)
+        self.history_table.setColumnWidth(2, 105)
+        self.history_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.history_table, "Scan History")
         self.url_input.editingFinished.connect(self._refresh_history_for_target)
 
@@ -353,7 +416,7 @@ class MainWindow(QMainWindow):
         tool_layout = QVBoxLayout(tool_page)
         tool_controls = QHBoxLayout()
         self.external_tool_combo = QComboBox()
-        self.external_tool_combo.addItems(["subfinder", "gau", "nuclei", "ffuf", "nmap"])
+        self.external_tool_combo.addItems(["gau", "nuclei", "ffuf"])
         self.check_tools_btn = QPushButton("Check installed tools")
         self.check_tools_btn.clicked.connect(self._check_external_tools)
         self.run_tool_btn = QPushButton("Run selected tool")
@@ -384,8 +447,14 @@ class MainWindow(QMainWindow):
         tool_layout.addWidget(self.external_tool_output, 1)
         self.tabs.addTab(tool_page, "External Tools")
 
-        for table in (self.table, self.discovery_table, self.history_table):
+        for table in (
+            self.table, self.endpoint_table, self.parameter_table, self.findings_table,
+            self.discovery_table, self.history_table,
+        ):
             self._style_table(table)
+            table.horizontalHeader().sortIndicatorChanged.connect(
+                lambda _column, _order: self._filter_result_tables(self.results_search.text())
+            )
 
         # Export and status footer
         footer = QHBoxLayout()
@@ -545,6 +614,98 @@ class MainWindow(QMainWindow):
             QToolButton#advancedToggle:hover { color: #1e40af; }
         """)
 
+    def _result_tables(self):
+        return [
+            getattr(self, name, None) for name in (
+                "table", "endpoint_table", "parameter_table", "findings_table",
+                "discovery_table", "history_table",
+            )
+        ]
+
+    def _set_result_table_sorting(self, enabled: bool):
+        for table in (item for item in self._result_tables() if item is not None):
+            table.setSortingEnabled(enabled)
+
+    def _filter_result_tables(self, query: str):
+        """Filter visible rows across data tables without triggering another scan."""
+        needle = (query or "").strip().casefold()
+        for table in (item for item in self._result_tables() if item is not None):
+            for row in range(table.rowCount()):
+                self._filter_table_row(table, row, needle)
+
+    @staticmethod
+    def _filter_table_row(table: QTableWidget, row: int, needle: str):
+        if not needle:
+            table.setRowHidden(row, False)
+            return
+        values = []
+        for column in range(table.columnCount()):
+            item = table.item(row, column)
+            if item is not None:
+                values.append(item.text())
+        table.setRowHidden(row, needle not in " ".join(values).casefold())
+
+    def _populate_endpoint_parameter_findings(self, report: dict):
+        """Populate structured result tables from the unified scan report."""
+        self.endpoint_table.setRowCount(0)
+        for record in report.get("endpoint_inventory", []) or []:
+            values = (
+                record.get("endpoint", ""),
+                ", ".join(record.get("sources", []) or []),
+                ", ".join(record.get("parameters", []) or []),
+                record.get("location_count", 0),
+                " | ".join(record.get("locations", []) or []),
+            )
+            row = self.endpoint_table.rowCount()
+            self.endpoint_table.insertRow(row)
+            for column, value in enumerate(values):
+                self.endpoint_table.setItem(row, column, QTableWidgetItem(str(value)))
+            self._filter_table_row(self.endpoint_table, row, self.results_search.text().strip().casefold())
+
+        self.parameter_table.setRowCount(0)
+        for record in report.get("parameters", []) or []:
+            values = (
+                record.get("name", ""),
+                record.get("classification", ""),
+                ", ".join(record.get("sources", []) or []),
+                record.get("occurrences", 0),
+                ", ".join(record.get("methods", []) or []),
+                " | ".join(record.get("locations", []) or []),
+            )
+            row = self.parameter_table.rowCount()
+            self.parameter_table.insertRow(row)
+            for column, value in enumerate(values):
+                self.parameter_table.setItem(row, column, QTableWidgetItem(str(value)))
+            self._filter_table_row(self.parameter_table, row, self.results_search.text().strip().casefold())
+
+        self.findings_table.setRowCount(0)
+        severity_colors = {
+            "critical": ("#7f1d1d", "#fee2e2"),
+            "high": ("#991b1b", "#fee2e2"),
+            "medium": ("#92400e", "#fef3c7"),
+            "low": ("#1e40af", "#dbeafe"),
+            "info": ("#334155", "#f1f5f9"),
+        }
+        for finding in report.get("related_findings", []) or []:
+            evidence = " | ".join(str(item) for item in finding.get("evidence", []) or [])
+            values = (
+                finding.get("severity", "info"), finding.get("category", ""),
+                finding.get("title", ""), finding.get("confidence", ""),
+                evidence, finding.get("recommendation", ""),
+            )
+            row = self.findings_table.rowCount()
+            self.findings_table.insertRow(row)
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                self.findings_table.setItem(row, column, item)
+                foreground, background = severity_colors.get(
+                    str(finding.get("severity", "info")).lower(), severity_colors["info"]
+                )
+                if column == 0:
+                    item.setForeground(QBrush(QColor(foreground)))
+                    item.setBackground(QBrush(QColor(background)))
+            self._filter_table_row(self.findings_table, row, self.results_search.text().strip().casefold())
+
     def _set_advanced_visible(self, visible: bool):
         """Show optional renderer/passive/auth fields only when explicitly requested."""
         self.advanced_options_group.setVisible(visible)
@@ -583,7 +744,7 @@ class MainWindow(QMainWindow):
             if not Path(wordlist_path).is_file():
                 QMessageBox.warning(self, "Wordlist not found", f"Cannot find: {wordlist_path}")
                 return
-        if tool in {"nuclei", "ffuf", "nmap"}:
+        if tool in {"nuclei", "ffuf"}:
             answer = QMessageBox.question(
                 self, "Confirm authorization",
                 f"{tool} sends active requests to {target}. External tools do not share the crawler 429 retry manager. Continue only if this target is "
@@ -649,7 +810,8 @@ class MainWindow(QMainWindow):
                 scan.get("scan_id", ""), scan.get("started_at", scan.get("completed_at", "")),
                 scan.get("status", ""), scan.get("page_count", 0),
                 scan.get("added_count", 0), scan.get("removed_count", 0),
-                scan.get("changed_count", 0),
+                scan.get("changed_count", 0), scan.get("added_endpoint_count", 0),
+                scan.get("added_parameter_count", 0), scan.get("added_finding_count", 0),
             )
             for column, value in enumerate(values):
                 self.history_table.setItem(row, column, QTableWidgetItem(str(value)))
@@ -755,15 +917,26 @@ class MainWindow(QMainWindow):
             request_headers["Cookie"] = cookie_header
 
         self.active_matcher = matcher
+        self._set_result_table_sorting(False)
         self.live_results = []
         self.live_discovery_results = []
+        self._pending_page_results.clear()
+        self._pending_discovery_results.clear()
+        self._result_batch_timer.stop()
         self.log_view.clear()
         self.table.setRowCount(0)
+        self.endpoint_table.setRowCount(0)
+        self.parameter_table.setRowCount(0)
+        self.findings_table.setRowCount(0)
         self.discovery_table.setRowCount(0)
+        self.results_search.clear()
         self.recon_view.clear()
         self.similarity_view.clear()
         self.recon_report = {}
         self.tabs.setTabText(self.tabs.indexOf(self.table), "Pages")
+        self.tabs.setTabText(self.tabs.indexOf(self.endpoint_table), "Endpoints")
+        self.tabs.setTabText(self.tabs.indexOf(self.parameter_table), "Parameters")
+        self.tabs.setTabText(self.tabs.indexOf(self.findings_table), "Findings")
         self.tabs.setTabText(self.tabs.indexOf(self.discovery_table), "Content Discovery")
         self.tabs.setCurrentWidget(self.log_view)
         self.export_btn.setEnabled(False)
@@ -783,6 +956,7 @@ class MainWindow(QMainWindow):
             render_javascript=self.render_js_check.isChecked(),
             passive_discovery=self.passive_check.isChecked(),
             request_headers=request_headers,
+            crawl_historical_urls=self.crawl_historical_check.isChecked(),
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
@@ -801,14 +975,39 @@ class MainWindow(QMainWindow):
         self.log_view.append(msg)
 
     def _on_page_crawled(self, result):
-        # Keep every result so the user can change filters without repeating the scan.
+        # Queue UI work so a fast crawl cannot stall on thousands of individual row insertions.
         self.live_results.append(result)
-        if not self.active_matcher.matches(result):
-            return
-        self._append_page_row(
-            result.url, result.status, result.redirect_chain, result.final_url,
-            result.word_count, result.title, result.content_hash, "--",
-        )
+        self._pending_page_results.append(result)
+        if not self._result_batch_timer.isActive():
+            self._result_batch_timer.start()
+
+    def _flush_pending_rows(self):
+        """Render a bounded batch of pending results while keeping painting responsive."""
+        page_batch = self._pending_page_results[:120]
+        discovery_batch = self._pending_discovery_results[:120]
+        del self._pending_page_results[:len(page_batch)]
+        del self._pending_discovery_results[:len(discovery_batch)]
+        if not self._pending_page_results and not self._pending_discovery_results:
+            self._result_batch_timer.stop()
+        for table in (self.table, self.discovery_table):
+            table.setUpdatesEnabled(False)
+        try:
+            for result in page_batch:
+                if self.active_matcher.matches(result):
+                    self._append_page_row(
+                        result.url, result.status, result.redirect_chain, result.final_url,
+                        result.word_count, result.title, result.content_hash, "--",
+                    )
+            for result in discovery_batch:
+                self._append_content_discovery_row(result)
+        finally:
+            for table in (self.table, self.discovery_table):
+                table.setUpdatesEnabled(True)
+
+    def _clear_pending_result_batches(self):
+        self._result_batch_timer.stop()
+        self._pending_page_results.clear()
+        self._pending_discovery_results.clear()
 
     def _append_page_row(
         self, url, status, redirect_chain, final_url,
@@ -827,6 +1026,7 @@ class MainWindow(QMainWindow):
         for column, value in enumerate(values):
             self.table.setItem(row, column, QTableWidgetItem(value))
         self._color_row(self.table, row, status)
+        self._filter_table_row(self.table, row, self.results_search.text().strip().casefold())
 
     def _rebuild_table_from_filtered(self, filtered, favicon_hash):
         self.table.setRowCount(0)
@@ -848,7 +1048,9 @@ class MainWindow(QMainWindow):
 
     def _on_discovery_result(self, result: dict):
         self.live_discovery_results.append(result)
-        self._append_content_discovery_row(result)
+        self._pending_discovery_results.append(result)
+        if not self._result_batch_timer.isActive():
+            self._result_batch_timer.start()
 
     def _append_content_discovery_row(self, result: dict):
         proxy = SimpleNamespace(
@@ -879,6 +1081,9 @@ class MainWindow(QMainWindow):
         for column, value in enumerate(values):
             self.discovery_table.setItem(row, column, QTableWidgetItem(value))
         self._color_row(self.discovery_table, row, result.get("status", 0))
+        self._filter_table_row(
+            self.discovery_table, row, self.results_search.text().strip().casefold()
+        )
 
     def _rebuild_content_discovery_table(self, results):
         self.discovery_table.setRowCount(0)
@@ -922,6 +1127,7 @@ class MainWindow(QMainWindow):
             # Filtering is local: no network requests or repeat scan are needed.
             self._on_finished(self.recon_report)
         else:
+            self._clear_pending_result_batches()
             self.table.setRowCount(0)
             for result in self.live_results:
                 if self.active_matcher.matches(result):
@@ -935,12 +1141,15 @@ class MainWindow(QMainWindow):
             self._append_log(f"[Filters] Applied locally: {self.active_matcher.describe()}")
 
     def _on_finished(self, report: dict):
+        self._clear_pending_result_batches()
+        self._set_result_table_sorting(False)
         self.recon_report = report
         self._refresh_report_filters()
         favicon = report.get("favicon_hash", "")
         filtered = report.get("filtered_pages", [])
         self._rebuild_table_from_filtered(filtered, favicon)
         self._rebuild_content_discovery_table(report.get("wordlist_results", []))
+        self._populate_endpoint_parameter_findings(report)
         self._render_recon(report)
         self._render_similarity(report.get("similarity", {}))
         self.export_btn.setEnabled(True)
@@ -949,9 +1158,23 @@ class MainWindow(QMainWindow):
         self._populate_history(report.get("recent_scans", []))
         self.tabs.setTabText(self.tabs.indexOf(self.table), f"Pages ({len(filtered)})")
         self.tabs.setTabText(
+            self.tabs.indexOf(self.endpoint_table),
+            f"Endpoints ({len(report.get('endpoint_inventory', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.parameter_table),
+            f"Parameters ({len(report.get('parameters', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.findings_table),
+            f"Findings ({len(report.get('related_findings', []))})",
+        )
+        self.tabs.setTabText(
             self.tabs.indexOf(self.discovery_table),
             f"Content Discovery ({len(report.get('wordlist_results', []))})",
         )
+        self._set_result_table_sorting(True)
+        self._filter_result_tables(self.results_search.text())
         self.tabs.setCurrentWidget(self.table)
         self._reset_buttons()
 
@@ -979,6 +1202,9 @@ class MainWindow(QMainWindow):
         summary = (
             f"[Summary] {total} pages crawled; {kept} match current filters; "
             f"{len(path_results)} content-discovery responses; {len(path_hits)} potential hits; "
+            f"{len(report.get('endpoint_inventory', []))} endpoints; "
+            f"{len(report.get('parameters', []))} parameter names; "
+            f"{len(report.get('related_findings', []))} review findings; "
             f"{len(sim.get('exact_duplicates', []))} duplicate groups; "
             f"{len(sim.get('soft_404_candidates', []))} soft-404 candidates."
         )
@@ -990,6 +1216,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_error(self, msg: str):
+        self._flush_pending_rows()
         self._append_log(f"[FATAL] {msg}")
         self._reset_buttons()
         self.status_label.setText("SCAN ERROR")
