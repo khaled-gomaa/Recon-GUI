@@ -452,6 +452,9 @@ class MainWindow(QMainWindow):
             self.discovery_table, self.history_table,
         ):
             self._style_table(table)
+            table.horizontalHeader().sortIndicatorChanged.connect(
+                lambda _column, _order: self._filter_result_tables(self.results_search.text())
+            )
 
         # Export and status footer
         footer = QHBoxLayout()
@@ -611,16 +614,22 @@ class MainWindow(QMainWindow):
             QToolButton#advancedToggle:hover { color: #1e40af; }
         """)
 
-    def _filter_result_tables(self, query: str):
-        """Filter visible rows across data tables without triggering another scan."""
-        needle = (query or "").strip().casefold()
-        tables = [
+    def _result_tables(self):
+        return [
             getattr(self, name, None) for name in (
                 "table", "endpoint_table", "parameter_table", "findings_table",
                 "discovery_table", "history_table",
             )
         ]
-        for table in (item for item in tables if item is not None):
+
+    def _set_result_table_sorting(self, enabled: bool):
+        for table in (item for item in self._result_tables() if item is not None):
+            table.setSortingEnabled(enabled)
+
+    def _filter_result_tables(self, query: str):
+        """Filter visible rows across data tables without triggering another scan."""
+        needle = (query or "").strip().casefold()
+        for table in (item for item in self._result_tables() if item is not None):
             for row in range(table.rowCount()):
                 self._filter_table_row(table, row, needle)
 
@@ -908,6 +917,7 @@ class MainWindow(QMainWindow):
             request_headers["Cookie"] = cookie_header
 
         self.active_matcher = matcher
+        self._set_result_table_sorting(False)
         self.live_results = []
         self.live_discovery_results = []
         self._pending_page_results.clear()
@@ -1132,6 +1142,7 @@ class MainWindow(QMainWindow):
 
     def _on_finished(self, report: dict):
         self._clear_pending_result_batches()
+        self._set_result_table_sorting(False)
         self.recon_report = report
         self._refresh_report_filters()
         favicon = report.get("favicon_hash", "")
@@ -1162,6 +1173,7 @@ class MainWindow(QMainWindow):
             self.tabs.indexOf(self.discovery_table),
             f"Content Discovery ({len(report.get('wordlist_results', []))})",
         )
+        self._set_result_table_sorting(True)
         self._filter_result_tables(self.results_search.text())
         self.tabs.setCurrentWidget(self.table)
         self._reset_buttons()
