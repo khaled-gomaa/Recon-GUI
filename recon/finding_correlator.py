@@ -84,22 +84,24 @@ def correlate_findings(report: dict) -> list[dict]:
             )
 
     diff = report.get("history_diff", {}) or {}
-    for endpoint in diff.get("added_endpoints", []) or []:
-        add(
-            ("new-endpoint", endpoint), f"Endpoint newly observed since previous scan",
-            "info", "high",
-            [f"Endpoint: {endpoint}", "Not present in the immediately previous saved scan."],
-            "Review whether this route is expected and in scope.",
-            "change-detection",
-        )
-    for name in diff.get("added_parameters", []) or []:
-        add(
-            ("new-parameter", name), f"Parameter newly observed since previous scan: {name}",
-            "info", "medium",
-            [f"Parameter name: {name}", "Not present in the immediately previous saved scan."],
-            "Review its associated pages and intended behavior before deciding whether more testing is warranted.",
-            "change-detection",
-        )
+    # A first scan establishes the baseline; it cannot label every route "new".
+    if diff.get("previous_scan_id") is not None:
+        for endpoint in diff.get("added_endpoints", []) or []:
+            add(
+                ("new-endpoint", endpoint), f"Endpoint newly observed since previous scan",
+                "info", "high",
+                [f"Endpoint: {endpoint}", "Not present in the previous completed comparison baseline."],
+                "Review whether this route is expected and in scope.",
+                "change-detection",
+            )
+        for name in diff.get("added_parameters", []) or []:
+            add(
+                ("new-parameter", name), f"Parameter newly observed since previous scan: {name}",
+                "info", "medium",
+                [f"Parameter name: {name}", "Not present in the previous completed comparison baseline."],
+                "Review its associated pages and intended behavior before deciding whether more testing is warranted.",
+                "change-detection",
+            )
 
     severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     return sorted(
