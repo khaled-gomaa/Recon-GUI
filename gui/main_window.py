@@ -391,12 +391,9 @@ class MainWindow(QMainWindow):
 
         self.recon_view = QTextEdit()
         self.recon_view.setReadOnly(True)
-        self.tabs.addTab(self.recon_view, "Recon findings")
+        self.tabs.addTab(self.recon_view, "Recon summary")
 
-        self.history_table = QTableWidget(0, 7)
-        self.history_table.setHorizontalHeaderLabels([
-            "Scan #", "Started", "Status", "Pages", "Added", "Removed", "Changed",
-        ])
+        self.history_table = QTableWidget(0, 10)
         self.history_table.setHorizontalHeaderLabels([
             "Scan #", "Started", "Status", "Pages", "New URLs", "Removed",
             "Changed", "New endpoints", "New parameters", "New findings",
@@ -731,7 +728,7 @@ class MainWindow(QMainWindow):
             if not Path(wordlist_path).is_file():
                 QMessageBox.warning(self, "Wordlist not found", f"Cannot find: {wordlist_path}")
                 return
-        if tool in {"nuclei", "ffuf", "nmap"}:
+        if tool in {"nuclei", "ffuf"}:
             answer = QMessageBox.question(
                 self, "Confirm authorization",
                 f"{tool} sends active requests to {target}. External tools do not share the crawler 429 retry manager. Continue only if this target is "
