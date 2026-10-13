@@ -25,6 +25,7 @@ class CrawlWorker(QThread):
         self, url, max_depth, max_pages, concurrency=10,
         wordlist_path=None, matcher: MatcherFilter = None,
         render_javascript=False, passive_discovery=False, request_headers=None,
+        crawl_historical_urls=False,
     ):
         super().__init__()
         self.url = url
@@ -35,6 +36,7 @@ class CrawlWorker(QThread):
         self.matcher = matcher or MatcherFilter()
         self.render_javascript = bool(render_javascript)
         self.passive_discovery = bool(passive_discovery)
+        self.crawl_historical_urls = bool(crawl_historical_urls)
         self.request_headers = {
             str(key): str(value) for key, value in (request_headers or {}).items()
             if str(key).lower() in {"authorization", "cookie", "accept-language"}
@@ -82,6 +84,24 @@ class CrawlWorker(QThread):
 
             # Analyze response metadata as well as HTML.
             _analyze_new_results()
+
+            if self.crawl_historical_urls and not self._stopping() and not engine.rate_limit_stopped:
+                from urllib.parse import urlparse
+                target_host = (urlparse(self.url).hostname or "").lower()
+                history_seeds = sorted({
+                    url for url in passive_results.get("historical_urls", [])
+                    if (urlparse(url).hostname or "").lower() == target_host
+                    and urlparse(url).scheme.lower() in ("http", "https")
+                })[:min(50, self.max_pages)]
+                if history_seeds:
+                    self.log_message.emit(
+                        f"[History] Crawling {len(history_seeds)} same-host historical URL candidates "
+                        "(explicit option; normal page and scope limits still apply)."
+                    )
+                    loop.run_until_complete(engine.crawl(seed_urls=history_seeds, seed_depth=1))
+                    _analyze_new_results()
+                elif self.passive_discovery:
+                    self.log_message.emit("[History] No same-host historical URL candidates to crawl.")
 
             rendered_pages = 0
             if self.render_javascript and not self._stopping() and not engine.rate_limit_stopped:
@@ -229,6 +249,7 @@ class CrawlWorker(QThread):
             report.update(passive_results)
             report["started_at"] = started_at
             report["rendering_enabled"] = self.render_javascript
+            report["historical_urls_crawled"] = self.crawl_historical_urls
             report["rendered_pages"] = rendered_pages
             report["robots_url"] = engine.robots_url
             report["crawl_delay_seconds"] = engine.crawl_delay_seconds
