@@ -25,7 +25,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Recon Crawler v2 - Desktop Website Reconnaissance")
-        self.resize(1300, 800)
+        self.resize(1400, 900)
+        self.setMinimumSize(1050, 680)
         self.worker = None
         self.tool_worker = None
         self.recon_report = {}
@@ -40,14 +41,14 @@ class MainWindow(QMainWindow):
         central.setObjectName("central")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(18, 16, 18, 14)
-        root.setSpacing(12)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(5)
 
         # Header
         header = QFrame()
         header.setObjectName("hero")
         hero_layout = QHBoxLayout(header)
-        hero_layout.setContentsMargins(18, 14, 18, 14)
+        hero_layout.setContentsMargins(14, 7, 14, 7)
         hero_copy = QVBoxLayout()
         title = QLabel("RECON CRAWLER")
         title.setObjectName("appTitle")
@@ -58,9 +59,11 @@ class MainWindow(QMainWindow):
         hero_layout.addLayout(hero_copy, 1)
         self.status_label = QLabel("READY")
         self.status_label.setObjectName("statusBadge")
-        self.status_label.setMinimumWidth(160)
+        self.status_label.setMinimumWidth(126)
+        self.status_label.setMaximumHeight(36)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hero_layout.addWidget(self.status_label)
+        header.setMaximumHeight(78)
         root.addWidget(header)
 
         # Compact scan bar: keep the target and primary controls visible.
@@ -288,6 +291,8 @@ class MainWindow(QMainWindow):
         # Main results
         self.tabs = QTabWidget()
         self.tabs.setObjectName("resultsTabs")
+        self.tabs.setDocumentMode(True)
+        self.tabs.setMinimumHeight(260)
         root.addWidget(self.tabs, 1)
 
         self.log_view = QTextEdit()
@@ -300,17 +305,29 @@ class MainWindow(QMainWindow):
             "URL", "Status", "Redirect chain", "Final URL",
             "Words", "Title", "Content hash", "Favicon",
         ])
-        self.table.setColumnWidth(0, 320)
+        self.table.setColumnWidth(1, 74)
         self.table.setColumnWidth(2, 130)
-        self.table.setColumnWidth(3, 220)
+        self.table.setColumnWidth(4, 70)
+        self.table.setColumnWidth(6, 125)
+        self.table.setColumnWidth(7, 110)
+        page_header = self.table.horizontalHeader()
+        page_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        page_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        page_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        page_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.table, "Pages")
 
         self.discovery_table = QTableWidget(0, 6)
         self.discovery_table.setHorizontalHeaderLabels([
             "URL", "Status", "Size", "Words", "Content type", "Classification",
         ])
-        self.discovery_table.setColumnWidth(0, 360)
-        self.discovery_table.setColumnWidth(4, 190)
+        self.discovery_table.setColumnWidth(1, 74)
+        self.discovery_table.setColumnWidth(2, 80)
+        self.discovery_table.setColumnWidth(3, 70)
+        self.discovery_table.setColumnWidth(5, 150)
+        discovery_header = self.discovery_table.horizontalHeader()
+        discovery_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        discovery_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.discovery_table, "Content Discovery")
 
         self.similarity_view = QTextEdit()
@@ -402,11 +419,11 @@ class MainWindow(QMainWindow):
             QFrame#hero {
                 background: #172b4d;
                 border: 1px solid #203b65;
-                border-radius: 12px;
+                border-radius: 10px;
             }
             QLabel#appTitle {
                 color: #ffffff;
-                font-size: 19pt;
+                font-size: 15pt;
                 font-weight: 800;
                 letter-spacing: 1px;
             }
@@ -422,10 +439,10 @@ class MainWindow(QMainWindow):
             QGroupBox#sectionCard {
                 background: #ffffff;
                 border: 1px solid #dbe3ef;
-                border-radius: 10px;
-                margin-top: 10px;
+                border-radius: 8px;
+                margin-top: 7px;
                 font-weight: 700;
-                padding-top: 4px;
+                padding-top: 2px;
             }
             QGroupBox#sectionCard::title {
                 subcontrol-origin: margin;
@@ -435,8 +452,8 @@ class MainWindow(QMainWindow):
             }
             QGroupBox {
                 border: 1px solid #dbe3ef;
-                border-radius: 8px;
-                margin-top: 7px;
+                border-radius: 7px;
+                margin-top: 6px;
                 font-weight: 600;
             }
             QGroupBox::title {
@@ -449,9 +466,15 @@ class MainWindow(QMainWindow):
             QLineEdit, QSpinBox, QTextEdit {
                 background: #ffffff;
                 border: 1px solid #cbd5e1;
-                border-radius: 6px;
-                padding: 7px 9px;
+                border-radius: 5px;
                 selection-background-color: #2563eb;
+            }
+            QLineEdit, QSpinBox {
+                padding: 2px 7px;
+                min-height: 25px;
+            }
+            QTextEdit {
+                padding: 5px;
             }
             QLineEdit:focus, QSpinBox:focus, QTextEdit:focus {
                 border: 1px solid #3b82f6;
@@ -461,7 +484,8 @@ class MainWindow(QMainWindow):
                 color: #24364f;
                 border: 1px solid #cbd5e1;
                 border-radius: 7px;
-                padding: 8px 13px;
+                padding: 4px 10px;
+                min-height: 25px;
                 font-weight: 600;
             }
             QPushButton:hover { background: #edf4ff; border-color: #93b4e8; }
@@ -486,7 +510,7 @@ class MainWindow(QMainWindow):
             QTabBar::tab {
                 background: #e8edf5;
                 color: #53647e;
-                padding: 10px 16px;
+                padding: 6px 12px;
                 margin-right: 3px;
                 border-top-left-radius: 6px;
                 border-top-right-radius: 6px;
@@ -504,13 +528,29 @@ class MainWindow(QMainWindow):
             QHeaderView::section {
                 background: #edf2f8;
                 color: #344863;
-                padding: 8px;
+                padding: 4px 6px;
                 border: none;
                 border-bottom: 1px solid #d7e0ec;
                 font-weight: 700;
             }
-            QCheckBox { color: #344863; font-weight: 600; spacing: 6px; }
+            QCheckBox { color: #344863; font-weight: 600; spacing: 5px; }
+            QToolButton#advancedToggle {
+                color: #1d4ed8;
+                font-weight: 600;
+                padding: 2px 5px;
+                border: none;
+                background: transparent;
+            }
+            QToolButton#advancedToggle:hover { color: #1e40af; }
         """)
+
+    def _set_advanced_visible(self, visible: bool):
+        """Show optional renderer/passive/auth fields only when explicitly requested."""
+        self.advanced_options_group.setVisible(visible)
+        self.advanced_toggle.setText(
+            "Advanced options & session  ▾" if visible
+            else "Advanced options & session  ▸"
+        )
 
     def _check_external_tools(self):
         tools = available_tools()
