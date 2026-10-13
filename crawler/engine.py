@@ -72,6 +72,7 @@ class CrawlResult:
         content_hash: str = "", text_hash: str = "",
         content_length: int = 0, content_type: str = "",
         favicon_hash: str = "",
+        links=None,
     ):
         self.url = url
         self.status = status
@@ -85,6 +86,7 @@ class CrawlResult:
         self.content_length = content_length
         self.content_type = content_type
         self.favicon_hash = favicon_hash
+        self.links = list(links or [])
         # Kept in memory for analysis; deliberately omitted from to_dict().
         self.headers = {}
         self.depth = 0
@@ -504,6 +506,7 @@ class CrawlEngine:
                 text_hash=_hash(page_text) if page_text else "",
                 content_length=len(html.encode("utf-8")),
                 content_type=content_type,
+                links=parsed.get("links", []) if html else [],
             )
             result.headers = response_headers
             result.depth = depth
