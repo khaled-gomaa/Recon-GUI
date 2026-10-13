@@ -167,6 +167,7 @@ class HistoryStore:
                     "methods": sorted(item.get("methods", []) or []),
                     "classification": item.get("classification", ""),
                     "parameter_count": item.get("parameter_count", 0),
+                    "occurrences": item.get("occurrences", 0),
                 }
             else:
                 name = str(item)
@@ -224,7 +225,7 @@ class HistoryStore:
                 "SELECT id FROM projects WHERE origin=?", (origin,)
             ).fetchone()["id"]
             prior = con.execute(
-                "SELECT id, report_json FROM scans WHERE project_id=? ORDER BY id DESC LIMIT 1",
+                "SELECT id, report_json, status FROM scans WHERE project_id=? AND status='completed' ORDER BY id DESC LIMIT 1",
                 (project_id,),
             ).fetchone()
             previous_pages = []
@@ -260,6 +261,7 @@ class HistoryStore:
                 diff["added_finding_count"] = len(diff["added_findings"])
                 diff["removed_finding_count"] = len(diff["removed_findings"])
             if not prior:
+                diff["comparison_status"] = "first scan; baseline created"
                 endpoint_diff = self._entity_diff(report, {}, "endpoint_inventory", "endpoint", complete)
                 parameter_diff = self._entity_diff(report, {}, "parameters", "name", complete)
                 diff.update({
