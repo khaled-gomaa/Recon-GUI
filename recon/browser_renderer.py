@@ -76,7 +76,7 @@ async def render_pages(
     safe_headers = {
         str(k): str(v) for k, v in (headers or {}).items()
         if str(k).lower() in {"authorization", "accept-language"}
-        and "\\r" not in str(v) and "\\n" not in str(v)
+        and "\r" not in str(v) and "\n" not in str(v)
     }
     initial_cookies = []
     if cookie_jar is not None:
@@ -159,12 +159,17 @@ async def render_pages(
                             "has_request_body": bool(request.post_data),
                         }
                         observations.append(observation)
-                        request_to_observation[id(request)] = observation
+                        key = (request_url, str(request.method or "GET").upper())
+                        request_to_observation.setdefault(key, []).append(observation)
 
                     def record_response(response):
-                        observation = request_to_observation.get(id(response.request))
-                        if observation is not None:
+                        key = (response.url, str(response.request.method or "GET").upper())
+                        pending = request_to_observation.get(key, [])
+                        if pending:
+                            observation = pending.pop(0)
                             observation["status"] = int(response.status)
+                        else:
+                            observation = None
 
                     page.on("request", record_request)
                     page.on("response", record_response)
