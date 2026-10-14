@@ -18,8 +18,8 @@ DOWNLOAD_SUFFIXES = (
     ".7z", ".rar", ".tar", ".gz", ".tgz", ".sql", ".db", ".sqlite", ".bak",
     ".old", ".orig", ".backup", ".conf", ".config", ".env", ".log", ".wasm",
 )
-SRCSET_RE = re.compile(r"""(?:^|,)\\s*([^,\\s]+)""")
-CSS_URL_RE = re.compile(r"""url\\(\\s*['"]?([^'")\\s]+)""", re.IGNORECASE)
+SRCSET_RE = re.compile(r"""(?:^|,)\s*([^,\s]+)""")
+CSS_URL_RE = re.compile(r"""url\(\s*['"]?([^'")\s]+)""", re.IGNORECASE)
 
 
 class PageParser:
@@ -214,8 +214,7 @@ class PageParser:
                 return
             parsed = urlparse(url)
             path = parsed.path.lower()
-            extension = Path(path).suffix.lower() if False else ""
-            # Avoid pathlib platform-specific path rules and ignore query strings.
+            # Avoid platform-specific path rules and ignore query strings.
             leaf = path.rsplit("/", 1)[-1]
             extension = "." + leaf.rsplit(".", 1)[-1] if "." in leaf else ""
             kind = hinted_kind
