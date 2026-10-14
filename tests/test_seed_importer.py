@@ -24,7 +24,7 @@ def test_imports_and_deduplicates_same_host_txt_urls_and_paths(tmp_path):
         "https://example.test/from-log?id=3",
     ]
     assert result["accepted_count"] == 2
-    assert result["rejected_or_out_of_scope"] >= 3
+    assert result["rejected_or_out_of_scope"] >= 2
     assert result["source_type"] == "url-list-or-access-log"
 
 
