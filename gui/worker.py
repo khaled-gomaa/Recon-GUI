@@ -32,6 +32,7 @@ class CrawlWorker(QThread):
         use_subfinder=True, manual_browser_session=False, manual_browser_duration=180,
         wordlist_max_words=0, wordlist_max_candidates=0,
         recursive_content_discovery=False, content_recursion_depth=2,
+        imported_seed_urls=None, seed_import_summary=None,
     ):
         super().__init__()
         self.url = url
@@ -51,6 +52,12 @@ class CrawlWorker(QThread):
         self.wordlist_max_candidates = max(0, int(wordlist_max_candidates or 0))
         self.recursive_content_discovery = bool(recursive_content_discovery)
         self.content_recursion_depth = max(1, min(int(content_recursion_depth), 5))
+        # Imported seeds are validated by the importer and rechecked by CrawlEngine.
+        self.imported_seed_urls = list(dict.fromkeys(
+            str(value).strip() for value in (imported_seed_urls or [])
+            if str(value).strip()
+        ))[:100_000]
+        self.seed_import_summary = dict(seed_import_summary or {})
         self.request_headers = {
             str(key): str(value) for key, value in (request_headers or {}).items()
             if str(key).lower() in {"authorization", "cookie", "accept-language"}
@@ -211,7 +218,12 @@ class CrawlWorker(QThread):
                 else:
                     self.log_message.emit("[History] No same-host historical URLs available to crawl.")
 
-            scan_seeds = [self.url, *historical_seeds]
+            scan_seeds = list(dict.fromkeys([self.url, *historical_seeds, *self.imported_seed_urls]))
+            if self.imported_seed_urls:
+                self.log_message.emit(
+                    f"[Seeds] Added {len(self.imported_seed_urls)} imported same-host URL candidates "
+                    "as depth-0 seeds. Engine scope/page/rate limits still apply."
+                )
             loop.run_until_complete(engine.crawl(seed_urls=scan_seeds, seed_depth=0))
 
             analyzed_urls = set()
@@ -385,6 +397,18 @@ class CrawlWorker(QThread):
                 ) if any(header.lower() == key for header in self.request_headers)
             ]
             report["target"] = self.url
+            report["seed_import_summary"] = {
+                key: self.seed_import_summary.get(key)
+                for key in (
+                    "source_file", "source_type", "input_candidates", "accepted_count",
+                    "rejected_or_out_of_scope", "limit", "limit_reached",
+                )
+                if key in self.seed_import_summary
+            }
+            imported_seed_set = set(self.imported_seed_urls)
+            report["imported_seed_urls_crawled"] = len(
+                {result.url for result in all_results} & imported_seed_set
+            )
             report["manual_browser_session_enabled"] = self.manual_browser_session
             report["manual_browser_seconds"] = manual_browser_results.get("manual_browser_seconds", 0)
             report["manual_browser_window_seconds"] = manual_browser_results.get(
@@ -517,6 +541,9 @@ class CrawlWorker(QThread):
                 "javascript_files_truncated": len(truncated_js_files),
                 "response_bodies_truncated": len(body_truncated_pages) + len(truncated_wordlist_urls),
                 "content_limit_reached": report["content_limit_reached"],
+                "imported_seed_candidates": len(self.imported_seed_urls),
+                "imported_seed_urls_crawled": report.get("imported_seed_urls_crawled", 0),
+                "imported_seed_limit_reached": bool(self.seed_import_summary.get("limit_reached")),
             }
             try:
                 from recon.history_store import HistoryStore
