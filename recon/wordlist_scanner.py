@@ -187,7 +187,7 @@ class WordlistScanner:
                 continue
             word = word.lstrip("/")
             # Reject absolute URLs and path traversal before building candidates.
-            if "://" in word or word.startswith("//") or any(part == ".." for part in word.replace("\\\\", "/").split("/")):
+            if "://" in word or word.startswith("//") or any(part == ".." for part in word.replace("\\", "/").split("/")):
                 continue
             entries.append(word)
             if self.max_words and len(entries) >= self.max_words:
@@ -204,7 +204,7 @@ class WordlistScanner:
         ):
             return []
         basename = word.rstrip("/").rsplit("/", 1)[-1]
-        has_extension = bool(re.search(r"\\.[A-Za-z0-9_-]{1,12}$", basename)) or basename.startswith(".")
+        has_extension = bool(re.search(r"\.[A-Za-z0-9_-]{1,12}$", basename)) or basename.startswith(".")
         if word.endswith("/") or has_extension:
             candidates = [word]
         else:
@@ -292,7 +292,7 @@ class WordlistScanner:
         headers = build_headers()
         headers.update({
             str(key): str(value) for key, value in self.request_headers.items()
-            if str(key).lower() in {"authorization", "cookie", "accept-language"}
+            if str(key).lower() in ({"authorization", "accept-language"} if self.cookie_jar is not None else {"authorization", "cookie", "accept-language"})
             and "\r" not in str(value) and "\n" not in str(value)
         })
 
