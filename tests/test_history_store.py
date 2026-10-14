@@ -196,6 +196,7 @@ def test_partial_asset_head_phase_does_not_infer_removed_resources(tmp_path):
     assert saved_status == "partial"
     assert partial["history_diff"]["comparison_status"].startswith("partial")
     assert partial["history_diff"]["removed_urls"] == []
+    assert partial["history_diff"]["removed_assets"] == []
     assert partial["history_diff"]["removed_endpoints"] == []
     assert partial["history_diff"]["removed_parameters"] == []
 
