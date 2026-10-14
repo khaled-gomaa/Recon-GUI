@@ -192,7 +192,7 @@ class MainWindow(QMainWindow):
         options_grid.setVerticalSpacing(5)
         self.render_js_check = QCheckBox("Render JavaScript (Playwright)")
         self.render_js_check.setToolTip(
-            "Renders at most 30 pages. Install Playwright and Chromium separately; cross-host requests are blocked."
+            "Renders crawled HTML pages up to the configured Max pages limit (max 5000). Install Playwright and Chromium separately; cross-origin requests are blocked."
         )
         self.passive_check = QCheckBox("Passive sources (crt.sh + Wayback)")
         self.passive_check.setToolTip("Queries public indexes only; discovered hosts are not actively probed.")
