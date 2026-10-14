@@ -15,6 +15,9 @@ def render_text_report(report: dict) -> str:
         f"Status: {'Stopped by user' if report.get('stopped_by_user') else 'Partial (rate limited)' if report.get('crawler_rate_limited_stop') or report.get('wordlist_rate_limited_stop') else 'Completed'}",
         f"Pages crawled: {len(report.get('pages', []))}",
         f"Pages after filters: {len(report.get('filtered_pages', []))}",
+        f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}",
+        f"Content Discovery candidates generated: {report.get('wordlist_candidates', 0)}",
+        f"Explicit wordlist limit reached: {report.get('wordlist_candidate_limit_reached', False)}",
         f"Filter: {report.get('matcher_description', '(no filters)')}",
         f"Favicon hash: {report.get('favicon_hash') or '(not found)'}",
         "Crawler rate limit: " + (
@@ -62,13 +65,47 @@ def render_text_report(report: dict) -> str:
         values = report.get(key, [])
         lines.extend(f"- {value}" for value in values) if values else lines.append("(none found)")
 
+    _section(lines, "Network Requests (Metadata Only)")
+    network_records = report.get("network_observations", [])
+    if not network_records:
+        lines.append("(no runtime network observations; static inference is shown in Endpoint Inventory)")
+    for item in network_records:
+        lines.append(
+            f"[{item.get('method', 'UNKNOWN')}] {item.get('url', '')} | "
+            f"status={item.get('status', '(not observed)')} | source={item.get('source', '')} | "
+            f"query_names={', '.join(item.get('query_parameters', []))} | "
+            f"body_names={', '.join(item.get('body_parameters', []))} | "
+            f"type={item.get('resource_type', '')} | content_type={item.get('content_type', '')}"
+        )
+        if item.get("page"):
+            lines.append(f"    Initiated by: {item['page']}")
+
+    _section(lines, "Cookie Map (Names and Attributes Only)")
+    cookie_map = report.get("cookie_map", [])
+    if not cookie_map:
+        lines.append("(no cookie metadata captured)")
+    for item in cookie_map:
+        attrs = [
+            label for key, label in (
+                ("secure", "Secure"), ("httponly", "HttpOnly")
+            ) if item.get(key)
+        ]
+        if item.get("samesite"):
+            attrs.append("SameSite=" + str(item.get("samesite")))
+        lines.append(
+            f"{item.get('name', '')} | domain={item.get('domain', '')} | "
+            f"path={item.get('path', '')} | attributes={', '.join(attrs)} | "
+            f"source={item.get('source', '')} | url={item.get('url', '')}"
+        )
+
     _section(lines, "Endpoint Inventory")
     endpoint_inventory = report.get("endpoint_inventory", [])
     if not endpoint_inventory:
         lines.append("(none found)")
     for item in endpoint_inventory:
         lines.append(
-            f"{item.get('endpoint', '')} | sources={', '.join(item.get('sources', []))} | "
+            f"{item.get('endpoint', '')} | methods={', '.join(item.get('methods', []))} | "
+            f"sources={', '.join(item.get('sources', []))} | "
             f"parameters={', '.join(item.get('parameters', []))} | "
             f"locations={item.get('location_count', 0)}"
         )
@@ -235,6 +272,12 @@ def render_text_report(report: dict) -> str:
     lines.append(f"Historical URLs actively crawled: {report.get('historical_urls_crawled', False)}")
     lines.append(f"Endpoint records: {len(report.get('endpoint_inventory', []))}")
     lines.append(f"Parameter names: {len(report.get('parameters', []))}")
+    lines.append(f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}")
+    lines.append(f"Content Discovery candidates: {report.get('wordlist_candidates', 0)}")
+    lines.append(f"Subfinder: {report.get('subfinder_status', 'not-run')}")
+    lines.append(f"Manual Browser Session enabled: {report.get('manual_browser_session_enabled', False)}")
+    lines.append(f"Runtime network observations: {len(report.get('network_observations', []))}")
+    lines.append(f"Cookie metadata records: {len(report.get('cookie_map', []))}")
     lines.append(f"Correlated review findings: {len(report.get('related_findings', []))}")
     lines.append(f"robots.txt: {report.get('robots_url', '(not read)')}")
     lines.append(f"Crawl-delay: {report.get('crawl_delay_seconds', 0)} seconds")
@@ -294,9 +337,35 @@ def render_csv_report(report: dict) -> str:
         writer.writerow([
             "endpoint", item.get("endpoint", ""), "", "", "",
             json.dumps({
+                "methods": item.get("methods", []),
                 "sources": item.get("sources", []),
                 "parameters": item.get("parameters", []),
                 "locations": item.get("locations", []),
+            }, ensure_ascii=False, sort_keys=True),
+        ])
+    for item in report.get("network_observations", []) or []:
+        writer.writerow([
+            "network_request", item.get("url", ""), item.get("status") or "",
+            item.get("method", ""), "",
+            json.dumps({
+                "source": item.get("source", ""),
+                "resource_type": item.get("resource_type", ""),
+                "content_type": item.get("content_type", ""),
+                "query_parameters": item.get("query_parameters", []),
+                "body_parameters": item.get("body_parameters", []),
+                "page": item.get("page", ""),
+            }, ensure_ascii=False, sort_keys=True),
+        ])
+    for item in report.get("cookie_map", []) or []:
+        writer.writerow([
+            "cookie_metadata", item.get("url", ""), "", item.get("name", ""), "",
+            json.dumps({
+                "domain": item.get("domain", ""),
+                "path": item.get("path", ""),
+                "secure": item.get("secure", False),
+                "httponly": item.get("httponly", False),
+                "samesite": item.get("samesite", ""),
+                "source": item.get("source", ""),
             }, ensure_ascii=False, sort_keys=True),
         ])
     for item in report.get("parameters", []) or []:
