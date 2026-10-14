@@ -869,11 +869,11 @@ class MainWindow(QMainWindow):
                 row = self._subdomain_row_for_host(hostname)
                 if row >= 0:
                     self.subdomain_table.item(row, 3).setText("Not tested")
-                    self.subdomain_table.item(row, 5).setText("Outside inferred root")
+                    self.subdomain_table.item(row, 5).setText("Not eligible for subdomain probe")
         if not eligible:
             QMessageBox.warning(
                 self, "No eligible hosts",
-                "None of the selected hosts belongs to the inferred root domain. They were not probed.",
+                "No selected host is an eligible subdomain of the inferred root. The apex/root host and hosts outside that root are not probed by this action.",
             )
             return
         self.verify_subdomains_btn.setEnabled(False)
@@ -892,6 +892,8 @@ class MainWindow(QMainWindow):
         return -1
 
     def _on_scope_verification_complete(self, result: dict):
+        # Preserve this operator-initiated verification in the current exportable report.
+        self.recon_report["subdomain_verification"] = result
         for record in result.get("results", []) or []:
             hostname = record.get("host", "")
             row = self._subdomain_row_for_host(hostname)
