@@ -12,12 +12,14 @@ def render_text_report(report: dict) -> str:
     lines = [
         "RECON-GUI - RECONNAISSANCE REPORT",
         f"Target: {report.get('target', '(not recorded)')}",
-        f"Status: {'Stopped by user' if report.get('stopped_by_user') else 'Partial (rate limited)' if report.get('crawler_rate_limited_stop') or report.get('wordlist_rate_limited_stop') else 'Partial (page/depth/wordlist cap)' if report.get('page_limit_reached') or report.get('depth_limit_reached') or report.get('wordlist_candidate_limit_reached') else 'Completed'}",
+        f"Status: {'Stopped by user' if report.get('stopped_by_user') else 'Partial (rate limited)' if report.get('crawler_rate_limited_stop') or report.get('wordlist_rate_limited_stop') else 'Partial (page/depth/wordlist/content cap)' if report.get('page_limit_reached') or report.get('depth_limit_reached') or report.get('wordlist_candidate_limit_reached') or report.get('content_limit_reached') else 'Completed'}",
         f"Pages crawled: {len(report.get('pages', []))}",
         f"Pages after filters: {len(report.get('filtered_pages', []))}",
         f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}",
         f"Content Discovery candidates generated: {report.get('wordlist_candidates', 0)}",
         f"Explicit wordlist limit reached: {report.get('wordlist_candidate_limit_reached', False)}",
+        f"Content/body truncation cap reached: {report.get('content_limit_reached', False)}",
+        f"Manual browser session elapsed/window: {report.get('manual_browser_seconds', 0)}/{report.get('manual_browser_window_seconds', 0)} seconds",
         f"Filter: {report.get('matcher_description', '(no filters)')}",
         f"Favicon hash: {report.get('favicon_hash') or '(not found)'}",
         "Crawler rate limit: " + (
@@ -37,6 +39,7 @@ def render_text_report(report: dict) -> str:
             f"[{page.get('status', 'ERR')}] {page.get('url', '')} | "
             f"words={page.get('word_count', 0)} | bytes={page.get('content_length', 0)} | "
             f"title={page.get('title', '')}"
+            + (" | BODY TRUNCATED" if page.get("body_truncated") else "")
         )
         if page.get("final_url") and page.get("final_url") != page.get("url"):
             lines.append(f"    Final URL: {page['final_url']}")
@@ -52,6 +55,16 @@ def render_text_report(report: dict) -> str:
             f"words={page.get('word_count', 0)} | bytes={page.get('content_length', 0)} | "
             f"title={page.get('title', '')}"
         )
+
+    coverage = report.get("coverage_summary", {}) or {}
+    if coverage:
+        writer.writerow([
+            "coverage_summary", "", "", "",
+            "partial" if report.get("content_limit_reached") or report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") else "no-limit-reported",
+            json.dumps(coverage, ensure_ascii=False, sort_keys=True),
+        ])
+    for note in report.get("content_limit_notes", []) or []:
+        writer.writerow(["coverage_warning", "", "", "", "warning", str(note)])
 
     verification = report.get("subdomain_verification", {}) or {}
     verified_hosts = verification.get("results", []) or []
@@ -80,10 +93,31 @@ def render_text_report(report: dict) -> str:
         ("Discovered Routes", "discovered_routes"),
         ("JavaScript Files", "js_files"),
         ("Source Maps", "source_maps"),
+        ("Truncated JavaScript Files", "truncated_js_files"),
     ):
         _section(lines, title)
         values = report.get(key, [])
         lines.extend(f"- {value}" for value in values) if values else lines.append("(none found)")
+
+    _section(lines, "Crawl Coverage / Truncation Limits")
+    coverage = report.get("coverage_summary", {}) or {}
+    if coverage:
+        for label, key in (
+            ("Pages fetched", "pages_crawled"), ("Page cap", "page_cap"),
+            ("Maximum depth", "max_depth"), ("JS files discovered", "javascript_files_discovered"),
+            ("JS files attempted", "javascript_files_attempted"),
+            ("JS files truncated", "javascript_files_truncated"),
+            ("Response bodies truncated", "response_bodies_truncated"),
+        ):
+            lines.append(f"{label}: {coverage.get(key, 0)}")
+        lines.append(f"Page limit reached: {coverage.get('page_limit_reached', False)}")
+        lines.append(f"Depth limit reached: {coverage.get('depth_limit_reached', False)}")
+        lines.append(f"Wordlist limit reached: {coverage.get('wordlist_limit_reached', False)}")
+        lines.append(f"Content limit reached: {coverage.get('content_limit_reached', False)}")
+    for note in report.get("content_limit_notes", []) or []:
+        lines.append("WARNING: " + str(note))
+    if not coverage and not report.get("content_limit_notes"):
+        lines.append("(no crawl coverage limits were reported as reached)")
 
     _section(lines, "Network Requests (Metadata Only)")
     network_records = report.get("network_observations", [])
@@ -341,9 +375,10 @@ def render_csv_report(report: dict) -> str:
     for page in report.get("pages", []) or []:
         writer.writerow([
             "page", page.get("url", ""), page.get("status", ""), page.get("title", ""),
-            "", "words={}; bytes={}; final_url={}; content_type={}; depth={}".format(
+            "", "words={}; bytes={}; final_url={}; content_type={}; depth={}; body_truncated={}".format(
                 page.get("word_count", 0), page.get("content_length", 0),
                 page.get("final_url", ""), page.get("content_type", ""), page.get("depth", 0),
+                page.get("body_truncated", False),
             ),
         ])
     for item in report.get("wordlist_results", []) or []:
@@ -385,7 +420,7 @@ def render_csv_report(report: dict) -> str:
 
     for kind in (
         "emails", "subdomains", "endpoints", "discovered_routes", "js_files",
-        "source_maps", "passive_subdomains", "historical_urls",
+        "source_maps", "truncated_js_files", "passive_subdomains", "historical_urls",
     ):
         for value in report.get(kind, []) or []:
             writer.writerow(["finding:" + kind, "", "", "", "", value])
