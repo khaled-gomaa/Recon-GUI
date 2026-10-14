@@ -9,10 +9,18 @@ def _section(lines, title):
 def render_text_report(report: dict) -> str:
     """Render a complete, readable TXT report without third-party dependencies."""
     report = report or {}
+    import_only = bool(report.get("har_import_summary")) and not report.get("started_at") and not report.get("pages")
+    status = (
+        "HAR metadata imported (no active scan run)" if import_only else
+        "Stopped by user" if report.get("stopped_by_user") else
+        "Partial (rate limited)" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") else
+        "Partial (page/depth/wordlist/content cap)" if report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") else
+        "Completed"
+    )
     lines = [
         "RECON-GUI - RECONNAISSANCE REPORT",
         f"Target: {report.get('target', '(not recorded)')}",
-        f"Status: {'Stopped by user' if report.get('stopped_by_user') else 'Partial (rate limited)' if report.get('crawler_rate_limited_stop') or report.get('wordlist_rate_limited_stop') else 'Partial (page/depth/wordlist/content cap)' if report.get('page_limit_reached') or report.get('depth_limit_reached') or report.get('wordlist_candidate_limit_reached') or report.get('content_limit_reached') else 'Completed'}",
+        f"Status: {status}",
         f"Pages crawled: {len(report.get('pages', []))}",
         f"Pages after filters: {len(report.get('filtered_pages', []))}",
         f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}",
@@ -33,6 +41,16 @@ def render_text_report(report: dict) -> str:
             else "not triggered / resumed after Retry-After"
         ),
     ]
+
+    har_summary = report.get("har_import_summary", {}) or {}
+    if har_summary:
+        _section(lines, "HAR Import Summary")
+        lines.append(f"Files imported: {har_summary.get('files_imported', 0)}")
+        lines.append(f"Entries seen/imported: {har_summary.get('entries_seen', 0)}/{har_summary.get('entries_imported', 0)}")
+        lines.append(f"Unique request records: {har_summary.get('unique_requests', 0)}")
+        lines.append(f"Import truncated: {har_summary.get('truncated', False)}")
+        for warning in har_summary.get("warnings", []) or []:
+            lines.append("WARNING: " + str(warning))
 
     _section(lines, "Pages")
     for page in report.get("pages", []):
@@ -373,6 +391,14 @@ def render_csv_report(report: dict) -> str:
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(["record_type", "url", "status", "title", "severity", "details"])
+
+    har_summary = report.get("har_import_summary", {}) or {}
+    if har_summary:
+        writer.writerow([
+            "har_import_summary", "", "", "",
+            "partial" if har_summary.get("truncated") or har_summary.get("warnings") else "",
+            json.dumps(har_summary, ensure_ascii=False, sort_keys=True),
+        ])
 
     for page in report.get("pages", []) or []:
         writer.writerow([
