@@ -5,6 +5,8 @@ Recon-GUI is a Python desktop application for mapping and documenting web assets
 ## Core features
 
 - Same-host crawling with configurable depth, page count (up to 5000), and concurrency. When page or depth limits leave additional links unvisited, the scan is explicitly marked partial and history comparisons do not infer removals from incomplete coverage.
+- Import extra crawl seeds from TXT URL lists, Search Console-style CSV exports, XML/gzip sitemaps, JSON URL collections, or common access logs. Imports are deduplicated and restricted to the exact configured hostname; imported seeds are starting points, not authorization checks, and still obey normal crawl limits. This helps discover orphan pages that internal links alone cannot reveal.
+- The JavaScript renderer performs a small, bounded scroll sequence per page to trigger lazy-loaded and infinite-scroll content without clicking controls or submitting forms. This improves SPA coverage but cannot guarantee that every dynamically generated record or route is exposed.
 - Canonical URL handling, redirect-chain tracking, response metadata, page hashes, similarity groups, and soft-404 candidates.
 - Hidden-route discovery from forms, iframes, data attributes, meta refresh, inline scripts/comments, sitemaps, robots.txt, and same-host JavaScript.
 - Optional Playwright rendering to discover routes created by client-side JavaScript, with same-origin request/response metadata capture.
@@ -55,6 +57,7 @@ The GUI's External Tools tab can check which CLI tools are installed. Subfinder 
 - Built-in authentication fields and session cookie values are kept in application memory only and are not added to reports or scan-history records.
 - The Cookie Map records cookie names and safe attributes only. Network Request records include normalized URL paths, methods, response metadata, source, and parameter names, never query/body values or raw request bodies.
 - Manual browser capture is opt-in and user-driven; it does not automatically submit HTML forms or click buttons.
+- External seed imports are subject to a 50 MiB source-file cap, a 100 MiB decompressed-file cap, and a 100,000 URL cap. Reaching the URL cap is shown as partial coverage. Imported URLs may carry query values from logs/exports; review reports before sharing them.
 - Candidate secret findings contain a type, source, severity, and a redacted marker; the matched raw value is never included.
 - Form analysis only inspects markup and does not submit the form or perform login attempts.
 - The history database is local to your user profile. On Windows it is normally stored at %LOCALAPPDATA%\Recon-GUI\history.sqlite3; other systems use ~/.recon-gui/history.sqlite3 unless XDG_DATA_HOME is set. Oversized HTML/XML/robots responses, JS files, and Content Discovery response bodies are marked as truncated in the coverage report. A scan with such truncated evidence is flagged partial instead of implying complete coverage.
