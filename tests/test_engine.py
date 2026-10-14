@@ -390,3 +390,54 @@ def test_crawler_stops_queue_when_429_has_no_retry_after():
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+def test_cookie_jar_persists_between_crawl_passes_and_only_metadata_is_reported():
+    async def scenario():
+        received_cookies = []
+
+        async def root(request):
+            response = web.Response(
+                text='<a href="/first">first</a>',
+                content_type="text/html",
+            )
+            response.set_cookie(
+                "sessionid", "secret-session-value", httponly=True, samesite="Lax"
+            )
+            return response
+
+        async def first(request):
+            received_cookies.append(request.cookies.get("sessionid"))
+            return web.Response(text="<title>first</title>ok", content_type="text/html")
+
+        async def second(request):
+            received_cookies.append(request.cookies.get("sessionid"))
+            return web.Response(text="<title>second</title>ok", content_type="text/html")
+
+        app = web.Application()
+        app.router.add_get("/", root)
+        app.router.add_get("/first", first)
+        app.router.add_get("/second", second)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            engine = CrawlEngine(
+                f"http://127.0.0.1:{port}/",
+                max_depth=1, max_pages=10, concurrency=1,
+            )
+            first_pass = await engine.crawl()
+            second_pass = await engine.crawl(seed_urls=[f"http://127.0.0.1:{port}/second"])
+            assert received_cookies == ["secret-session-value", "secret-session-value"]
+            root_result = next(item for item in first_pass if item.url.endswith("/"))
+            cookie_metadata = root_result.to_dict()["cookie_observations"]
+            assert cookie_metadata[0]["name"] == "sessionid"
+            assert cookie_metadata[0]["httponly"] is True
+            assert "secret-session-value" not in repr(cookie_metadata)
+            assert any(item.url.endswith("/second") for item in second_pass)
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
