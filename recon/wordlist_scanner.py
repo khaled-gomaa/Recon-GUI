@@ -1,5 +1,6 @@
 """Low-rate optional wordlist path checks for authorized targets."""
 import asyncio
+import hashlib
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -8,8 +9,16 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from crawler.fetcher import build_headers
 
-DEFAULT_EXTENSIONS = ["", ".html", ".php", ".bak", ".old", ".txt", ".zip"]
-MAX_WORDS = 500
+# Common web/application and backup/config extensions. A blank extension probes the
+# path exactly as written. Users can override this list from the GUI.
+DEFAULT_EXTENSIONS = [
+    "", ".php", ".html", ".htm", ".js", ".json", ".xml", ".txt",
+    ".asp", ".aspx", ".jsp", ".jspx", ".do", ".action", ".cgi",
+    ".bak", ".old", ".orig", ".backup", ".save", ".swp", ".zip",
+    ".tar.gz", ".gz", ".conf", ".config", ".ini", ".log", ".pdf",
+]
+# Backward-compatible symbol: zero means no implicit word-count cap.
+MAX_WORDS = 0
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_RETRY_AFTER_SECONDS = 120
 MAX_RATE_LIMIT_PAUSES = 3
@@ -20,6 +29,7 @@ class WordlistScanner:
         self, base_url: str, wordlist_path: str, extensions=None,
         concurrency: int = 5, timeout: int = 8, delay_ms: int = 200,
         on_hit=None, on_log=None, should_stop=None, on_result=None, request_headers=None,
+        max_words: int = 0, cookie_jar=None,
     ):
         parsed = urlparse(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -27,7 +37,20 @@ class WordlistScanner:
         self.origin = f"{parsed.scheme}://{parsed.netloc}/"
         self.base_host = parsed.hostname.lower()
         self.wordlist_path = Path(wordlist_path)
-        self.extensions = extensions if extensions is not None else DEFAULT_EXTENSIONS
+        raw_extensions = extensions if extensions is not None else DEFAULT_EXTENSIONS
+        normalized_extensions = []
+        for extension in raw_extensions:
+            extension = str(extension or "").strip()
+            if extension and not extension.startswith("."):
+                extension = "." + extension
+            if extension not in normalized_extensions:
+                normalized_extensions.append(extension)
+        self.extensions = normalized_extensions or [""]
+        self.max_words = max(0, int(max_words or 0))
+        self.cookie_jar = cookie_jar
+        self.words_loaded = 0
+        self.candidate_count = 0
+        self.candidate_limit_reached = False
         self.concurrency = max(1, min(int(concurrency), 5))
         self.timeout = max(1, int(timeout))
         self.delay_ms = max(0, int(delay_ms))
@@ -151,29 +174,48 @@ class WordlistScanner:
     def _load_wordlist(self):
         if not self.wordlist_path.is_file():
             raise FileNotFoundError(f"Wordlist not found: {self.wordlist_path}")
-        entries = []
+        entries, seen = [], set()
+        self.candidate_limit_reached = False
         for raw in self.wordlist_path.read_text(encoding="utf-8", errors="ignore").splitlines():
             word = raw.strip()
-            if word and not word.startswith("#"):
-                entries.append(word.lstrip("/"))
-            if len(entries) >= MAX_WORDS:
-                self._log(f"[Wordlist] Limited to first {MAX_WORDS} entries.")
+            if not word or word.startswith("#"):
+                continue
+            word = word.lstrip("/")
+            if not word or word in seen:
+                continue
+            seen.add(word)
+            entries.append(word)
+            if self.max_words and len(entries) >= self.max_words:
+                self.candidate_limit_reached = True
+                self._log(
+                    f"[Wordlist] Explicit word limit reached ({self.max_words}); "
+                    "remaining entries were not loaded. Raise the limit or set it to 0 for unlimited."
+                )
                 break
-        self._log(f"[Wordlist] Loaded {len(entries)} entries")
+        self.words_loaded = len(entries)
+        cap_note = f" (explicit cap: {self.max_words})" if self.max_words else " (no implicit word-count cap)"
+        self._log(f"[Wordlist] Loaded {len(entries)} unique entries{cap_note}")
         return entries
 
     def _build_targets(self, word: str):
-        # Only relative path candidates are permitted; absolute URLs in wordlists are ignored.
-        if "://" in word or word.startswith("//"):
+        # Wordlists describe relative paths only; never allow a line to set another origin.
+        word = str(word or "").strip().lstrip("/")
+        if not word or "://" in word or word.startswith("//") or "\r" in word or "\n" in word:
             return []
-        words = [word] if "/" in word or word.startswith(".") else [word + ext for ext in self.extensions]
+        leaf = word.rsplit("/", 1)[-1]
+        # Keep explicit filenames and dotfiles exact rather than appending nonsensical
+        # variants such as robots.txt.php or .env.html.
+        if leaf.startswith(".") or ("." in leaf and not leaf.endswith(".")):
+            candidates = [word]
+        else:
+            candidates = [word + ext for ext in self.extensions]
         result = []
-        for candidate in words:
+        for candidate in candidates:
             url = urljoin(self.origin, candidate)
             parsed = urlparse(url)
             if parsed.scheme in ("http", "https") and parsed.hostname and parsed.hostname.lower() == self.base_host:
                 result.append(url)
-        return result
+        return list(dict.fromkeys(result))
 
     async def _fetch_baseline(self, session):
         baseline_url = urljoin(self.origin, "this-path-should-not-exist-recon-baseline-74c31")
@@ -209,9 +251,11 @@ class WordlistScanner:
     async def scan(self):
         words = self._load_wordlist()
         targets = list(dict.fromkeys(target for word in words for target in self._build_targets(word)))
+        self.candidate_count = len(targets)
         self._log(
-            f"[Wordlist] Checking {len(targets)} candidates "
-            f"(concurrency={self.concurrency}, delay={self.delay_ms}ms)."
+            f"[Wordlist] Checking {len(targets)} unique GET candidates from {len(words)} words "
+            f"(concurrency={self.concurrency}, delay={self.delay_ms}ms, "
+            f"extensions={len(self.extensions)})."
         )
         self._resume_event = asyncio.Event()
         self._resume_event.set()
@@ -228,9 +272,12 @@ class WordlistScanner:
             and "\r" not in str(value) and "\n" not in str(value)
         })
 
-        async with aiohttp.ClientSession(
-            connector=connector, timeout=timeout, headers=headers
-        ) as session:
+        session_options = {
+            "connector": connector, "timeout": timeout, "headers": headers,
+        }
+        if self.cookie_jar is not None:
+            session_options["cookie_jar"] = self.cookie_jar
+        async with aiohttp.ClientSession(**session_options) as session:
             await self._fetch_baseline(session)
 
             async def worker():
@@ -254,13 +301,33 @@ class WordlistScanner:
                                     self.baseline_size is not None
                                     and abs(size - self.baseline_size) < 50
                                 )
+                                set_cookie_names = []
+                                for cookie_name, morsel in resp.cookies.items():
+                                    set_cookie_names.append({
+                                        "name": cookie_name,
+                                        "domain": morsel.get("domain", ""),
+                                        "path": morsel.get("path", ""),
+                                        "secure": bool(morsel.get("secure", "")),
+                                        "httponly": bool(morsel.get("httponly", "")),
+                                        "samesite": morsel.get("samesite", ""),
+                                    })
                                 result = {
                                     "url": url,
+                                    "final_url": str(resp.url),
+                                    "method": "GET",
+                                    "source": "wordlist",
                                     "status": resp.status,
                                     "size": size,
                                     "word_count": word_count,
                                     "content_type": resp.headers.get("Content-Type", ""),
                                     "location": resp.headers.get("Location", ""),
+                                    "server": resp.headers.get("Server", ""),
+                                    "last_modified": resp.headers.get("Last-Modified", ""),
+                                    "allow": resp.headers.get("Allow", ""),
+                                    "www_authenticate": resp.headers.get("WWW-Authenticate", ""),
+                                    "content_hash": hashlib.sha256(body).hexdigest()[:16],
+                                    "response_truncated": len(data) > MAX_RESPONSE_BYTES,
+                                    "set_cookie_names": set_cookie_names,
                                     "baseline_match": baseline_match,
                                     "potential_hit": (
                                         resp.status not in self.bad_status
@@ -302,5 +369,8 @@ class WordlistScanner:
         if self._rate_limited:
             self._log("[Wordlist] Ended early because the target is rate-limiting requests.")
         self.rate_limit_stopped = self._rate_limited and not self.should_stop()
-        self._log(f"[Wordlist] Finished: {len(self.hits)} potential hits.")
+        self._log(
+            f"[Wordlist] Finished: {len(self.responses)} responses recorded, "
+            f"{len(self.hits)} potential hits, {self.candidate_count} candidates generated."
+        )
         return self.hits
