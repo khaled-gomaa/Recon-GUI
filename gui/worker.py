@@ -30,6 +30,7 @@ class CrawlWorker(QThread):
         render_javascript=False, passive_discovery=False, request_headers=None,
         crawl_historical_urls=False, wordlist_extensions=None,
         use_subfinder=True, manual_browser_session=False, manual_browser_duration=180,
+        wordlist_max_words=0, wordlist_max_candidates=0,
     ):
         super().__init__()
         self.url = url
@@ -45,6 +46,8 @@ class CrawlWorker(QThread):
         self.use_subfinder = bool(use_subfinder)
         self.manual_browser_session = bool(manual_browser_session)
         self.manual_browser_duration = max(30, min(int(manual_browser_duration), 600))
+        self.wordlist_max_words = max(0, int(wordlist_max_words or 0))
+        self.wordlist_max_candidates = max(0, int(wordlist_max_candidates or 0))
         self.request_headers = {
             str(key): str(value) for key, value in (request_headers or {}).items()
             if str(key).lower() in {"authorization", "cookie", "accept-language"}
@@ -333,6 +336,8 @@ class CrawlWorker(QThread):
                     base_url=self.url,
                     wordlist_path=self.wordlist_path,
                     extensions=self.wordlist_extensions,
+                    max_words=self.wordlist_max_words,
+                    max_candidates=self.wordlist_max_candidates,
                     concurrency=1 if engine.crawl_delay_seconds > 0 else self.concurrency,
                     on_hit=lambda url, status, size: self.log_message.emit(
                         f"[HIT {status}] {url} ({size} bytes)"
@@ -387,6 +392,12 @@ class CrawlWorker(QThread):
             )
             report["wordlist_words_loaded"] = (
                 scanner.words_loaded if self.wordlist_path and "scanner" in locals() else 0
+            )
+            report["wordlist_word_limit_reached"] = (
+                scanner.word_limit_reached if self.wordlist_path and "scanner" in locals() else False
+            )
+            report["wordlist_path_limit_reached"] = (
+                scanner.path_limit_reached if self.wordlist_path and "scanner" in locals() else False
             )
             report["wordlist_candidate_limit_reached"] = (
                 scanner.candidate_limit_reached if self.wordlist_path and "scanner" in locals() else False
