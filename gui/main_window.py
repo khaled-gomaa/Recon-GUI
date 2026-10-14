@@ -541,6 +541,13 @@ class MainWindow(QMainWindow):
         self.recon_view.setReadOnly(True)
         self.tabs.addTab(self.recon_view, "Recon summary")
 
+        self.coverage_view = QTextEdit()
+        self.coverage_view.setReadOnly(True)
+        self.coverage_view.setPlaceholderText(
+            "Coverage, applied caps, incomplete phases, and reasons results may be missing appear here."
+        )
+        self.tabs.addTab(self.coverage_view, "Coverage / Gaps")
+
         self.history_table = QTableWidget(0, 10)
         self.history_table.setHorizontalHeaderLabels([
             "Scan #", "Started", "Status", "Pages", "New URLs", "Removed",
@@ -1498,6 +1505,7 @@ class MainWindow(QMainWindow):
         self._populate_network_cookie_tables(report)
         self._populate_subdomain_table(report)
         self._render_recon(report)
+        self._render_coverage(report)
         self._render_similarity(report.get("similarity", {}))
         self.export_btn.setEnabled(True)
         self.export_txt_btn.setEnabled(True)
@@ -1736,6 +1744,139 @@ class MainWindow(QMainWindow):
 
         self.recon_view.setPlainText("\n".join(lines))
 
+    def _render_coverage(self, report: dict):
+        """Explain what was covered, capped, truncated, skipped, or not run."""
+        report = report or {}
+        coverage = report.get("coverage_summary", {}) or {}
+        lines = []
+        lines.append("=== SCAN COVERAGE / GAPS ===")
+        lines.append(f"Target: {report.get('target') or '(no target recorded)'}")
+        if report.get("har_import_summary"):
+            imported = report.get("har_import_summary", {}) or {}
+            lines.append(
+                f"HAR import: {imported.get('entries_imported', 0)} entries imported; "
+                f"{imported.get('unique_requests', 0)} unique requests; "
+                f"truncated={bool(imported.get('truncated'))}"
+            )
+        stopped = bool(report.get("stopped_by_user"))
+        crawler_limited = bool(report.get("crawler_rate_limited_stop"))
+        wordlist_limited = bool(report.get("wordlist_rate_limited_stop"))
+        content_limited = bool(report.get("content_limit_reached"))
+        if stopped:
+            overall = "STOPPED BY USER"
+        elif crawler_limited or wordlist_limited:
+            overall = "PARTIAL — RATE LIMITED"
+        elif (
+            coverage.get("page_limit_reached")
+            or coverage.get("depth_limit_reached")
+            or coverage.get("wordlist_word_limit_reached")
+            or coverage.get("wordlist_path_limit_reached")
+            or content_limited
+        ):
+            overall = "PARTIAL — ONE OR MORE COVERAGE LIMITS REACHED"
+        elif coverage:
+            overall = "NO REPORTED COVERAGE CAP OR TRUNCATION REACHED"
+        else:
+            overall = "NO SCAN COVERAGE DATA (for example, imported-only results)"
+        lines.append(f"Overall status: {overall}")
+        lines.append("")
+
+        lines.append("=== HTTP CRAWL ===")
+        if coverage:
+            lines.append(
+                f"Pages crawled: {coverage.get('pages_crawled', len(report.get('pages', [])))} "
+                f"/ configured cap {coverage.get('page_cap', '(unknown)')}"
+            )
+            lines.append(f"Maximum depth: {coverage.get('max_depth', '(unknown)')}")
+            lines.append(f"Page cap reached: {bool(coverage.get('page_limit_reached'))}")
+            lines.append(f"Depth cap reached: {bool(coverage.get('depth_limit_reached'))}")
+        else:
+            lines.append(f"Page records available: {len(report.get('pages', []) or [])}")
+            lines.append("Crawl limits: not recorded.")
+        lines.append(f"User stopped scan: {stopped}")
+        lines.append(f"HTTP crawler rate limited: {crawler_limited}")
+        lines.append("Active crawl scope: starting hostname only; discovered subdomains are never added automatically.")
+        lines.append("")
+
+        lines.append("=== CONTENT DISCOVERY / WORDLIST ===")
+        if report.get("wordlist_path"):
+            lines.append(f"Wordlist: {report.get('wordlist_path')}")
+        else:
+            lines.append("Wordlist: configured list path not recorded in the report.")
+        lines.append(f"Valid unique words processed: {report.get('wordlist_words_loaded', 0)}")
+        lines.append(f"Generated path candidates: {report.get('wordlist_candidates', 0)}")
+        lines.append(f"Response records: {len(report.get('wordlist_results', []) or [])}")
+        lines.append(f"Potential hits: {len(report.get('wordlist_hits', []) or [])}")
+        lines.append(f"Configured word cap: {report.get('wordlist_max_words', 0) or 'unlimited'}")
+        lines.append(f"Configured path cap: {report.get('wordlist_max_candidates', 0) or 'unlimited'}")
+        lines.append(f"Word cap reached: {bool(report.get('wordlist_word_limit_reached'))}")
+        lines.append(f"Path cap reached: {bool(report.get('wordlist_path_limit_reached'))}")
+        lines.append(f"Wordlist stopped by HTTP 429: {wordlist_limited}")
+        lines.append("Method policy: Content Discovery sends GET only; POST/other methods appear only when observed or inferred from page/JavaScript/HAR evidence.")
+        lines.append("")
+
+        lines.append("=== JAVASCRIPT / RESPONSE COMPLETENESS ===")
+        if coverage:
+            lines.append(
+                f"JavaScript files discovered / attempted: "
+                f"{coverage.get('javascript_files_discovered', 0)} / "
+                f"{coverage.get('javascript_files_attempted', 0)}"
+            )
+            lines.append(f"JavaScript files truncated: {coverage.get('javascript_files_truncated', 0)}")
+            lines.append(f"Response bodies truncated: {coverage.get('response_bodies_truncated', 0)}")
+        lines.append(f"Any body/asset content truncated: {content_limited}")
+        for note in report.get("content_limit_notes", []) or []:
+            lines.append("WARNING: " + str(note))
+        for url in report.get("truncated_js_files", []) or []:
+            lines.append(f"  Truncated JavaScript: {url}")
+        for url in report.get("truncated_wordlist_urls", []) or []:
+            lines.append(f"  Truncated Content Discovery response: {url}")
+        for url in report.get("body_truncated_pages", []) or []:
+            lines.append(f"  Truncated page body: {url}")
+        lines.append("")
+
+        lines.append("=== NETWORK / SESSION EVIDENCE ===")
+        lines.append(f"Runtime network observations: {len(report.get('network_observations', []) or [])}")
+        lines.append(f"Cookie metadata records: {len(report.get('cookie_map', []) or [])}")
+        lines.append(f"Forms inventoried (not automatically submitted): {len(report.get('forms', []) or [])}")
+        lines.append(f"Endpoints inventoried: {len(report.get('endpoint_inventory', []) or [])}")
+        lines.append(f"Parameter names inventoried: {len(report.get('parameters', []) or [])}")
+        if not report.get("network_observations"):
+            lines.append("No runtime network requests were recorded; endpoint methods may be static hints or form declarations only.")
+        lines.append("Cookie and parameter values are excluded from these inventories.")
+        lines.append("")
+
+        lines.append("=== PASSIVE SOURCES / SUBDOMAINS ===")
+        lines.append(f"Passive/historical subdomains collected: {len(report.get('passive_subdomains', []) or [])}")
+        lines.append(f"Subfinder status: {report.get('subfinder_status', 'not recorded')}")
+        lines.append(f"Subfinder hosts: {len(report.get('subfinder_subdomains', []) or [])}")
+        lines.append(f"Historical URLs collected: {len(report.get('historical_urls', []) or [])}")
+        lines.append(f"Historical URLs actively crawled: {bool(report.get('historical_urls_crawled'))}")
+        for source in report.get("passive_sources", []) or []:
+            lines.append(
+                f"  {source.get('name', 'source')}: {source.get('status', 'unknown')} "
+                f"({source.get('count', 0)} records)"
+            )
+        for warning in report.get("passive_errors", []) or []:
+            lines.append("WARNING: " + str(warning))
+        if report.get("subdomain_verification"):
+            verification = report["subdomain_verification"]
+            lines.append(
+                f"Selected subdomain verification: {verification.get('verified_count', 0)} checked; "
+                f"{verification.get('skipped_count', 0)} unchecked; "
+                f"truncated={bool(verification.get('truncated'))}"
+            )
+        lines.append("Discovered subdomains are not automatically crawled; they must be selected and separately authorized.")
+        lines.append("")
+
+        lines.append("=== INTERPRETATION ===")
+        lines.append(
+            "A clean completion means no recorded cap/truncation was detected, not proof that every hidden "
+            "file, endpoint, or parameter exists in the collected data. Coverage depends on the wordlist, "
+            "application authentication, routes exposed during browsing, passive-source availability, and server behavior."
+        )
+        self.coverage_view.setPlainText("\n".join(lines))
+
     def _render_similarity(self, sim: dict):
         lines = []
         lines.append("=== EXACT DUPLICATES ===")
@@ -1840,6 +1981,7 @@ class MainWindow(QMainWindow):
         self._populate_network_cookie_tables(self.recon_report)
         self._populate_subdomain_table(self.recon_report)
         self._render_recon(self.recon_report)
+        self._render_coverage(self.recon_report)
         self._render_similarity(self.recon_report.get("similarity", {}))
         self._populate_history(self.recon_report.get("recent_scans", []))
         self.tabs.setTabText(
