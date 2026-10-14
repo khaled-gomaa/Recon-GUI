@@ -4,18 +4,18 @@ Recon-GUI is a Python desktop application for mapping and documenting web assets
 
 ## Core features
 
-- Bounded same-host crawling with configurable depth, page count, and concurrency.
+- Same-host crawling with configurable depth, page count (up to 5000), and concurrency. When page or depth limits leave additional links unvisited, the scan is explicitly marked partial and history comparisons do not infer removals from incomplete coverage.
 - Canonical URL handling, redirect-chain tracking, response metadata, page hashes, similarity groups, and soft-404 candidates.
 - Hidden-route discovery from forms, iframes, data attributes, meta refresh, inline scripts/comments, sitemaps, robots.txt, and same-host JavaScript.
 - Optional Playwright rendering to discover routes created by client-side JavaScript, with same-origin request/response metadata capture.
 - Optional headed Manual Browser Session for user-driven login/MFA and browsing. Captures same-origin request methods, status codes, query/body parameter names, and cookie names/attributes; cookie/token values and request bodies are not exported.
-- JavaScript collection, endpoint extraction, source-map references, static method inference for common `fetch`, `axios`, XHR, and jQuery calls, and follow-up route crawling. Static method inference is a lead, not proof the request executed.
+- JavaScript collection without a fixed file-count cap, endpoint extraction, source-map references, static method inference for common `fetch`, `axios`, XHR, and jQuery calls, and iterative follow-up route crawling until no new pages are added or the configured crawler boundary is reached. Each JS file is still individually capped at 2 MiB and oversized files are reported as truncated. Static method inference is a lead, not proof the request executed.
 - Unified endpoint inventory with methods, discovery sources, request initiator page, resource type, query parameter names, and observed body parameter names. Query strings and body values are never retained in the request inventory.
 - Evidence-backed correlated review findings with severity/confidence, supporting evidence, and manual-review recommendations; these are leads, not confirmed vulnerabilities.
 - HTML form inventory (fields, method, action, and possible CSRF field names) without submitting forms.
 - JSON-LD extraction and redacted candidate detection for known token/key patterns and secret-like assignments.
 - Security-header audits, favicon hash, emails, and subdomains.
-- Passive lookups through Certificate Transparency (crt.sh), Wayback CDX, and optional Subfinder (when installed). All passive hostname sources are merged; discovered subdomains are reported only and are never automatically actively crawled. Historical URLs enter the crawl only when “Crawl same-host historical URLs” is enabled.
+- Passive lookups through Certificate Transparency (crt.sh), Wayback CDX (up to 10,000 archived URLs, marked partial when the ceiling is reached), and optional Subfinder (when installed). crt.sh results are parsed without the old 500-host cap. All passive hostname sources are merged; discovered subdomains are reported only and are never automatically actively crawled. Same-host archived query URLs also feed parameter-name inventory without requiring active requests. Historical URLs enter the crawl only when “Crawl same-host historical URLs” is enabled.
 - Expanded Content Discovery using the complete custom or bundled wordlist by default (no implicit 500-word truncation), configurable extensions and exact paths, deduplication, response hashes, status/redirect metadata, response header hints, cookie attribute metadata, and wildcard/soft-404 classification. Each wordlist candidate is currently sent as a GET request only.
 - Shared in-memory HTTP cookie jar between crawl, JavaScript collection, and Content Discovery phases, plus optional imported Cookie header. Session values are not written to reports or scan history.
 - Local SQLite scan history grouped by origin, including newly added, removed, and changed URL, endpoint, and parameter comparisons between scans. Partial/stopped/rate-limited scans do not infer removals.
@@ -37,7 +37,7 @@ Playwright is deliberately not a core dependency. To enable the checkbox in the 
     python -m pip install -r requirements-optional.txt
     playwright install chromium
 
-The automated renderer is bounded to 30 pages and two concurrent tabs. It uses a shared browser context across rendered pages so same-origin cookie state can persist; cross-origin requests are blocked. The optional Manual Browser Session opens a visible Chromium window for up to 90 seconds so you can log in or navigate. Install Playwright and Chromium first.
+The automated renderer processes crawled HTML pages up to the configured Max pages limit (up to 5000) with two concurrent tabs. It uses a shared browser context across rendered pages so same-origin cookie state can persist; cross-origin requests are blocked. The optional Manual Browser Session opens a visible Chromium window for up to 90 seconds so you can log in or navigate. Install Playwright and Chromium first.
 
 ## Optional external tools
 
