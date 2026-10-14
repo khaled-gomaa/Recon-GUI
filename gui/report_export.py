@@ -99,6 +99,15 @@ def render_text_report(report: dict) -> str:
             evidence = "downloaded by JavaScript collector"
         else:
             evidence = "reference only; not fetched"
+        if item.get("probe_checked"):
+            evidence += (
+                f"; HEAD={item.get('probe_status') if item.get('probe_status') is not None else 'failed'}"
+                f" ({item.get('probe_result', 'no result')})"
+            )
+            if item.get("probe_content_type"):
+                evidence += "; type=" + str(item.get("probe_content_type"))
+            if item.get("probe_content_length") is not None:
+                evidence += "; bytes=" + str(item.get("probe_content_length"))
         lines.append(
             f"[{item.get('kind', 'resource')}] {item.get('url', '')} | "
             f"extension={item.get('extension', '') or '(none)'} | "
@@ -469,9 +478,12 @@ def render_csv_report(report: dict) -> str:
         writer.writerow([
             "asset_reference", item.get("url", ""), "", "",
             "external" if not item.get("in_scope", False) else "",
-            "kind={}; extension={}; referrers={}; fetch_evidence={}; query_parameter_names={}".format(
+            "kind={}; extension={}; referrers={}; fetch_evidence={}; head_status={}; head_result={}; head_type={}; head_bytes={}; query_parameter_names={}".format(
                 item.get("kind", "resource"), item.get("extension", ""),
                 item.get("reference_count", 0), fetch_evidence,
+                item.get("probe_status", "") if item.get("probe_checked") else "not-checked",
+                item.get("probe_result", "") if item.get("probe_checked") else "not-checked",
+                item.get("probe_content_type", ""), item.get("probe_content_length", ""),
                 ",".join(item.get("query_parameter_names", []) or []),
             ),
         ])
