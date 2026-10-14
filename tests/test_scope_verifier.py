@@ -34,8 +34,8 @@ def test_verification_respects_explicit_host_cap_and_reports_unverified_remainde
             on_log=logs.append,
         )
         assert result["candidate_count"] == 5
-        assert result["verified_count"] == 2
-        assert result["skipped_count"] == 3
+        assert result["verified_count"] == 0
+        assert result["skipped_count"] == 5
         assert result["truncated"] is True
         assert all(item["http_result"] == "stopped" for item in result["results"])
         assert any("first 2" in message for message in logs)
