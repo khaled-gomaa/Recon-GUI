@@ -176,21 +176,21 @@ class WordlistScanner:
             self._log("[429] Cool-down complete; resuming remaining queued checks at the configured rate.")
             return True
 
-    def _iter_wordlist(self):
-        """Yield unique safe path words one at a time to keep large lists memory-efficient."""
+    def _iter_wordlist(self, deduplicate: bool = True):
+        """Yield safe path words one at a time; target-level deduplication handles production scans."""
         if not self.wordlist_path.is_file():
             raise FileNotFoundError(f"Wordlist not found: {self.wordlist_path}")
         self.words_loaded = 0
         self.word_limit_reached = False
         self.candidate_limit_reached = False
-        seen = set()
+        seen = set() if deduplicate else None
         skipped_query_lines = 0
         with self.wordlist_path.open("r", encoding="utf-8", errors="ignore") as stream:
             for raw in stream:
                 if self.should_stop() or self._rate_limited:
                     break
                 word = raw.strip().lstrip("/")
-                if not word or word.startswith("#") or word in seen:
+                if not word or word.startswith("#") or (seen is not None and word in seen):
                     continue
                 # This is path discovery (GET only); parameter names are mined separately.
                 if "?" in word or "#" in word or "://" in word or word.startswith("//"):
@@ -205,11 +205,13 @@ class WordlistScanner:
                     break
                 if any(part == ".." for part in word.replace("\\\\", "/").split("/")):
                     continue
-                seen.add(word)
+                if seen is not None:
+                    seen.add(word)
                 self.words_loaded += 1
                 yield word
         cap_note = f" (explicit cap: {self.max_words})" if self.max_words else " (no implicit word-count cap)"
-        self._log(f"[Wordlist] Streamed {self.words_loaded} unique entries{cap_note}")
+        word_label = "unique entries" if deduplicate else "valid entries"
+        self._log(f"[Wordlist] Streamed {self.words_loaded} {word_label}{cap_note}")
         if skipped_query_lines:
             self._log(
                 f"[Wordlist] Skipped {skipped_query_lines} entry lines with query strings/fragments or absolute URLs; "
@@ -388,7 +390,7 @@ class WordlistScanner:
             workers = [asyncio.create_task(worker()) for _ in range(self.concurrency)]
             seen_targets = set()
             try:
-                for word in self._iter_wordlist():
+                for word in self._iter_wordlist(deduplicate=False):
                     if self.should_stop() or self._rate_limited:
                         break
                     for target in self._build_targets(word):
