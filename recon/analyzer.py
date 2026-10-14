@@ -143,7 +143,7 @@ class ReconAnalyzer:
         self._asset_observation_keys.add(key)
         item_key = (safe_url, kind)
         item = self.asset_observations.setdefault(item_key, {
-            "url": safe_url, "kind": kind, "extension": extension,
+            "url": safe_url, "request_url": raw_url, "kind": kind, "extension": extension,
             "referrers": set(), "query_parameter_names": set(),
             "in_scope": host == self.base_host,
         })
