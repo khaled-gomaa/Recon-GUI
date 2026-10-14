@@ -96,6 +96,11 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
                             "content_type": "",
                         }
                         requests_by_id[id(request)] = record
+                        request_key = (
+                            safe_request_url(request.url), str(request.method or "GET").upper(),
+                            str(request.resource_type or ""),
+                        )
+                        requests_by_key.setdefault(request_key, []).append(record)
                         try:
                             emit(dict(record))
                         except Exception:
@@ -103,6 +108,17 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
 
                     async def on_response(response):
                         record = requests_by_id.get(id(response.request))
+                        if record is None:
+                            response_key = (
+                                safe_request_url(response.request.url),
+                                str(response.request.method or "GET").upper(),
+                                str(response.request.resource_type or ""),
+                            )
+                            record = next(
+                                (candidate for candidate in requests_by_key.get(response_key, [])
+                                 if candidate.get("status") is None),
+                                None,
+                            )
                         if record is None:
                             return
                         record["status"] = int(response.status)
@@ -117,6 +133,7 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
                             pass
 
                     requests_by_id = {}
+                    requests_by_key = {}
                     page.on("request", on_request)
                     page.on("response", lambda response: asyncio.create_task(on_response(response)))
 
