@@ -407,6 +407,8 @@ class CrawlWorker(QThread):
             )
             report["wordlist_rate_limited_stop"] = wordlist_rate_limited_stop
             report["crawler_rate_limited_stop"] = engine.rate_limit_stopped
+            report["page_limit_reached"] = engine.page_limit_reached
+            report["depth_limit_reached"] = engine.depth_limit_reached
             report["filtered_pages"] = [result.to_dict() for result in filtered]
             report["similarity"] = SimilarityDetector().analyze(filtered)
             report["matcher_description"] = self.matcher.describe()
