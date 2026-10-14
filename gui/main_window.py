@@ -1913,6 +1913,7 @@ class MainWindow(QMainWindow):
         """Explain what was covered, capped, truncated, skipped, or not run."""
         report = report or {}
         coverage = report.get("coverage_summary", {}) or {}
+        asset_probe_summary = report.get("asset_probe_summary", {}) or {}
         lines = []
         lines.append("=== SCAN COVERAGE / GAPS ===")
         lines.append(f"Target: {report.get('target') or '(no target recorded)'}")
@@ -1941,7 +1942,7 @@ class MainWindow(QMainWindow):
         content_limited = bool(report.get("content_limit_reached"))
         if stopped:
             overall = "STOPPED BY USER"
-        elif crawler_limited or wordlist_limited:
+        elif crawler_limited or wordlist_limited or asset_probe_summary.get("rate_limited_stop"):
             overall = "PARTIAL — RATE LIMITED"
         elif (
             coverage.get("page_limit_reached")
