@@ -56,16 +56,6 @@ def render_text_report(report: dict) -> str:
             f"title={page.get('title', '')}"
         )
 
-    coverage = report.get("coverage_summary", {}) or {}
-    if coverage:
-        writer.writerow([
-            "coverage_summary", "", "", "",
-            "partial" if report.get("content_limit_reached") or report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") else "no-limit-reported",
-            json.dumps(coverage, ensure_ascii=False, sort_keys=True),
-        ])
-    for note in report.get("content_limit_notes", []) or []:
-        writer.writerow(["coverage_warning", "", "", "", "warning", str(note)])
-
     verification = report.get("subdomain_verification", {}) or {}
     verified_hosts = verification.get("results", []) or []
     _section(lines, "Selected Subdomain Verification (Explicit DNS + HTTP HEAD)")
@@ -398,6 +388,19 @@ def render_csv_report(report: dict) -> str:
                 json.dumps(item.get("set_cookie_names", []), ensure_ascii=False, sort_keys=True),
             ),
         ])
+    coverage = report.get("coverage_summary", {}) or {}
+    if coverage:
+        writer.writerow([
+            "coverage_summary", "", "", "",
+            "partial" if (
+                report.get("content_limit_reached") or report.get("page_limit_reached")
+                or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached")
+            ) else "no-limit-reported",
+            json.dumps(coverage, ensure_ascii=False, sort_keys=True),
+        ])
+    for note in report.get("content_limit_notes", []) or []:
+        writer.writerow(["coverage_warning", "", "", "", "warning", str(note)])
+
     verification = report.get("subdomain_verification", {}) or {}
     for item in verification.get("results", []) or []:
         writer.writerow([
