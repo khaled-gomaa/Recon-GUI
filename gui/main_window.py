@@ -1787,6 +1787,7 @@ class MainWindow(QMainWindow):
         existing_target = str((self.recon_report or {}).get("target") or "").strip()
         existing_host = (urlparse(existing_target).hostname or "").lower()
         incoming_host = (parsed_target.hostname or "").lower()
+        reset_existing_report = False
         if existing_host and existing_host != incoming_host:
             answer = QMessageBox.question(
                 self, "Replace current report?",
@@ -1797,11 +1798,11 @@ class MainWindow(QMainWindow):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
-            self.recon_report = {}
+            reset_existing_report = True
 
         try:
             imported = load_har_file(path, target)
-            base_report = dict(self.recon_report or {})
+            base_report = {} if reset_existing_report else dict(self.recon_report or {})
             base_report.setdefault("target", target)
             base_report.setdefault("pages", [])
             base_report.setdefault("filtered_pages", [])
