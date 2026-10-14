@@ -35,3 +35,34 @@ def test_exports_include_endpoint_parameter_and_correlated_finding_records():
     assert "endpoint" in csv
     assert "parameter" in csv
     assert "correlated_finding" in csv
+
+
+def test_exports_include_selected_subdomain_verification_without_credentials():
+    report = {
+        "target": "https://example.test/",
+        "pages": [],
+        "subdomain_verification": {
+            "candidate_count": 2,
+            "verified_count": 1,
+            "skipped_count": 1,
+            "truncated": True,
+            "results": [{
+                "host": "api.example.test",
+                "dns_status": "resolved",
+                "ip_addresses": ["192.0.2.25"],
+                "http_status": 401,
+                "http_url": "https://api.example.test/",
+                "http_result": "responded",
+                "server": "test-server",
+                "error": "",
+            }],
+        },
+    }
+    txt = render_text_report(report)
+    csv = render_csv_report(report)
+    assert "SELECTED SUBDOMAIN VERIFICATION" in txt
+    assert "api.example.test" in txt
+    assert "192.0.2.25" in txt
+    assert "remain unchecked" in txt
+    assert "subdomain_verification" in csv
+    assert "api.example.test" in csv
