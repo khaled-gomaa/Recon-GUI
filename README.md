@@ -70,7 +70,7 @@ A Windows build workflow is included at Actions → Windows application build. R
 
 ## Tests
 
-    python -m pip install pytest pytest-timeout aiohttp beautifulsoup4 lxml requests mmh3
+    python -m pip install pytest pytest-timeout aiohttp beautifulsoup4 lxml requests mmh3 tldextract
     python -m pytest -q
 
 GitHub Actions runs compile checks and the regression suite with per-test and overall deadlines.
