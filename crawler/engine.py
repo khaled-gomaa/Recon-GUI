@@ -72,7 +72,7 @@ class CrawlResult:
         content_hash: str = "", text_hash: str = "",
         content_length: int = 0, content_type: str = "",
         favicon_hash: str = "",
-        links=None,
+        links=None, body_truncated: bool = False,
     ):
         self.url = url
         self.status = status
@@ -87,6 +87,7 @@ class CrawlResult:
         self.content_type = content_type
         self.favicon_hash = favicon_hash
         self.links = list(links or [])
+        self.body_truncated = bool(body_truncated)
         # Kept in memory for analysis; deliberately omitted from to_dict().
         self.headers = {}
         self.cookie_events = []
@@ -102,6 +103,7 @@ class CrawlResult:
             "redirect_chain": self.redirect_chain,
             "word_count": self.word_count,
             "content_length": self.content_length,
+            "body_truncated": self.body_truncated,
             "content_type": self.content_type,
             "content_hash": self.content_hash,
             "text_hash": self.text_hash,
@@ -504,6 +506,7 @@ class CrawlEngine:
         html = ""
         response_headers = {}
         cookie_events = []
+        response_body_truncated = False
 
         try:
             for _ in range(6):
@@ -546,6 +549,7 @@ class CrawlEngine:
                     if is_html or is_xml or is_robots:
                         body = await response.content.read(MAX_BODY_BYTES + 1)
                         if len(body) > MAX_BODY_BYTES:
+                            response_body_truncated = True
                             body = body[:MAX_BODY_BYTES]
                             self._log(f"[LIMIT] Body truncated at {MAX_BODY_BYTES} bytes: {url}")
                         html = body.decode(response.charset or "utf-8", errors="replace")
@@ -566,6 +570,7 @@ class CrawlEngine:
                 content_length=len(html.encode("utf-8")),
                 content_type=content_type,
                 links=parsed.get("links", []) if html else [],
+                body_truncated=response_body_truncated,
             )
             result.headers = response_headers
             result.cookie_events = cookie_events
@@ -576,7 +581,7 @@ class CrawlEngine:
             result = CrawlResult(
                 url=url, status=final_status, title="", html="",
                 redirect_chain=redirect_chain, final_url=current_url,
-                content_type=content_type,
+                content_type=content_type, body_truncated=response_body_truncated,
             )
             result.headers = response_headers
             result.cookie_events = cookie_events
