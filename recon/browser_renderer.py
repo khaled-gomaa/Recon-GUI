@@ -17,6 +17,47 @@ def _origin(url):
 MAX_RENDER_PAGES = 5000
 MAX_RENDER_CONCURRENCY = 2
 NAVIGATION_TIMEOUT_MS = 15000
+AUTO_SCROLL_MAX_STEPS = 5
+AUTO_SCROLL_SETTLE_MS = 250
+
+
+async def _bounded_scroll_page(page, should_stop=None, max_steps=AUTO_SCROLL_MAX_STEPS,
+                               settle_ms=AUTO_SCROLL_SETTLE_MS, idle_limit=2):
+    """Trigger lazy/infinite-scroll loaders without clicking controls or submitting forms."""
+    stop = should_stop or (lambda: False)
+    try:
+        previous_height = int(await page.evaluate(
+            "() => Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0)"
+        ) or 0)
+    except Exception:
+        return 0
+    idle_steps = 0
+    steps = 0
+    for _ in range(max(0, min(int(max_steps), 10))):
+        if stop():
+            break
+        try:
+            await page.evaluate("() => window.scrollTo(0, document.documentElement.scrollHeight)")
+            await page.wait_for_timeout(max(0, min(int(settle_ms), 2000)))
+            current_height = int(await page.evaluate(
+                "() => Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0)"
+            ) or 0)
+        except Exception:
+            break
+        steps += 1
+        if current_height <= previous_height:
+            idle_steps += 1
+        else:
+            idle_steps = 0
+        previous_height = max(previous_height, current_height)
+        if idle_steps >= max(1, min(int(idle_limit), 5)):
+            break
+    if not stop():
+        try:
+            await page.evaluate("() => window.scrollTo(0, 0)")
+        except Exception:
+            pass
+    return steps
 
 
 def _filter_storage_state_for_target(storage_state, target_url):
@@ -197,7 +238,11 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
                         if response is not None and response.status == 429:
                             log(f"[Browser] {url} returned HTTP 429; skipping render.")
                             return
-                        await page.wait_for_timeout(700)
+                        await page.wait_for_timeout(350)
+                        scroll_steps = await _bounded_scroll_page(page, should_stop=stop)
+                        if scroll_steps:
+                            log(f"[Browser] Bounded lazy-content scroll: {url} ({scroll_steps} steps).")
+                        await page.wait_for_timeout(150)
                         if not stop():
                             rendered[url] = await page.content()
                             log(f"[Browser] Rendered DOM: {url}")
