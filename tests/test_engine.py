@@ -101,6 +101,7 @@ def test_crawler_respects_max_pages_with_many_discovered_links():
             assert len(results) <= 4
             assert len(engine.visited) <= 4
             assert len(results) == 4
+            assert engine.page_limit_reached is True
         finally:
             await runner.cleanup()
 
