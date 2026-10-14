@@ -391,3 +391,38 @@ def test_crawler_stops_queue_when_429_has_no_retry_after():
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+def test_crawler_marks_truncated_html_bodies_explicitly(monkeypatch):
+    async def scenario():
+        async def robots(request):
+            return web.Response(status=404, text="missing")
+
+        async def root(request):
+            return web.Response(
+                text="<html><body>" + ("x" * 512) + "</body></html>",
+                content_type="text/html",
+            )
+
+        app = web.Application()
+        app.router.add_get("/robots.txt", robots)
+        app.router.add_get("/", root)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            monkeypatch.setattr("crawler.engine.MAX_BODY_BYTES", 128)
+            engine = CrawlEngine(
+                f"http://127.0.0.1:{port}/", max_depth=1, max_pages=5, concurrency=1,
+            )
+            results = await engine.crawl()
+            root_result = next(item for item in results if item.url.endswith("/"))
+            assert root_result.body_truncated is True
+            assert root_result.to_dict()["body_truncated"] is True
+            assert len(root_result.html.encode("utf-8")) <= 128
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
