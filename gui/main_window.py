@@ -1640,11 +1640,12 @@ class MainWindow(QMainWindow):
         wordlist_limited = report.get("wordlist_candidate_limit_reached", False)
         content_limited = report.get("content_limit_reached", False)
         recursion_depth_limited = report.get("wordlist_recursion_depth_limit_reached", False)
+        seed_import_limited = bool((report.get("seed_import_summary", {}) or {}).get("limit_reached"))
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
         elif crawler_limited or discovery_limited:
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
-        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited:
+        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited:
             reasons = []
             if page_limited:
                 reasons.append("PAGE")
@@ -1656,6 +1657,8 @@ class MainWindow(QMainWindow):
                 reasons.append("CONTENT")
             if recursion_depth_limited:
                 reasons.append("RECURSION")
+            if seed_import_limited:
+                reasons.append("SEED IMPORT")
             self.status_label.setText("PARTIAL  ·  " + "/".join(reasons) + " LIMIT")
         else:
             self.status_label.setText(f"COMPLETE  ·  {total} pages")
@@ -1863,6 +1866,7 @@ class MainWindow(QMainWindow):
             or coverage.get("wordlist_word_limit_reached")
             or coverage.get("wordlist_path_limit_reached")
             or coverage.get("wordlist_recursion_depth_limit_reached")
+            or coverage.get("imported_seed_limit_reached")
             or content_limited
         ):
             overall = "PARTIAL — ONE OR MORE COVERAGE LIMITS REACHED"
