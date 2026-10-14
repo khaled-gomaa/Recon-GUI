@@ -154,3 +154,22 @@ def test_streaming_wordlist_applies_explicit_candidate_cap_and_reports_it(tmp_pa
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+def test_subdomain_finder_uses_private_suffix_boundaries():
+    from recon.subdomain_finder import SubdomainFinder
+
+    finder = SubdomainFinder("myblog.blogspot.com")
+    found = finder.find(
+        "api.myblog.blogspot.com anotherblog.blogspot.com "
+        "admin.anotherblog.blogspot.com"
+    )
+    assert found == {"api.myblog.blogspot.com"}
+
+
+def test_subdomain_finder_handles_public_suffixes_without_a_fixed_list():
+    from recon.subdomain_finder import SubdomainFinder
+
+    finder = SubdomainFinder("www.example.co.uk")
+    found = finder.find("api.example.co.uk api.other.co.uk")
+    assert found == {"api.example.co.uk"}
