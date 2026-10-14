@@ -12,7 +12,9 @@ from crawler.fetcher import build_headers
 SOURCEMAP_RE = re.compile(r"//[#@]\s*sourceMappingURL=([^\s*]+)")
 JS_URL_RE = re.compile(r"""["']([^"']+\.js(?:\?[^"']*)?)["']""")
 MAX_JS_BYTES = 2 * 1024 * 1024
-MAX_JS_FILES = 200
+# Zero means process every discovered same-host JS URL. Each file still has a
+# clearly logged byte cap, a timeout, and normal scope/rate-limit protections.
+MAX_JS_FILES = 0
 
 
 class JSCollector:
@@ -85,13 +87,13 @@ class JSCollector:
         async with aiohttp.ClientSession(**session_options) as session:
             while (
                 self.js_urls - self._analyzed_js_urls
-                and len(self._analyzed_js_urls) < MAX_JS_FILES
+                and (not MAX_JS_FILES or len(self._analyzed_js_urls) < MAX_JS_FILES)
                 and not stop()
                 and not self.rate_limit_stopped
             ):
-                batch = sorted(self.js_urls - self._analyzed_js_urls)[
-                    :min(concurrency, MAX_JS_FILES - len(self._analyzed_js_urls))
-                ]
+                remaining = sorted(self.js_urls - self._analyzed_js_urls)
+                batch_size = min(concurrency, MAX_JS_FILES - len(self._analyzed_js_urls)) if MAX_JS_FILES else concurrency
+                batch = remaining[:batch_size]
                 await asyncio.gather(
                     *(self._fetch_js(session, url, timeout, stop) for url in batch),
                     return_exceptions=True,
@@ -101,8 +103,8 @@ class JSCollector:
                 if delay_seconds > 0 and (self.js_urls - self._analyzed_js_urls) and not stop():
                     await asyncio.sleep(delay_seconds)
 
-        if len(self.js_urls) > MAX_JS_FILES:
-            self.on_log(f"[JS] File limit reached ({MAX_JS_FILES}).")
+        if MAX_JS_FILES and len(self.js_urls) > MAX_JS_FILES:
+            self.on_log(f"[JS] File limit reached ({MAX_JS_FILES}); unprocessed files remain.")
 
     async def _fetch_js(self, session, url, timeout, stop):
         if stop() or not self._in_scope(url):
