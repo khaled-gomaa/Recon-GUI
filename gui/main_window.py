@@ -1991,6 +1991,7 @@ class MainWindow(QMainWindow):
                 f"HEAD checks: {asset_probe_summary.get('requests_completed', 0)} requests completed / "
                 f"{asset_probe_summary.get('selected_candidates', 0)} selected; "
                 f"external origins skipped={asset_probe_summary.get('skipped_out_of_origin', 0)}; "
+                f"request failures={asset_probe_summary.get('request_failures', 0)}; "
                 f"rate-limited stop={asset_probe_summary.get('rate_limited_stop', False)}; "
                 f"limit reached={asset_probe_summary.get('limit_reached', False)}; "
                 f"partial={asset_probe_summary.get('partial', False)}"
