@@ -59,6 +59,8 @@ class CrawlWorker(QThread):
         return self._stop_event.is_set()
 
     def run(self):
+        from urllib.parse import urlparse
+
         loop = None
         started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         try:
@@ -188,7 +190,6 @@ class CrawlWorker(QThread):
 
             historical_seeds = []
             if self.crawl_historical_urls and not self._stopping():
-                from urllib.parse import urlparse
                 target_host = (urlparse(self.url).hostname or "").lower()
                 historical_seeds = sorted({
                     candidate for candidate in passive_results.get("historical_urls", [])
