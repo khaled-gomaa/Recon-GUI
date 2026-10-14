@@ -1269,6 +1269,20 @@ class MainWindow(QMainWindow):
         if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
             QMessageBox.warning(self, "Invalid URL", "Enter a full http:// or https:// URL.")
             return
+        if self.imported_seed_urls:
+            try:
+                current_host = parsed.hostname.rstrip(".").lower().encode("idna").decode("ascii")
+            except UnicodeError:
+                QMessageBox.warning(self, "Invalid URL", "The target hostname could not be normalized.")
+                return
+            if current_host != self.seed_import_target_host:
+                QMessageBox.warning(
+                    self, "Imported seed scope mismatch",
+                    "The imported URL list was validated for "
+                    f"{self.seed_import_target_host}, not {current_host}. "
+                    "Re-import the source after setting the new target, or clear the old seeds.",
+                )
+                return
 
         try:
             matcher = self._build_matcher()
@@ -1992,6 +2006,66 @@ class MainWindow(QMainWindow):
                 lines.append(f"    <- {s}")
 
         self.similarity_view.setPlainText("\n".join(lines))
+
+    def _import_seed_file(self):
+        """Import additional same-host crawl seeds from common URL exports and server logs."""
+        from urllib.parse import urlparse
+
+        target = self.url_input.text().strip()
+        parsed = urlparse(target)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            QMessageBox.warning(self, "Invalid target", "Enter a full HTTP(S) target before importing URL seeds.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import URL seeds, sitemap, Search Console CSV, or access log",
+            "",
+            "URL sources (*.txt *.csv *.xml *.xml.gz *.gz *.json *.log);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            from recon.seed_importer import load_seed_urls
+
+            summary = load_seed_urls(path, target)
+            urls = summary.pop("urls", [])
+            normalized_host = parsed.hostname.rstrip(".").lower().encode("idna").decode("ascii")
+            self.imported_seed_urls = urls
+            self.seed_import_summary = summary
+            self.seed_import_target_host = normalized_host
+            self.seed_import_label.setText(
+                f"{len(urls):,} seeds loaded · {summary.get('source_type', 'URL list')} · "
+                f"{summary.get('source_file', Path(path).name)}"
+            )
+            if hasattr(self, "log_view"):
+                self._append_log(
+                    f"[Seeds] Imported {len(urls)} same-host URLs from {Path(path).name}; "
+                    f"rejected/out-of-scope: {summary.get('rejected_or_out_of_scope', 0)}."
+                )
+            details = (
+                f"Accepted: {len(urls):,} same-host URL seeds\n"
+                f"Rejected or out of scope: {summary.get('rejected_or_out_of_scope', 0):,}\n"
+                f"Input candidates: {summary.get('input_candidates', 0):,}\n\n"
+                "These URLs will be added as starting points for the next scan. They still obey "
+                "the configured page/depth limits, exact-host scope, robots crawl-delay, and HTTP 429 handling. "
+                "Importing URLs is not proof that you are authorized to test them.\n\n"
+                "Imported URLs can contain query strings and may appear in results/history; review exports before sharing."
+            )
+            if summary.get("limit_reached"):
+                details += (
+                    f"\n\nWARNING: the {summary.get('limit', 0):,}-URL import cap was reached. "
+                    "The input may contain more candidates."
+                )
+            QMessageBox.information(self, "URL seeds imported", details)
+        except (OSError, ValueError, UnicodeError) as exc:
+            QMessageBox.warning(self, "URL seed import failed", f"Could not import this source:\n{exc}")
+
+    def _clear_seed_import(self):
+        self.imported_seed_urls = []
+        self.seed_import_summary = {}
+        self.seed_import_target_host = ""
+        self.seed_import_label.setText("No external URL seeds imported")
+        self._append_log("[Seeds] Cleared imported URL seeds.")
 
     def _import_har_file(self):
         """Import sanitized same-host traffic metadata from a browser or Burp HAR export."""
