@@ -1696,6 +1696,16 @@ class MainWindow(QMainWindow):
                 f"{coverage.get('javascript_files_truncated', 0)} truncated"
             )
             lines.append(
+                f"  Wordlist words: {coverage.get('wordlist_words_loaded', 0)} / cap "
+                f"{coverage.get('wordlist_max_words', 0) or 'unlimited'}; "
+                f"word cap reached: {coverage.get('wordlist_word_limit_reached', False)}"
+            )
+            lines.append(
+                f"  Generated paths: {coverage.get('wordlist_candidates', 0)} / cap "
+                f"{coverage.get('wordlist_max_candidates', 0) or 'unlimited'}; "
+                f"path cap reached: {coverage.get('wordlist_path_limit_reached', False)}"
+            )
+            lines.append(
                 f"  Truncated response bodies: {coverage.get('response_bodies_truncated', 0)}; "
                 f"content limit reached: {coverage.get('content_limit_reached', False)}"
             )
