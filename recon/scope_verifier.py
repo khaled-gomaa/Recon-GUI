@@ -161,14 +161,19 @@ async def verify_subdomains(
 
     order = {host: idx for idx, host in enumerate(selected)}
     results.sort(key=lambda item: order.get(item["host"], 999999))
+    verified_count = sum(
+        1 for item in results if item["dns_status"] in {"resolved", "failed", "no-address"}
+    )
+    skipped_count = max(0, len(normalized) - verified_count)
     log(
         f"[Scope] Verification complete: {sum(1 for item in results if item['dns_status'] == 'resolved')} DNS-resolved, "
-        f"{sum(1 for item in results if item['http_status'] is not None)} HTTP responses."
+        f"{sum(1 for item in results if item['http_status'] is not None)} HTTP responses, "
+        f"{skipped_count} host(s) unchecked or skipped."
     )
     return {
         "results": results,
         "candidate_count": len(normalized),
-        "verified_count": len(results),
-        "skipped_count": max(0, len(normalized) - len(results)),
+        "verified_count": verified_count,
+        "skipped_count": skipped_count,
         "truncated": truncated,
     }
