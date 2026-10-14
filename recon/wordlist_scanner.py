@@ -32,6 +32,7 @@ class WordlistScanner:
         concurrency: int = 5, timeout: int = 8, delay_ms: int = 200,
         on_hit=None, on_log=None, should_stop=None, on_result=None, request_headers=None,
         max_words: int = 0, cookie_jar=None, max_candidates: int = 0,
+        recursive: bool = False, recursion_depth: int = 1,
     ):
         parsed = urlparse(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -51,6 +52,10 @@ class WordlistScanner:
         self.max_words = max(0, int(max_words or 0))
         self.max_candidates = max(0, int(max_candidates or 0))
         self.cookie_jar = cookie_jar
+        self.recursive = bool(recursive)
+        self.recursion_depth = max(1, min(int(recursion_depth), 5))
+        self.recursive_dirs_found = 0
+        self.recursion_rounds = 0
         self.words_loaded = 0
         self.candidate_count = 0
         self.word_limit_reached = False
@@ -176,15 +181,17 @@ class WordlistScanner:
             self._log("[429] Cool-down complete; resuming remaining queued checks at the configured rate.")
             return True
 
-    def _iter_wordlist(self, deduplicate: bool = True):
-        """Yield safe path words one at a time; target-level deduplication handles production scans."""
+    def _iter_wordlist(self, deduplicate: bool = True, *, track_stats: bool = True):
+        """Stream safe relative paths; recursive passes re-read the list without changing base counts."""
         if not self.wordlist_path.is_file():
             raise FileNotFoundError(f"Wordlist not found: {self.wordlist_path}")
-        self.words_loaded = 0
-        self.word_limit_reached = False
-        self.candidate_limit_reached = False
+        if track_stats:
+            self.words_loaded = 0
+            self.word_limit_reached = False
+            self.candidate_limit_reached = False
         seen = set() if deduplicate else None
         skipped_query_lines = 0
+        local_words = 0
         with self.wordlist_path.open("r", encoding="utf-8", errors="ignore") as stream:
             for raw in stream:
                 if self.should_stop() or self._rate_limited:
@@ -196,27 +203,31 @@ class WordlistScanner:
                 if "?" in word or "#" in word or "://" in word or word.startswith("//"):
                     skipped_query_lines += 1
                     continue
-                if self.max_words and self.words_loaded >= self.max_words:
-                    self.word_limit_reached = True
-                    self._log(
-                        f"[Wordlist] Explicit word limit reached ({self.max_words}); "
-                        "remaining entries were not loaded or checked. Raise the limit or set it to 0 for all words."
-                    )
+                if self.max_words and local_words >= self.max_words:
+                    if track_stats:
+                        self.word_limit_reached = True
+                        self._log(
+                            f"[Wordlist] Explicit word limit reached ({self.max_words}); "
+                            "remaining entries were not loaded or checked. Raise the limit or set it to 0 for all words."
+                        )
                     break
                 if any(part == ".." for part in word.replace("\\", "/").split("/")):
                     continue
                 if seen is not None:
                     seen.add(word)
-                self.words_loaded += 1
+                local_words += 1
+                if track_stats:
+                    self.words_loaded += 1
                 yield word
-        cap_note = f" (explicit cap: {self.max_words})" if self.max_words else " (no implicit word-count cap)"
-        word_label = "unique entries" if deduplicate else "valid entries"
-        self._log(f"[Wordlist] Streamed {self.words_loaded} {word_label}{cap_note}")
-        if skipped_query_lines:
-            self._log(
-                f"[Wordlist] Skipped {skipped_query_lines} entry lines with query strings/fragments or absolute URLs; "
-                "parameter names are collected separately."
-            )
+        if track_stats:
+            cap_note = f" (explicit cap: {self.max_words})" if self.max_words else " (no implicit word-count cap)"
+            word_label = "unique entries" if deduplicate else "valid entries"
+            self._log(f"[Wordlist] Streamed {self.words_loaded} {word_label}{cap_note}")
+            if skipped_query_lines:
+                self._log(
+                    f"[Wordlist] Skipped {skipped_query_lines} entry lines with query strings/fragments or absolute URLs; "
+                    "parameter names are collected separately."
+                )
 
     def _load_wordlist(self):
         """Compatibility helper for tests/callers; production scans stream this iterator."""
@@ -224,18 +235,25 @@ class WordlistScanner:
         self.candidate_limit_reached = self.word_limit_reached
         return entries
 
-    def _build_targets(self, word: str):
+    def _build_targets(self, word: str, prefix: str = ""):
         # Wordlists describe relative paths only; never allow a line to set another origin.
         word = str(word or "").strip().lstrip("/")
-        if not word or "://" in word or word.startswith("//") or "\r" in word or "\n" in word:
+        prefix = str(prefix or "").strip("/")
+        if (
+            not word or "://" in word or word.startswith("//")
+            or "\r" in word or "\n" in word
+            or any(part == ".." for part in word.replace("\\", "/").split("/"))
+            or any(part == ".." for part in prefix.replace("\\", "/").split("/"))
+        ):
             return []
-        leaf = word.rsplit("/", 1)[-1]
+        relative = f"{prefix}/{word}" if prefix else word
+        leaf = relative.rsplit("/", 1)[-1]
         # Keep explicit filenames and dotfiles exact rather than appending nonsensical
         # variants such as robots.txt.php or .env.html.
         if leaf.startswith(".") or ("." in leaf and not leaf.endswith(".")):
-            candidates = [word]
+            candidates = [relative]
         else:
-            candidates = [word + ext for ext in self.extensions]
+            candidates = [relative + ext for ext in self.extensions]
         result = []
         for candidate in candidates:
             url = urljoin(self.origin, candidate)
@@ -243,6 +261,52 @@ class WordlistScanner:
             if parsed.scheme in ("http", "https") and parsed.hostname and parsed.hostname.lower() == self.base_host:
                 result.append(url)
         return list(dict.fromkeys(result))
+
+    def _recursive_directory_prefix(self, result: dict) -> str:
+        """Return a directory path only when an in-scope candidate looks directory-like."""
+        if not self.recursive or not result.get("potential_hit"):
+            return ""
+        base = urlparse(self.origin)
+        requested = urlparse(str(result.get("url") or ""))
+        requested_port = requested.port or (443 if requested.scheme.lower() == "https" else 80)
+        base_port = base.port or (443 if base.scheme.lower() == "https" else 80)
+        if (
+            requested.scheme.lower() != base.scheme.lower()
+            or (requested.hostname or "").lower() != self.base_host
+            or requested_port != base_port
+        ):
+            return ""
+
+        location = str(result.get("location") or "").strip()
+        if location:
+            redirected = urlparse(urljoin(str(result.get("url") or ""), location))
+            redirected_port = redirected.port or (443 if redirected.scheme.lower() == "https" else 80)
+            if (
+                redirected.scheme.lower() == base.scheme.lower()
+                and (redirected.hostname or "").lower() == self.base_host
+                and redirected_port == base_port
+                and redirected.path.endswith("/")
+                and redirected.path.strip("/")
+            ):
+                return redirected.path.strip("/") + "/"
+
+        final_url = str(result.get("final_url") or result.get("url") or "")
+        final = urlparse(final_url)
+        final_port = final.port or (443 if final.scheme.lower() == "https" else 80)
+        if final.scheme.lower() != base.scheme.lower() or (final.hostname or "").lower() != self.base_host or final_port != base_port:
+            return ""
+        path = final.path or "/"
+        if path.endswith("/") and path.strip("/"):
+            return path.strip("/") + "/"
+
+        # Heuristic for applications that serve directory routes without a trailing slash.
+        # Recursion is opt-in and the configured depth/path caps remain global.
+        leaf = path.rsplit("/", 1)[-1]
+        content_type = str(result.get("content_type") or "").lower()
+        status = int(result.get("status") or 0)
+        if path.strip("/") and status in {200, 401, 403} and "html" in content_type and "." not in leaf:
+            return path.strip("/") + "/"
+        return ""
 
     async def _fetch_baseline(self, session):
         baseline_url = urljoin(self.origin, "this-path-should-not-exist-recon-baseline-74c31")
@@ -285,7 +349,8 @@ class WordlistScanner:
         self._log(
             f"[Wordlist] Streaming path discovery (concurrency={self.concurrency}, "
             f"delay={self.delay_ms}ms, extensions={len(self.extensions)}; "
-            f"word cap={self.max_words or 'all'}, candidate cap={self.max_candidates or 'all'})."
+            f"word cap={self.max_words or 'all'}, candidate cap={self.max_candidates or 'all'}; "
+            f"recursion={'on/depth ' + str(self.recursion_depth) if self.recursive else 'off'})."
         )
         self._resume_event = asyncio.Event()
         self._resume_event.set()
@@ -389,11 +454,12 @@ class WordlistScanner:
 
             workers = [asyncio.create_task(worker()) for _ in range(self.concurrency)]
             seen_targets = set()
-            try:
-                for word in self._iter_wordlist(deduplicate=False):
+
+            async def enqueue_wordlist(prefix: str = "", track_stats: bool = False):
+                for word in self._iter_wordlist(deduplicate=False, track_stats=track_stats):
                     if self.should_stop() or self._rate_limited:
                         break
-                    for target in self._build_targets(word):
+                    for target in self._build_targets(word, prefix=prefix):
                         if target in seen_targets:
                             continue
                         if self.max_candidates and self.candidate_count >= self.max_candidates:
@@ -410,9 +476,48 @@ class WordlistScanner:
                             break
                     if self.path_limit_reached or self.should_stop() or self._rate_limited:
                         break
+
+            try:
+                # First pass enumerates the supplied list from the selected origin.
+                await enqueue_wordlist(track_stats=True)
+                await queue.join()
+
+                # Optional dirsearch-style recursion: only directory-like potential hits
+                # discovered in the previous pass seed the next bounded depth round.
+                explored_directories = set()
+                new_directories = {
+                    prefix for response in self.responses
+                    if (prefix := self._recursive_directory_prefix(response))
+                }
+                self.recursive_dirs_found = len(new_directories)
+                for depth in range(1, self.recursion_depth + 1):
+                    if (
+                        not self.recursive or not new_directories
+                        or self.should_stop() or self._rate_limited or self.path_limit_reached
+                    ):
+                        break
+                    current_directories = sorted(new_directories - explored_directories)
+                    if not current_directories:
+                        break
+                    self.recursion_rounds = depth
+                    self._log(
+                        f"[Wordlist] Recursive pass {depth}/{self.recursion_depth}: "
+                        f"{len(current_directories)} directory candidate(s)."
+                    )
+                    explored_directories.update(current_directories)
+                    response_start = len(self.responses)
+                    for prefix in current_directories:
+                        await enqueue_wordlist(prefix=prefix, track_stats=False)
+                        if self.path_limit_reached or self.should_stop() or self._rate_limited:
+                            break
+                    await queue.join()
+                    new_directories = {
+                        prefix for response in self.responses[response_start:]
+                        if (prefix := self._recursive_directory_prefix(response))
+                    } - explored_directories
+                    self.recursive_dirs_found = len(explored_directories | new_directories)
             finally:
-                # Bounded queue + live workers prevents huge wordlists from building an
-                # unbounded queue in memory, even when scans are stopped or rate-limited.
+                # Keep the queue bounded and workers alive until every recursive pass is done.
                 for _ in workers:
                     await queue.put(None)
             await queue.join()
@@ -425,6 +530,7 @@ class WordlistScanner:
         self._log(
             f"[Wordlist] Finished: {len(self.responses)} responses recorded, "
             f"{len(self.hits)} potential hits, {self.candidate_count} candidates generated; "
-            f"word limit reached={self.word_limit_reached}, candidate limit reached={self.path_limit_reached}."
+            f"word limit reached={self.word_limit_reached}, candidate limit reached={self.path_limit_reached}; "
+            f"recursive rounds={self.recursion_rounds}, directory candidates={self.recursive_dirs_found}."
         )
         return self.hits
