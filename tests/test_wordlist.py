@@ -243,3 +243,81 @@ def test_retry_after_parser_supports_seconds_and_invalid_values():
     assert WordlistScanner._parse_retry_after("15") == 15
     assert WordlistScanner._parse_retry_after("bad-value") is None
     assert WordlistScanner._parse_retry_after(None) is None
+
+
+def test_wordlist_has_no_hidden_500_entry_limit_and_reports_word_caps(tmp_path):
+    path = tmp_path / "many.txt"
+    path.write_text("\n".join(f"path{i}" for i in range(650)), encoding="utf-8")
+    scanner = WordlistScanner("https://example.com", str(path), extensions=[""])
+    entries = scanner._load_wordlist()
+    assert len(entries) == 650
+
+    capped = WordlistScanner(
+        "https://example.com", str(path), extensions=[""], max_words=20
+    )
+    assert len(capped._load_wordlist()) == 20
+
+
+def test_path_candidates_expand_configured_extensions_and_reject_traversal(tmp_path):
+    path = tmp_path / "words.txt"
+    path.write_text("admin", encoding="utf-8")
+    scanner = WordlistScanner(
+        "https://example.com/base", str(path),
+        extensions=["", ".php", "json"],
+    )
+    candidates = scanner._build_targets("admin")
+    assert candidates == [
+        "https://example.com/admin",
+        "https://example.com/admin.php",
+        "https://example.com/admin.json",
+    ]
+    assert scanner._build_targets("../outside") == []
+    assert scanner._build_targets("https://outside.test/path") == []
+
+
+def test_wordlist_request_methods_are_explicit_and_safe_by_default(tmp_path):
+    path = tmp_path / "words.txt"
+    path.write_text("admin", encoding="utf-8")
+    scanner = WordlistScanner("https://example.com", str(path), extensions=[""])
+    assert scanner.methods == ["GET"]
+
+    selected = WordlistScanner(
+        "https://example.com", str(path), extensions=[""],
+        methods=["GET", "HEAD", "OPTIONS", "POST", "DELETE"],
+    )
+    assert selected.methods == ["GET", "HEAD", "OPTIONS"]
+
+
+def test_content_discovery_records_method_for_every_response(tmp_path):
+    async def scenario():
+        observed = []
+
+        async def handler(request):
+            if "this-path-should-not-exist-recon-baseline" in request.path:
+                return web.Response(status=404, text="missing")
+            observed.append(request.method)
+            return web.Response(status=200, text="method-aware " + ("resource " * 30))
+
+        app = web.Application()
+        app.router.add_route("*", "/{name:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            wordlist = tmp_path / "paths.txt"
+            wordlist.write_text("admin", encoding="utf-8")
+            scanner = WordlistScanner(
+                f"http://127.0.0.1:{port}/", str(wordlist),
+                extensions=[""], methods=["GET", "HEAD"], concurrency=1, delay_ms=0,
+            )
+            await scanner.scan()
+            assert observed == ["GET", "HEAD"]
+            assert [item["method"] for item in scanner.responses] == ["GET", "HEAD"]
+            assert scanner.scan_metadata["requests_completed"] == 2
+            assert scanner.scan_metadata["request_candidates"] == 2
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
