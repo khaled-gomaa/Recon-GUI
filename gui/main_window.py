@@ -216,7 +216,7 @@ class MainWindow(QMainWindow):
             "same-host request methods, URL parameter names, responses, and cookie metadata are captured. "
             "Cookie/token values are not added to reports."
         )
-        options_grid.addWidget(self.manual_browser_check, 1, 0, 1, 4)
+        options_grid.addWidget(self.manual_browser_check, 3, 0, 1, 3)
         self.crawl_historical_check = QCheckBox("Crawl same-host historical URLs")
         self.crawl_historical_check.setToolTip(
             "Active requests to up to 50 historical URLs from public indexes. "
@@ -224,7 +224,20 @@ class MainWindow(QMainWindow):
         )
         self.crawl_historical_check.setEnabled(False)
         self.passive_check.toggled.connect(self.crawl_historical_check.setEnabled)
-        options_grid.addWidget(self.crawl_historical_check, 3, 0, 1, 4)
+        options_grid.addWidget(self.crawl_historical_check, 3, 3, 1, 3)
+        capture_duration_label = QLabel("Manual capture window")
+        capture_duration_label.setObjectName("fieldLabel")
+        self.manual_browser_duration_spin = QSpinBox()
+        self.manual_browser_duration_spin.setRange(30, 600)
+        self.manual_browser_duration_spin.setValue(180)
+        self.manual_browser_duration_spin.setSuffix(" seconds")
+        self.manual_browser_duration_spin.setToolTip(
+            "How long the visible browser stays open for manual login and navigation (30–600 seconds)."
+        )
+        self.manual_browser_duration_spin.setMinimumHeight(29)
+        self.manual_browser_duration_spin.setMaximumHeight(33)
+        options_grid.addWidget(capture_duration_label, 4, 0)
+        options_grid.addWidget(self.manual_browser_duration_spin, 4, 1, 1, 2)
 
         token_label = QLabel("Bearer token")
         token_label.setObjectName("fieldLabel")
@@ -1252,6 +1265,7 @@ class MainWindow(QMainWindow):
             ),
             use_subfinder=self.subfinder_check.isChecked(),
             manual_browser_session=self.manual_browser_check.isChecked(),
+            manual_browser_duration=self.manual_browser_duration_spin.value(),
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
