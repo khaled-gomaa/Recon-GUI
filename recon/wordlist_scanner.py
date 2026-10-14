@@ -12,10 +12,12 @@ from crawler.fetcher import build_headers
 # Common web/application and backup/config extensions. A blank extension probes the
 # path exactly as written. Users can override this list from the GUI.
 DEFAULT_EXTENSIONS = [
-    "", ".php", ".html", ".htm", ".js", ".json", ".xml", ".txt",
-    ".asp", ".aspx", ".jsp", ".jspx", ".do", ".action", ".cgi",
-    ".bak", ".old", ".orig", ".backup", ".save", ".swp", ".zip",
-    ".tar.gz", ".gz", ".conf", ".config", ".ini", ".log", ".pdf",
+    "", ".php", ".php3", ".php4", ".php5", ".phtml", ".html", ".htm", ".xhtml",
+    ".js", ".mjs", ".json", ".xml", ".txt", ".css", ".map", ".yaml", ".yml",
+    ".asp", ".aspx", ".jsp", ".jspx", ".do", ".action", ".cfm", ".cgi", ".pl", ".py", ".rb",
+    ".env", ".conf", ".config", ".ini", ".log", ".csv", ".sql", ".db", ".sqlite",
+    ".bak", ".old", ".orig", ".backup", ".save", ".swp", ".zip", ".tar", ".tar.gz",
+    ".tgz", ".gz", ".7z", ".rar", ".pdf", ".md",
 ]
 # Backward-compatible symbol: zero means no implicit word-count cap.
 MAX_WORDS = 0
@@ -29,7 +31,7 @@ class WordlistScanner:
         self, base_url: str, wordlist_path: str, extensions=None,
         concurrency: int = 5, timeout: int = 8, delay_ms: int = 200,
         on_hit=None, on_log=None, should_stop=None, on_result=None, request_headers=None,
-        max_words: int = 0, cookie_jar=None,
+        max_words: int = 0, cookie_jar=None, max_candidates: int = 0,
     ):
         parsed = urlparse(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -47,9 +49,12 @@ class WordlistScanner:
                 normalized_extensions.append(extension)
         self.extensions = normalized_extensions or [""]
         self.max_words = max(0, int(max_words or 0))
+        self.max_candidates = max(0, int(max_candidates or 0))
         self.cookie_jar = cookie_jar
         self.words_loaded = 0
         self.candidate_count = 0
+        self.word_limit_reached = False
+        self.path_limit_reached = False
         self.candidate_limit_reached = False
         self.concurrency = max(1, min(int(concurrency), 5))
         self.timeout = max(1, int(timeout))
@@ -171,43 +176,50 @@ class WordlistScanner:
             self._log("[429] Cool-down complete; resuming remaining queued checks at the configured rate.")
             return True
 
-    def _load_wordlist(self):
+    def _iter_wordlist(self):
+        """Yield unique safe path words one at a time to keep large lists memory-efficient."""
         if not self.wordlist_path.is_file():
             raise FileNotFoundError(f"Wordlist not found: {self.wordlist_path}")
-        entries, seen = [], set()
-        skipped_query_lines = 0
+        self.words_loaded = 0
+        self.word_limit_reached = False
         self.candidate_limit_reached = False
-        # Stream the file line-by-line so large recon wordlists are not duplicated in RAM.
+        seen = set()
+        skipped_query_lines = 0
         with self.wordlist_path.open("r", encoding="utf-8", errors="ignore") as stream:
             for raw in stream:
-                word = raw.strip()
-                if not word or word.startswith("#"):
+                if self.should_stop() or self._rate_limited:
+                    break
+                word = raw.strip().lstrip("/")
+                if not word or word.startswith("#") or word in seen:
                     continue
-                word = word.lstrip("/")
-                if not word or word in seen:
-                    continue
-                # This module is path discovery (GET only). Query-parameter mining is
-                # handled by archive/network analyzers; never silently export query values.
-                if "?" in word or "#" in word:
+                # This is path discovery (GET only); parameter names are mined separately.
+                if "?" in word or "#" in word or "://" in word or word.startswith("//"):
                     skipped_query_lines += 1
                     continue
-                if self.max_words and len(entries) >= self.max_words:
-                    self.candidate_limit_reached = True
+                if self.max_words and self.words_loaded >= self.max_words:
+                    self.word_limit_reached = True
                     self._log(
                         f"[Wordlist] Explicit word limit reached ({self.max_words}); "
-                        "remaining entries were not loaded. Raise the limit or set it to 0 for unlimited."
+                        "remaining entries were not processed. Raise the limit or set it to 0 for all words."
                     )
                     break
+                if any(part == ".." for part in word.replace("\\\\", "/").split("/")):
+                    continue
                 seen.add(word)
-                entries.append(word)
-        self.words_loaded = len(entries)
+                self.words_loaded += 1
+                yield word
         cap_note = f" (explicit cap: {self.max_words})" if self.max_words else " (no implicit word-count cap)"
-        self._log(f"[Wordlist] Loaded {len(entries)} unique entries{cap_note}")
+        self._log(f"[Wordlist] Streamed {self.words_loaded} unique entries{cap_note}")
         if skipped_query_lines:
             self._log(
-                f"[Wordlist] Skipped {skipped_query_lines} entry lines with query strings/fragments; "
+                f"[Wordlist] Skipped {skipped_query_lines} entry lines with query strings/fragments or absolute URLs; "
                 "parameter names are collected separately."
             )
+
+    def _load_wordlist(self):
+        """Compatibility helper for tests/callers; production scans stream this iterator."""
+        entries = list(self._iter_wordlist())
+        self.candidate_limit_reached = self.word_limit_reached
         return entries
 
     def _build_targets(self, word: str):
@@ -262,27 +274,28 @@ class WordlistScanner:
                 return
 
     async def scan(self):
-        words = self._load_wordlist()
-        targets = list(dict.fromkeys(target for word in words for target in self._build_targets(word)))
-        self.candidate_count = len(targets)
+        self.candidate_count = 0
+        self.responses = []
+        self.hits = []
+        self.path_limit_reached = False
+        self.word_limit_reached = False
+        self.candidate_limit_reached = False
         self._log(
-            f"[Wordlist] Checking {len(targets)} unique GET candidates from {len(words)} words "
-            f"(concurrency={self.concurrency}, delay={self.delay_ms}ms, "
-            f"extensions={len(self.extensions)})."
+            f"[Wordlist] Streaming path discovery (concurrency={self.concurrency}, "
+            f"delay={self.delay_ms}ms, extensions={len(self.extensions)}; "
+            f"word cap={self.max_words or 'all'}, candidate cap={self.max_candidates or 'all'})."
         )
         self._resume_event = asyncio.Event()
         self._resume_event.set()
         self._rate_limit_lock = asyncio.Lock()
-        queue = asyncio.Queue()
-        for target in targets:
-            queue.put_nowait(target)
+        queue = asyncio.Queue(maxsize=max(8, self.concurrency * 4))
         timeout = aiohttp.ClientTimeout(total=self.timeout, connect=min(self.timeout, 5))
         connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=True)
         headers = build_headers()
         headers.update({
             str(key): str(value) for key, value in self.request_headers.items()
             if str(key).lower() in {"authorization", "cookie", "accept-language"}
-            and "\r" not in str(value) and "\n" not in str(value)
+            and "\\r" not in str(value) and "\\n" not in str(value)
         })
 
         session_options = {
@@ -373,17 +386,43 @@ class WordlistScanner:
                         queue.task_done()
 
             workers = [asyncio.create_task(worker()) for _ in range(self.concurrency)]
-            await queue.join()
-            for _ in workers:
-                queue.put_nowait(None)
+            seen_targets = set()
+            try:
+                for word in self._iter_wordlist():
+                    if self.should_stop() or self._rate_limited:
+                        break
+                    for target in self._build_targets(word):
+                        if target in seen_targets:
+                            continue
+                        if self.max_candidates and self.candidate_count >= self.max_candidates:
+                            self.path_limit_reached = True
+                            self._log(
+                                f"[Wordlist] Explicit candidate limit reached ({self.max_candidates}); "
+                                "remaining generated paths were not checked. Set it to 0 for all candidates."
+                            )
+                            break
+                        seen_targets.add(target)
+                        self.candidate_count += 1
+                        await queue.put(target)
+                        if self.should_stop() or self._rate_limited:
+                            break
+                    if self.path_limit_reached or self.should_stop() or self._rate_limited:
+                        break
+            finally:
+                # Bounded queue + live workers prevents huge wordlists from building an
+                # unbounded queue in memory, even when scans are stopped or rate-limited.
+                for _ in workers:
+                    await queue.put(None)
             await queue.join()
             await asyncio.gather(*workers, return_exceptions=True)
 
+        self.candidate_limit_reached = self.word_limit_reached or self.path_limit_reached
         if self._rate_limited:
             self._log("[Wordlist] Ended early because the target is rate-limiting requests.")
         self.rate_limit_stopped = self._rate_limited and not self.should_stop()
         self._log(
             f"[Wordlist] Finished: {len(self.responses)} responses recorded, "
-            f"{len(self.hits)} potential hits, {self.candidate_count} candidates generated."
+            f"{len(self.hits)} potential hits, {self.candidate_count} candidates generated; "
+            f"word limit reached={self.word_limit_reached}, candidate limit reached={self.path_limit_reached}."
         )
         return self.hits
