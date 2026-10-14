@@ -101,3 +101,35 @@ def test_sitemap_xml_extracts_loc_urls():
     )
     assert "https://example.com/catalog/one" in result["links"]
     assert "https://example.com/catalog/two" in result["links"]
+
+
+def test_parser_extracts_static_assets_and_download_references_separately():
+    parser = PageParser("https://example.test/")
+    html = """
+    <html><head>
+      <link rel="stylesheet" href="/css/site.css?v=1">
+      <script src="/assets/app.js"></script>
+    </head><body>
+      <img src="/images/logo.png?size=2"
+           srcset="/images/small.webp 1x, /images/large.webp 2x">
+      <video poster="/media/poster.jpg"><source src="/media/demo.mp4"></video>
+      <div style="background-image:url('/fonts/site.woff2')"></div>
+      <a href="/docs/guide.pdf">Download guide</a>
+      <img src="https://cdn.example-cdn.test/public/remote.svg">
+    </body></html>
+    """
+    parsed = parser.parse(html, "https://example.test/home")
+    assets = parsed["assets"]
+    urls = {item["url"]: item["kind"] for item in assets}
+
+    assert urls["https://example.test/css/site.css?v=1"] == "stylesheet"
+    assert urls["https://example.test/assets/app.js"] == "javascript"
+    assert urls["https://example.test/images/logo.png?size=2"] == "image"
+    assert urls["https://example.test/images/small.webp"] == "image"
+    assert urls["https://example.test/images/large.webp"] == "image"
+    assert urls["https://example.test/media/demo.mp4"] == "media"
+    assert urls["https://example.test/fonts/site.woff2"] == "font"
+    assert urls["https://example.test/docs/guide.pdf"] == "download"
+    assert urls["https://cdn.example-cdn.test/public/remote.svg"] == "image"
+    # Static resources remain separate from page-navigation candidates.
+    assert "https://example.test/assets/app.js" not in parsed["links"]
