@@ -17,12 +17,12 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 MAX_IMPORT_BYTES = 50 * 1024 * 1024
 MAX_DECOMPRESSED_BYTES = 100 * 1024 * 1024
 MAX_IMPORTED_SEEDS = 100_000
-URL_RE = re.compile(r"https?://[^\s<>\\"'\x60,;]+", re.I)
+URL_RE = re.compile(r"""https?://[^\s<>"'\x60,;]+""", re.I)
 REQUEST_TARGET_RE = re.compile(
-    r"\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+((?:https?://)?/[^\s\\"']*)",
+    r"""\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+((?:https?://)?/[^\s"']*)""",
     re.I,
 )
-TRAILING_URL_PUNCTUATION = ".,);]}>'\\""
+TRAILING_URL_PUNCTUATION = ".,);]}>" + chr(39) + chr(34)
 
 
 def _read_source(path: Path) -> str:
