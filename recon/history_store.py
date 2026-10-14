@@ -209,6 +209,11 @@ class HistoryStore:
         status = (
             "stopped" if report.get("stopped_by_user") else
             "rate-limited" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") else
+            "partial" if (
+                report.get("page_limit_reached")
+                or report.get("depth_limit_reached")
+                or report.get("wordlist_candidate_limit_reached")
+            ) else
             "completed"
         )
         complete = status == "completed"
