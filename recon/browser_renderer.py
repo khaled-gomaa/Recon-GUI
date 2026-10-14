@@ -19,6 +19,26 @@ MAX_RENDER_CONCURRENCY = 2
 NAVIGATION_TIMEOUT_MS = 15000
 
 
+def _filter_storage_state_for_target(storage_state, target_url):
+    """Keep only target-host cookies and same-origin localStorage in the memory hand-off."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(target_url or "")
+    target_host = (parsed.hostname or "").lower().rstrip(".")
+    target_origin = _origin(target_url)
+    state = storage_state if isinstance(storage_state, dict) else {}
+    cookies = []
+    for cookie in state.get("cookies", []) or []:
+        domain = str(cookie.get("domain") or "").lower().lstrip(".").rstrip(".")
+        if domain and (domain == target_host or target_host.endswith("." + domain)):
+            cookies.append(dict(cookie))
+    origins = []
+    for entry in state.get("origins", []) or []:
+        if _origin(str(entry.get("origin") or "")) == target_origin:
+            origins.append(dict(entry))
+    return {"cookies": cookies, "origins": origins}
+
+
 async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_network_event=None,
                        max_pages: int = MAX_RENDER_PAGES, concurrency: int = MAX_RENDER_CONCURRENCY,
                        storage_state=None, cookie_jar=None):
@@ -429,7 +449,10 @@ async def capture_manual_session(
                         except Exception as exc:
                             log(f"[Manual Browser] Could not transfer cookie '{metadata['name']}' to HTTP session: {type(exc).__name__}")
                 try:
-                    browser_storage_state.update(await context.storage_state())
+                    snapshot = await context.storage_state()
+                    # Exclude identity-provider cookies/localStorage from other origins.
+                    # The filtered object is handed to rendering only in process memory.
+                    browser_storage_state.update(_filter_storage_state_for_target(snapshot, start_url))
                 except Exception as exc:
                     log(f"[Manual Browser] Could not retain browser storage state in memory: {type(exc).__name__}")
                 await context.close()
