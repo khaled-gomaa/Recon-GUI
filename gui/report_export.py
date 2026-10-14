@@ -14,7 +14,7 @@ def render_text_report(report: dict) -> str:
         "HAR metadata imported (no active scan run)" if import_only else
         "Stopped by user" if report.get("stopped_by_user") else
         "Partial (rate limited)" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") else
-        "Partial (page/depth/wordlist/content cap)" if report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") else
+        "Partial (coverage cap)" if report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") or (report.get("seed_import_summary", {}) or {}).get("limit_reached") else
         "Completed"
     )
     lines = [
@@ -29,6 +29,9 @@ def render_text_report(report: dict) -> str:
         f"Wordlist word cap: {report.get('wordlist_max_words', 0) or 'unlimited'}; reached: {report.get('wordlist_word_limit_reached', False)}",
         f"Generated path cap: {report.get('wordlist_max_candidates', 0) or 'unlimited'}; reached: {report.get('wordlist_path_limit_reached', False)}",
         f"Content/body truncation cap reached: {report.get('content_limit_reached', False)}",
+        f"Imported seed source: {(report.get('seed_import_summary', {}) or {}).get('source_file', '(none)')}",
+        f"Imported seed URLs accepted/crawled: {(report.get('seed_import_summary', {}) or {}).get('accepted_count', 0)}/{report.get('imported_seed_urls_crawled', 0)}",
+        f"Imported seed source cap reached: {(report.get('seed_import_summary', {}) or {}).get('limit_reached', False)}",
         f"Manual browser session elapsed/window: {report.get('manual_browser_seconds', 0)}/{report.get('manual_browser_window_seconds', 0)} seconds",
         f"Filter: {report.get('matcher_description', '(no filters)')}",
         f"Favicon hash: {report.get('favicon_hash') or '(not found)'}",
