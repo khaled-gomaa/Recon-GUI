@@ -131,3 +131,33 @@ def test_content_truncation_marks_scan_partial_and_prevents_false_removals(tmp_p
     assert diff["removed_urls"] == []
     assert diff["removed_endpoints"] == []
     assert diff["removed_parameters"] == []
+
+
+def test_recursive_depth_cap_marks_history_partial_and_does_not_infer_removals(tmp_path):
+    store = HistoryStore(tmp_path / "history.sqlite3")
+    store.save_report({
+        "target": "https://recursive.example/",
+        "pages": [_page("https://recursive.example/a"), _page("https://recursive.example/b")],
+        "endpoint_inventory": [{"endpoint": "/api/old", "sources": ["javascript"]}],
+        "parameters": [{"name": "id", "sources": ["query"]}],
+    })
+    partial = store.save_report({
+        "target": "https://recursive.example/",
+        "pages": [_page("https://recursive.example/a")],
+        "endpoint_inventory": [],
+        "parameters": [],
+        "wordlist_recursive_enabled": True,
+        "wordlist_recursion_depth": 1,
+        "wordlist_recursion_rounds": 1,
+        "wordlist_recursion_depth_limit_reached": True,
+    })
+    diff = partial["history_diff"]
+    status = next(
+        row["status"] for row in store.recent_scans("https://recursive.example/")
+        if row["scan_id"] == partial["scan_id"]
+    )
+    assert status == "partial"
+    assert diff["comparison_status"].startswith("partial")
+    assert diff["removed_urls"] == []
+    assert diff["removed_endpoints"] == []
+    assert diff["removed_parameters"] == []
