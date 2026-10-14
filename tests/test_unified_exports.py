@@ -139,3 +139,29 @@ def test_exports_label_har_only_import_and_include_import_warnings():
     assert "har_import_summary" in csv
     assert "profileId" in csv
     assert "sid" in csv
+
+
+def test_asset_reference_inventory_is_exported_without_query_values():
+    report = {
+        "target": "https://example.test/",
+        "pages": [],
+        "asset_inventory": [{
+            "url": "https://example.test/assets/app.js",
+            "kind": "javascript",
+            "extension": ".js",
+            "reference_count": 2,
+            "referrers": ["https://example.test/", "https://example.test/app"],
+            "query_parameter_names": ["version"],
+            "in_scope": True,
+            "fetched_by_page_crawler": False,
+            "fetched_by_js_collector": False,
+        }],
+    }
+    txt = render_text_report(report)
+    csv = render_csv_report(report)
+    assert "ASSET REFERENCES" in txt
+    assert "https://example.test/assets/app.js" in txt
+    assert "reference only; not fetched" in txt
+    assert "asset_reference" in csv
+    assert "version" in csv
+    assert "secret-value" not in txt + csv
