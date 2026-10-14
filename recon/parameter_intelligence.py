@@ -45,7 +45,7 @@ def _normalize_endpoint(value: str) -> str:
 
 def build_endpoint_inventory(observations, discovered_routes=None, page_urls=None):
     """Merge duplicate endpoints without preserving query values."""
-    grouped = defaultdict(lambda: {"sources": set(), "locations": set(), "parameters": set()})
+    grouped = defaultdict(lambda: {"sources": set(), "locations": set(), "parameters": set(), "methods": set()})
     for record in observations or []:
         raw = record.get("endpoint", "")
         endpoint = _normalize_endpoint(raw)
@@ -53,11 +53,18 @@ def build_endpoint_inventory(observations, discovered_routes=None, page_urls=Non
             continue
         item = grouped[endpoint]
         item["sources"].add(str(record.get("source") or "unknown"))
+        method = str(record.get("method") or "").strip().upper()
+        if method:
+            item["methods"].add(method)
         location = _safe_path(str(record.get("location") or ""))
         if location:
             item["locations"].add(location)
         for name in _names_from_url(raw):
             item["parameters"].add(name)
+        for key in ("query_parameters", "body_parameters", "parameter_names"):
+            item["parameters"].update(
+                str(name).strip() for name in (record.get(key) or []) if str(name).strip()
+            )
     for route in discovered_routes or []:
         endpoint = _normalize_endpoint(str(route))
         if endpoint:
@@ -79,6 +86,7 @@ def build_endpoint_inventory(observations, discovered_routes=None, page_urls=Non
             "location_count": len(item["locations"]),
             "parameters": sorted(item["parameters"], key=str.casefold),
             "parameter_count": len(item["parameters"]),
+            "methods": sorted(item["methods"]),
         }
         for endpoint, item in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
     ]
@@ -119,8 +127,13 @@ def build_parameter_inventory(
         raw = str(observation.get("endpoint") or "")
         location = str(observation.get("location") or "")
         source = str(observation.get("source") or "endpoint-query")
+        method = str(observation.get("method") or "").upper()
         for name in _names_from_url(raw):
-            add(name, source, location)
+            add(name, source, location, method)
+        for name in observation.get("query_parameters", []) or []:
+            add(name, source + "-query", location, method)
+        for name in observation.get("body_parameters", []) or []:
+            add(name, source + "-body", location, method)
 
     for route in discovered_routes or []:
         for name in _names_from_url(str(route)):
