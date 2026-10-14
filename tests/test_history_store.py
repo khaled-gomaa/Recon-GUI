@@ -161,3 +161,40 @@ def test_recursive_depth_cap_marks_history_partial_and_does_not_infer_removals(t
     assert diff["removed_urls"] == []
     assert diff["removed_endpoints"] == []
     assert diff["removed_parameters"] == []
+
+
+def test_partial_asset_head_phase_does_not_infer_removed_resources(tmp_path):
+    store = HistoryStore(tmp_path / "history.sqlite3")
+    store.save_report({
+        "target": "https://assets.example/",
+        "pages": [
+            _page("https://assets.example/"),
+            _page("https://assets.example/app"),
+        ],
+        "endpoint_inventory": [{"endpoint": "/api/app", "sources": ["javascript"]}],
+        "parameters": [{"name": "q", "sources": ["query"]}],
+        "asset_inventory": [
+            {"url": "https://assets.example/static/app.js", "kind": "javascript"},
+            {"url": "https://assets.example/static/site.css", "kind": "stylesheet"},
+        ],
+    })
+    partial = store.save_report({
+        "target": "https://assets.example/",
+        "pages": [_page("https://assets.example/")],
+        "endpoint_inventory": [],
+        "parameters": [],
+        "asset_inventory": [],
+        "asset_probe_summary": {
+            "enabled": True, "partial": True,
+            "limit_reached": True, "requests_completed": 1,
+        },
+    })
+    saved_status = next(
+        row["status"] for row in store.recent_scans("https://assets.example/")
+        if row["scan_id"] == partial["scan_id"]
+    )
+    assert saved_status == "partial"
+    assert partial["history_diff"]["comparison_status"].startswith("partial")
+    assert partial["history_diff"]["removed_urls"] == []
+    assert partial["history_diff"]["removed_endpoints"] == []
+    assert partial["history_diff"]["removed_parameters"] == []
