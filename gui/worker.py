@@ -132,6 +132,25 @@ class CrawlWorker(QThread):
                     from recon.passive_sources import collect_passive
                     passive_results = collect_passive(self.url, on_log=self.log_message.emit)
                     analyzer.report.subdomains.update(passive_results.get("passive_subdomains", []))
+                    # ParamSpider-style passive parameter mining: learn endpoint/query names
+                    # from archived same-host URLs without sending new requests to them.
+                    target_host = (urlparse(self.url).hostname or "").lower()
+                    archived_query_urls = 0
+                    for archived_url in passive_results.get("historical_urls", []):
+                        archived = urlparse(archived_url)
+                        if (
+                            archived.scheme.lower() in ("http", "https")
+                            and (archived.hostname or "").lower() == target_host
+                        ):
+                            analyzer._record_endpoint(
+                                archived_url, "wayback-archive", self.url, method="GET"
+                            )
+                            if archived.query:
+                                archived_query_urls += 1
+                    self.log_message.emit(
+                        f"[Wayback] Indexed {archived_query_urls} same-host historical URLs with query strings "
+                        "for parameter inventory; no archived URLs were actively fetched in this step."
+                    )
                 except Exception as exc:
                     self.log_message.emit(f"[Passive] {type(exc).__name__}: {exc}")
                     passive_results["passive_errors"].append(f"{type(exc).__name__}: {exc}")
@@ -356,6 +375,15 @@ class CrawlWorker(QThread):
             report["manual_browser_seconds"] = manual_browser_results.get("manual_browser_seconds", 0)
             report["pages"] = [result.to_dict() for result in all_results]
             report["wordlist_results"] = wordlist_results
+            report["wordlist_candidates"] = (
+                scanner.candidate_count if self.wordlist_path and "scanner" in locals() else 0
+            )
+            report["wordlist_words_loaded"] = (
+                scanner.words_loaded if self.wordlist_path and "scanner" in locals() else 0
+            )
+            report["wordlist_candidate_limit_reached"] = (
+                scanner.candidate_limit_reached if self.wordlist_path and "scanner" in locals() else False
+            )
             # The cookie map stores names and attributes only, never cookie values.
             cookie_map = []
             for result in all_results:
