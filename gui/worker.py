@@ -66,7 +66,7 @@ class CrawlWorker(QThread):
             asyncio.set_event_loop(loop)
 
             # One in-memory cookie jar is shared across HTTP crawl passes, JS, and path checks.
-            cookie_jar = aiohttp.CookieJar()
+            cookie_jar = aiohttp.CookieJar(unsafe=True)
             raw_cookie = next(
                 (value for key, value in self.request_headers.items() if key.lower() == "cookie"), ""
             )
