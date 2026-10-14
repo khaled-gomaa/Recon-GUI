@@ -213,6 +213,7 @@ class HistoryStore:
                 report.get("page_limit_reached")
                 or report.get("depth_limit_reached")
                 or report.get("wordlist_candidate_limit_reached")
+                or report.get("content_limit_reached")
             ) else
             "completed"
         )
