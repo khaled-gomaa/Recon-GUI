@@ -1,5 +1,5 @@
 """Aggregate observations from crawled pages and build linked inventories."""
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urljoin, urlparse, urlsplit
 from dataclasses import dataclass, field
 
 from recon.advanced_analysis import analyze_html
@@ -47,6 +47,8 @@ class ReconAnalyzer:
         self.endpoint_observations: list[dict] = []
         self._observation_keys: set[tuple] = set()
         self.network_observations: dict[tuple, dict] = {}
+        self.asset_observations: dict[tuple, dict] = {}
+        self._asset_observation_keys: set[tuple] = set()
 
     def _record_endpoint(
         self, endpoint: str, source: str, location: str, method=None,
@@ -118,9 +120,51 @@ class ReconAnalyzer:
             query_parameters=query_names, body_parameters=body_names,
         )
 
-    def analyze_page(self, url: str, html: str, headers: dict = None, discovered_links=None):
+    def _record_asset_reference(self, page_url: str, asset: dict):
+        raw_url = str((asset or {}).get("url") or "").strip()
+        if not raw_url:
+            return
+        parsed = urlparse(raw_url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return
+        try:
+            host = parsed.hostname.rstrip(".").lower().encode("idna").decode("ascii")
+        except UnicodeError:
+            return
+        safe_url = _normalize_endpoint(raw_url)
+        if not safe_url:
+            return
+        page_path = _normalize_endpoint(page_url)
+        kind = str((asset or {}).get("kind") or "resource")
+        extension = str((asset or {}).get("extension") or "")
+        key = (safe_url, kind, page_path)
+        if key in self._asset_observation_keys:
+            return
+        self._asset_observation_keys.add(key)
+        item_key = (safe_url, kind)
+        item = self.asset_observations.setdefault(item_key, {
+            "url": safe_url, "kind": kind, "extension": extension,
+            "referrers": set(), "query_parameter_names": set(),
+            "in_scope": host == self.base_host,
+        })
+        if page_path:
+            item["referrers"].add(page_path)
+        try:
+            item["query_parameter_names"].update(
+                name for name, _value in parse_qsl(urlsplit(raw_url).query, keep_blank_values=True)
+                if name
+            )
+        except ValueError:
+            pass
+
+    def analyze_page(
+        self, url: str, html: str, headers: dict = None, discovered_links=None,
+        discovered_assets=None,
+    ):
         html = html or ""
         self.page_urls.add(url)
+        for asset in discovered_assets or []:
+            self._record_asset_reference(url, asset)
         for link in discovered_links or []:
             if not isinstance(link, str) or not link.startswith(("http://", "https://")):
                 continue
@@ -232,6 +276,24 @@ class ReconAnalyzer:
                 self.network_observations.values(),
                 key=lambda item: (item.get("url", ""), item.get("method", ""), item.get("source", "")),
             ),
+            "asset_inventory": [
+                {
+                    "url": item["url"], "kind": item["kind"], "extension": item["extension"],
+                    "referrers": sorted(item["referrers"]),
+                    "reference_count": len(item["referrers"]),
+                    "query_parameter_names": sorted(item["query_parameter_names"]),
+                    "in_scope": item["in_scope"],
+                    "fetched_by_page_crawler": item["url"] in {
+                        _normalize_endpoint(page_url) for page_url in self.page_urls
+                    },
+                    "fetched_by_js_collector": item["url"] in {
+                        _normalize_endpoint(js_url) for js_url in self.js_collector.js_contents
+                    },
+                }
+                for _key, item in sorted(
+                    self.asset_observations.items(), key=lambda pair: (pair[0][0].casefold(), pair[0][1])
+                )
+            ],
             "discovered_link_count": len(self.discovered_links),
             "parameters": parameters,
             "parameter_count": len(parameters),
