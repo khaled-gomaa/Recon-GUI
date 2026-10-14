@@ -35,3 +35,58 @@ def test_browser_storage_handoff_keeps_only_target_domain_cookies_and_origin_sta
     assert [cookie["name"] for cookie in filtered["cookies"]] == ["session", "subsession"]
     assert [entry["origin"] for entry in filtered["origins"]] == ["https://app.example.test"]
     assert "do-not-transfer" not in repr(filtered)
+
+
+def test_bounded_scroll_stops_after_lazy_content_stops_growing():
+    from recon.browser_renderer import _bounded_scroll_page
+
+    class FakePage:
+        def __init__(self):
+            self.height = 100
+            self.scrolls = 0
+            self.top_reset = False
+
+        async def evaluate(self, script):
+            if "scrollTo" in script:
+                self.scrolls += 1
+                if self.scrolls <= 2:
+                    self.height += 100
+                if "0, 0" in script:
+                    self.top_reset = True
+                return None
+            return self.height
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+    async def scenario():
+        page = FakePage()
+        steps = await _bounded_scroll_page(page, max_steps=5, settle_ms=0, idle_limit=2)
+        assert steps == 4
+        assert page.top_reset is True
+        assert page.scrolls == 5  # four scroll attempts, plus one reset to the top
+
+    asyncio.run(scenario())
+
+
+def test_bounded_scroll_honors_stop_callback():
+    from recon.browser_renderer import _bounded_scroll_page
+
+    class FakePage:
+        async def evaluate(self, script):
+            return 100
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+    async def scenario():
+        calls = {"count": 0}
+
+        def stop():
+            calls["count"] += 1
+            return calls["count"] >= 2
+
+        steps = await _bounded_scroll_page(FakePage(), should_stop=stop, max_steps=5, settle_ms=0)
+        assert steps <= 1
+
+    asyncio.run(scenario())
