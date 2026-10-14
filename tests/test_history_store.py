@@ -100,3 +100,34 @@ def test_partial_scan_does_not_infer_removed_pages_endpoints_or_parameters(tmp_p
     assert diff["removed_urls"] == []
     assert diff["removed_endpoints"] == []
     assert diff["removed_parameters"] == []
+
+
+def test_content_truncation_marks_scan_partial_and_prevents_false_removals(tmp_path):
+    store = HistoryStore(tmp_path / "history.sqlite3")
+    store.save_report({
+        "target": "https://truncated.example/",
+        "pages": [
+            _page("https://truncated.example/a"),
+            _page("https://truncated.example/b"),
+        ],
+        "endpoint_inventory": [{"endpoint": "/api/a", "sources": ["javascript"]}],
+        "parameters": [{"name": "id", "sources": ["query"]}],
+    })
+    partial = store.save_report({
+        "target": "https://truncated.example/",
+        "pages": [_page("https://truncated.example/a")],
+        "endpoint_inventory": [],
+        "parameters": [],
+        "content_limit_reached": True,
+        "body_truncated_pages": ["https://truncated.example/a"],
+    })
+    diff = partial["history_diff"]
+    saved_status = next(
+        row["status"] for row in store.recent_scans("https://truncated.example/")
+        if row["scan_id"] == partial["scan_id"]
+    )
+    assert saved_status == "partial"
+    assert diff["comparison_status"].startswith("partial")
+    assert diff["removed_urls"] == []
+    assert diff["removed_endpoints"] == []
+    assert diff["removed_parameters"] == []
