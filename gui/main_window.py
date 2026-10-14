@@ -425,6 +425,29 @@ class MainWindow(QMainWindow):
         discovery_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.discovery_table, "Content Discovery")
 
+        self.network_table = QTableWidget(0, 8)
+        self.network_table.setHorizontalHeaderLabels([
+            "Endpoint", "Method", "Status", "Resource type", "Query names",
+            "Body names", "Source", "Initiating page",
+        ])
+        self.network_table.setColumnWidth(1, 82)
+        self.network_table.setColumnWidth(2, 72)
+        self.network_table.setColumnWidth(3, 105)
+        self.network_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.network_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        self.tabs.addTab(self.network_table, "Network Requests")
+
+        self.cookie_table = QTableWidget(0, 6)
+        self.cookie_table.setHorizontalHeaderLabels([
+            "Page / URL", "Cookie name", "Domain", "Path", "Attributes", "Source",
+        ])
+        self.cookie_table.setColumnWidth(1, 150)
+        self.cookie_table.setColumnWidth(2, 140)
+        self.cookie_table.setColumnWidth(3, 100)
+        self.cookie_table.setColumnWidth(4, 180)
+        self.cookie_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tabs.addTab(self.cookie_table, "Cookie Map")
+
         self.similarity_view = QTextEdit()
         self.similarity_view.setReadOnly(True)
         self.tabs.addTab(self.similarity_view, "Similar pages")
@@ -651,7 +674,7 @@ class MainWindow(QMainWindow):
         return [
             getattr(self, name, None) for name in (
                 "table", "endpoint_table", "parameter_table", "findings_table",
-                "discovery_table", "history_table",
+                "discovery_table", "network_table", "cookie_table", "history_table",
             )
         ]
 
@@ -739,6 +762,49 @@ class MainWindow(QMainWindow):
                     item.setForeground(QBrush(QColor(foreground)))
                     item.setBackground(QBrush(QColor(background)))
             self._filter_table_row(self.findings_table, row, self.results_search.text().strip().casefold())
+
+    def _populate_network_cookie_tables(self, report: dict):
+        """Show safe request metadata and cookie names/attributes; never expose values."""
+        self.network_table.setRowCount(0)
+        for record in report.get("network_observations", []) or []:
+            values = (
+                record.get("url", ""),
+                record.get("method", ""),
+                "--" if record.get("status") is None else record.get("status"),
+                record.get("resource_type", ""),
+                ", ".join(record.get("query_parameters", []) or []),
+                ", ".join(record.get("body_parameters", []) or []),
+                record.get("source", ""),
+                record.get("page", ""),
+            )
+            row = self.network_table.rowCount()
+            self.network_table.insertRow(row)
+            for column, value in enumerate(values):
+                self.network_table.setItem(row, column, QTableWidgetItem(str(value)))
+            self._filter_table_row(self.network_table, row, self.results_search.text().strip().casefold())
+
+        self.cookie_table.setRowCount(0)
+        for record in report.get("cookie_map", []) or []:
+            attrs = []
+            if record.get("secure"):
+                attrs.append("Secure")
+            if record.get("httponly"):
+                attrs.append("HttpOnly")
+            if record.get("samesite"):
+                attrs.append("SameSite=" + str(record.get("samesite")))
+            values = (
+                record.get("url", ""),
+                record.get("name", ""),
+                record.get("domain", ""),
+                record.get("path", ""),
+                ", ".join(attrs),
+                record.get("source", ""),
+            )
+            row = self.cookie_table.rowCount()
+            self.cookie_table.insertRow(row)
+            for column, value in enumerate(values):
+                self.cookie_table.setItem(row, column, QTableWidgetItem(str(value)))
+            self._filter_table_row(self.cookie_table, row, self.results_search.text().strip().casefold())
 
     def _set_advanced_visible(self, visible: bool):
         """Show optional renderer/passive/auth fields only when explicitly requested."""
@@ -963,6 +1029,9 @@ class MainWindow(QMainWindow):
         self.parameter_table.setRowCount(0)
         self.findings_table.setRowCount(0)
         self.discovery_table.setRowCount(0)
+        if hasattr(self, "network_table"):
+            self.network_table.setRowCount(0)
+            self.cookie_table.setRowCount(0)
         self.results_search.clear()
         self.recon_view.clear()
         self.similarity_view.clear()
@@ -1190,6 +1259,7 @@ class MainWindow(QMainWindow):
         self._rebuild_table_from_filtered(filtered, favicon)
         self._rebuild_content_discovery_table(report.get("wordlist_results", []))
         self._populate_endpoint_parameter_findings(report)
+        self._populate_network_cookie_tables(report)
         self._render_recon(report)
         self._render_similarity(report.get("similarity", {}))
         self.export_btn.setEnabled(True)
@@ -1200,6 +1270,14 @@ class MainWindow(QMainWindow):
         self.tabs.setTabText(
             self.tabs.indexOf(self.endpoint_table),
             f"Endpoints ({len(report.get('endpoint_inventory', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.network_table),
+            f"Network Requests ({len(report.get('network_observations', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.cookie_table),
+            f"Cookie Map ({len(report.get('cookie_map', []))})",
         )
         self.tabs.setTabText(
             self.tabs.indexOf(self.parameter_table),
