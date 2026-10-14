@@ -318,3 +318,12 @@ def test_recursive_directory_classifier_rejects_external_redirects_and_files():
         "location": "", "status": 200, "content_type": "text/html",
         "potential_hit": True,
     }) == ""
+
+
+def test_explicit_directory_wordlist_entry_does_not_get_file_extensions(tmp_path):
+    path = tmp_path / "paths.txt"
+    path.write_text("admin/\n", encoding="utf-8")
+    scanner = WordlistScanner(
+        "https://example.test/", str(path), extensions=["", ".php", ".html"],
+    )
+    assert scanner._build_targets("admin/") == ["https://example.test/admin/"]
