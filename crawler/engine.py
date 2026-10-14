@@ -72,7 +72,7 @@ class CrawlResult:
         content_hash: str = "", text_hash: str = "",
         content_length: int = 0, content_type: str = "",
         favicon_hash: str = "",
-        links=None, body_truncated: bool = False,
+        links=None, body_truncated: bool = False, asset_references=None,
     ):
         self.url = url
         self.status = status
@@ -87,6 +87,7 @@ class CrawlResult:
         self.content_type = content_type
         self.favicon_hash = favicon_hash
         self.links = list(links or [])
+        self.asset_references = list(asset_references or [])
         self.body_truncated = bool(body_truncated)
         # Kept in memory for analysis; deliberately omitted from to_dict().
         self.headers = {}
@@ -555,7 +556,9 @@ class CrawlEngine:
                         html = body.decode(response.charset or "utf-8", errors="replace")
                     break
 
-            parsed = self.parser.parse(html, current_url) if html else {"title": "", "text": "", "links": []}
+            parsed = self.parser.parse(html, current_url) if html else {
+                "title": "", "text": "", "links": [], "assets": [],
+            }
             page_text = parsed["text"]
             result = CrawlResult(
                 url=url,
@@ -570,6 +573,7 @@ class CrawlEngine:
                 content_length=len(html.encode("utf-8")),
                 content_type=content_type,
                 links=parsed.get("links", []) if html else [],
+                asset_references=parsed.get("assets", []) if html else [],
                 body_truncated=response_body_truncated,
             )
             result.headers = response_headers
