@@ -13,8 +13,8 @@ def render_text_report(report: dict) -> str:
     status = (
         "HAR metadata imported (no active scan run)" if import_only else
         "Stopped by user" if report.get("stopped_by_user") else
-        "Partial (rate limited)" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") else
-        "Partial (page/depth/wordlist/content cap)" if report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") or (report.get("seed_import_summary", {}) or {}).get("limit_reached") else
+        "Partial (rate limited)" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") or (report.get("asset_probe_summary", {}) or {}).get("rate_limited_stop") else
+        "Partial (page/depth/wordlist/content cap)" if report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") or (report.get("seed_import_summary", {}) or {}).get("limit_reached") or (report.get("asset_probe_summary", {}) or {}).get("partial") else
         "Completed"
     )
     lines = [
@@ -24,6 +24,7 @@ def render_text_report(report: dict) -> str:
         f"Pages crawled: {len(report.get('pages', []))}",
         f"Pages after filters: {len(report.get('filtered_pages', []))}",
         f"Asset references found (not necessarily fetched): {len(report.get('asset_inventory', []))}",
+        f"Asset HEAD checks: {(report.get('asset_probe_summary', {}) or {}).get('requests_completed', 0)}; enabled={(report.get('asset_probe_summary', {}) or {}).get('enabled', False)}; partial={(report.get('asset_probe_summary', {}) or {}).get('partial', False)}",
         f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}",
         f"Content Discovery candidates generated: {report.get('wordlist_candidates', 0)}",
         f"Explicit wordlist limit reached: {report.get('wordlist_candidate_limit_reached', False)}",
@@ -71,6 +72,22 @@ def render_text_report(report: dict) -> str:
             lines.append(f"    Redirect chain: {chain}")
         if page.get("error"):
             lines.append(f"    Error: {page['error']}")
+
+    probe_summary = report.get("asset_probe_summary", {}) or {}
+    if probe_summary.get("enabled"):
+        _section(lines, "Asset HEAD Probe Summary")
+        for label, key in (
+            ("Unique same-origin candidates", "unique_same_origin_candidates"),
+            ("Selected candidates", "selected_candidates"),
+            ("Completed HEAD requests", "requests_completed"),
+            ("Skipped outside origin", "skipped_out_of_origin"),
+            ("Limit reached", "limit_reached"),
+            ("Rate limited", "rate_limited"),
+            ("Rate-limited stop", "rate_limited_stop"),
+            ("Unattempted selected URLs", "unattempted"),
+            ("Partial coverage", "partial"),
+        ):
+            lines.append(f"{label}: {probe_summary.get(key, False if 'reached' in label.lower() or 'limited' in label.lower() or 'coverage' in label.lower() else 0)}")
 
     _section(lines, "Asset References (URLs from page markup; not proof that the resource exists)")
     for item in report.get("asset_inventory", []) or []:
