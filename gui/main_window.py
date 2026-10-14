@@ -1518,11 +1518,12 @@ class MainWindow(QMainWindow):
         page_limited = report.get("page_limit_reached", False)
         depth_limited = report.get("depth_limit_reached", False)
         wordlist_limited = report.get("wordlist_candidate_limit_reached", False)
+        content_limited = report.get("content_limit_reached", False)
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
         elif crawler_limited or discovery_limited:
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
-        elif page_limited or depth_limited or wordlist_limited:
+        elif page_limited or depth_limited or wordlist_limited or content_limited:
             reasons = []
             if page_limited:
                 reasons.append("PAGE")
@@ -1530,10 +1531,19 @@ class MainWindow(QMainWindow):
                 reasons.append("DEPTH")
             if wordlist_limited:
                 reasons.append("WORDLIST")
+            if content_limited:
+                reasons.append("CONTENT")
             self.status_label.setText("PARTIAL  ·  " + "/".join(reasons) + " LIMIT")
         else:
             self.status_label.setText(f"COMPLETE  ·  {total} pages")
 
+        coverage_summary = report.get("coverage_summary", {}) or {}
+        content_cap_note = (
+            f" | truncated body/asset records: {len(report.get('body_truncated_pages', []))} page bodies, "
+            f"{len(report.get('truncated_js_files', []))} JS files, "
+            f"{len(report.get('truncated_wordlist_urls', []))} wordlist responses"
+            if content_limited else ""
+        )
         summary = (
             f"[Summary] {total} pages crawled; {kept} match current filters; "
             f"{len(path_results)} content-discovery responses; {len(path_hits)} potential hits; "
@@ -1546,6 +1556,7 @@ class MainWindow(QMainWindow):
             f"{len(report.get('related_findings', []))} review findings; "
             f"{len(sim.get('exact_duplicates', []))} duplicate groups; "
             f"{len(sim.get('soft_404_candidates', []))} soft-404 candidates."
+            f"{content_cap_note}"
         )
         self._append_log(summary)
         if page_limited:
@@ -1643,9 +1654,35 @@ class MainWindow(QMainWindow):
         if report.get("history_error"):
             lines.append(f"  History warning: {report['history_error']}")
         lines.append("")
+        lines.append("=== COVERAGE / INCOMPLETE CONTENT ===")
+        coverage = report.get("coverage_summary", {}) or {}
+        if coverage:
+            lines.append(
+                f"  Pages fetched: {coverage.get('pages_crawled', 0)} / configured cap {coverage.get('page_cap', 0)}; "
+                f"maximum depth: {coverage.get('max_depth', 0)}"
+            )
+            lines.append(
+                f"  JavaScript files: {coverage.get('javascript_files_attempted', 0)} attempted / "
+                f"{coverage.get('javascript_files_discovered', 0)} discovered; "
+                f"{coverage.get('javascript_files_truncated', 0)} truncated"
+            )
+            lines.append(
+                f"  Truncated response bodies: {coverage.get('response_bodies_truncated', 0)}; "
+                f"content limit reached: {coverage.get('content_limit_reached', False)}"
+            )
+        for note in report.get("content_limit_notes", []) or []:
+            lines.append(f"  WARNING: {note}")
+        lines.append("")
         lines.append("=== CONFIGURATION ===")
         lines.append(f"  JavaScript rendering enabled: {report.get('rendering_enabled', False)}")
         lines.append(f"  Rendered pages: {report.get('rendered_pages', 0)}")
+        lines.append(f"  Manual browser enabled: {report.get('manual_browser_session_enabled', False)}")
+        if report.get("manual_browser_session_enabled"):
+            lines.append(
+                f"  Manual browser active for {report.get('manual_browser_seconds', 0)}s "
+                f"(window cap {report.get('manual_browser_window_seconds', 0)}s); "
+                "cookie/localStorage state is in-memory only"
+            )
         lines.append(f"  robots.txt: {report.get('robots_url', '(not read)')}")
         lines.append(f"  Crawl-delay: {report.get('crawl_delay_seconds', 0)} seconds")
         lines.append(f"  Authentication configured: {report.get('auth_configured', False)}")
