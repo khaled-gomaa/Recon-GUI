@@ -221,7 +221,11 @@ async def probe_asset_references(
 
     interrupted = bool(stop())
     unattempted = max(0, len(selected) - completed)
-    partial = bool(limit_reached or rate_limited or rate_limited_stop or interrupted or unattempted)
+    request_failures = sum(1 for item in results if item.get("error"))
+    partial = bool(
+        limit_reached or rate_limited or rate_limited_stop or interrupted
+        or unattempted or request_failures
+    )
     return {
         "results": results,
         "summary": {
@@ -229,6 +233,7 @@ async def probe_asset_references(
             "unique_same_origin_candidates": total_candidates,
             "selected_candidates": len(selected),
             "requests_completed": completed,
+            "request_failures": request_failures,
             "skipped_out_of_origin": skipped_out_of_origin,
             "limit": max_assets,
             "limit_reached": limit_reached,
