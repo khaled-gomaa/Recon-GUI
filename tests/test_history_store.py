@@ -198,3 +198,65 @@ def test_partial_asset_head_phase_does_not_infer_removed_resources(tmp_path):
     assert partial["history_diff"]["removed_urls"] == []
     assert partial["history_diff"]["removed_endpoints"] == []
     assert partial["history_diff"]["removed_parameters"] == []
+
+
+def test_scan_history_tracks_asset_additions_removals_and_probe_changes(tmp_path):
+    store = HistoryStore(tmp_path / "history.sqlite3")
+    first = store.save_report({
+        "target": "https://asset-history.example/",
+        "pages": [_page("https://asset-history.example/")],
+        "asset_inventory": [
+            {
+                "url": "https://asset-history.example/static/app.js",
+                "kind": "javascript",
+                "extension": ".js",
+                "in_scope": True,
+                "referrers": ["https://asset-history.example/"],
+                "query_parameter_names": ["version"],
+                "probe_checked": True,
+                "probe_status": 200,
+                "probe_result": "HEAD supported",
+                "probe_content_type": "application/javascript",
+                "probe_content_length": "100",
+            },
+            {
+                "url": "https://asset-history.example/static/old.css",
+                "kind": "stylesheet",
+                "extension": ".css",
+                "in_scope": True,
+                "referrers": ["https://asset-history.example/"],
+            },
+        ],
+    })
+    second = store.save_report({
+        "target": "https://asset-history.example/",
+        "pages": [_page("https://asset-history.example/")],
+        "asset_inventory": [
+            {
+                "url": "https://asset-history.example/static/app.js",
+                "kind": "javascript",
+                "extension": ".js",
+                "in_scope": True,
+                "referrers": ["https://asset-history.example/", "https://asset-history.example/app"],
+                "query_parameter_names": ["version"],
+                "probe_checked": True,
+                "probe_status": 304,
+                "probe_result": "HTTP response",
+                "probe_content_type": "application/javascript",
+                "probe_content_length": "100",
+            },
+            {
+                "url": "https://asset-history.example/static/new.svg",
+                "kind": "image",
+                "extension": ".svg",
+                "in_scope": True,
+                "referrers": ["https://asset-history.example/"],
+            },
+        ],
+    })
+    diff = second["history_diff"]
+    assert diff["added_assets"] == ["https://asset-history.example/static/new.svg [image]"]
+    assert diff["removed_assets"] == ["https://asset-history.example/static/old.css [stylesheet]"]
+    assert diff["changed_assets"] == ["https://asset-history.example/static/app.js [javascript]"]
+    assert diff["added_asset_count"] == 1
+    assert first["history_diff"]["added_asset_count"] == 2
