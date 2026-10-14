@@ -18,6 +18,7 @@ from recon.similarity_detector import SimilarityDetector
 from gui.report_export import render_text_report, render_csv_report
 from recon.history_store import HistoryStore
 from recon.external_tools import available_tools
+from recon.wordlist_scanner import DEFAULT_EXTENSIONS
 from gui.tool_worker import ExternalToolWorker
 
 
@@ -189,6 +190,48 @@ class MainWindow(QMainWindow):
         self.crawl_historical_check.setEnabled(False)
         self.passive_check.toggled.connect(self.crawl_historical_check.setEnabled)
         options_grid.addWidget(self.crawl_historical_check, 3, 0, 1, 4)
+        self.subfinder_check = QCheckBox("Include Subfinder (if installed)")
+        self.subfinder_check.setChecked(True)
+        self.subfinder_check.setEnabled(False)
+        self.subfinder_check.setToolTip(
+            "Adds Subfinder as a separate passive source when Passive sources is enabled. "
+            "Only discovered hostnames are collected; they are not automatically crawled."
+        )
+        self.passive_check.toggled.connect(self.subfinder_check.setEnabled)
+        options_grid.addWidget(self.subfinder_check, 4, 0, 1, 4)
+
+        extensions_label = QLabel("Path extensions")
+        extensions_label.setObjectName("fieldLabel")
+        self.wordlist_extensions_input = QLineEdit(
+            ", ".join(extension for extension in DEFAULT_EXTENSIONS if extension)
+        )
+        self.wordlist_extensions_input.setPlaceholderText(".html, .php, .json, .bak ...")
+        self.wordlist_extensions_input.setToolTip(
+            "Applied to extensionless path words. The base path is always tried too. "
+            "Use commas; custom extension lists improve coverage for the target technology."
+        )
+        options_grid.addWidget(extensions_label, 5, 0)
+        options_grid.addWidget(self.wordlist_extensions_input, 5, 1, 1, 3)
+
+        word_cap_label = QLabel("Word cap (0 = all)")
+        word_cap_label.setObjectName("fieldLabel")
+        self.word_cap_spin = QSpinBox()
+        self.word_cap_spin.setRange(0, 1000000)
+        self.word_cap_spin.setValue(0)
+        self.word_cap_spin.setToolTip("0 reads the full supplied wordlist; a positive value limits words intentionally.")
+        candidate_cap_label = QLabel("Candidate cap (0 = all)")
+        candidate_cap_label.setObjectName("fieldLabel")
+        self.candidate_cap_spin = QSpinBox()
+        self.candidate_cap_spin.setRange(0, 1000000)
+        self.candidate_cap_spin.setValue(0)
+        self.candidate_cap_spin.setToolTip(
+            "0 tries every unique path candidate generated from the wordlist and extensions. "
+            "Large lists can issue many requests; HTTP 429 still pauses/stops safely."
+        )
+        options_grid.addWidget(word_cap_label, 6, 0)
+        options_grid.addWidget(self.word_cap_spin, 6, 1)
+        options_grid.addWidget(candidate_cap_label, 6, 2)
+        options_grid.addWidget(self.candidate_cap_spin, 6, 3)
 
         token_label = QLabel("Bearer token")
         token_label.setObjectName("fieldLabel")
@@ -416,7 +459,7 @@ class MainWindow(QMainWindow):
         tool_layout = QVBoxLayout(tool_page)
         tool_controls = QHBoxLayout()
         self.external_tool_combo = QComboBox()
-        self.external_tool_combo.addItems(["gau", "nuclei", "ffuf"])
+        self.external_tool_combo.addItems(["gau", "nuclei", "ffuf", "subfinder"])
         self.check_tools_btn = QPushButton("Check installed tools")
         self.check_tools_btn.clicked.connect(self._check_external_tools)
         self.run_tool_btn = QPushButton("Run selected tool")
@@ -957,6 +1000,13 @@ class MainWindow(QMainWindow):
             passive_discovery=self.passive_check.isChecked(),
             request_headers=request_headers,
             crawl_historical_urls=self.crawl_historical_check.isChecked(),
+            subfinder_enabled=self.subfinder_check.isChecked(),
+            wordlist_extensions=[
+                extension.strip() for extension in self.wordlist_extensions_input.text().split(",")
+                if extension.strip()
+            ],
+            wordlist_max_words=self.word_cap_spin.value(),
+            wordlist_max_candidates=self.candidate_cap_spin.value(),
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
@@ -1240,6 +1290,22 @@ class MainWindow(QMainWindow):
                 lines.append(f"  - {item}")
             lines.append("")
 
+        lines.append("=== CONTENT DISCOVERY COVERAGE ===")
+        coverage = report.get("wordlist_scan", {})
+        if coverage:
+            lines.append(
+                f"  Words loaded: {coverage.get('words_loaded', 0)}; "
+                f"unique paths: {coverage.get('unique_path_candidates', 0)}; "
+                f"HTTP requests: {coverage.get('requests_completed', 0)}/{coverage.get('request_candidates', 0)}; "
+                f"methods: {', '.join(coverage.get('methods', [])) or 'GET'}"
+            )
+            if coverage.get("candidates_truncated"):
+                lines.append("  WARNING: candidate cap truncated generated paths; raise the cap or set it to 0.")
+            if coverage.get("word_cap_enabled"):
+                lines.append("  WARNING: configured word cap means the full wordlist was not processed.")
+        else:
+            lines.append("  Content discovery was not run.")
+        lines.append("")
         lines.append("=== WORDLIST HITS ===")
         for hit in report.get("wordlist_hits", []):
             lines.append(f"  [{hit['status']}] {hit['url']} -- {hit['size']} bytes")
@@ -1251,6 +1317,23 @@ class MainWindow(QMainWindow):
             lines.append(f"    Present: {list(audit['present'].keys()) or 'None'}")
             lines.append(f"    Missing: {audit['missing'] or 'None'}")
 
+        lines.append("=== OBSERVED BROWSER REQUESTS (VALUES REDACTED) ===")
+        for item in report.get("network_observations", []):
+            lines.append(
+                f"  [{item.get('method', 'GET')}] {item.get('status') or 'pending'} "
+                f"{item.get('url', '')} | type={item.get('resource_type', '')} "
+                f"| page={item.get('page_url', '')} "
+                f"| parameter names={', '.join(item.get('parameter_names', [])) or '(none)'}"
+            )
+        lines.append("")
+        lines.append("=== COOKIE METADATA (VALUES NEVER EXPORTED) ===")
+        for item in report.get("cookie_observations", []):
+            lines.append(
+                f"  {item.get('name', '')} | domain={item.get('domain', '')} "
+                f"| path={item.get('path', '')} | Secure={item.get('secure', False)} "
+                f"| HttpOnly={item.get('httponly', False)} | SameSite={item.get('samesite', '')}"
+            )
+        lines.append("")
         lines.append("=== HTML FORMS (NO SUBMISSION PERFORMED) ===")
         for form in report.get("forms", []):
             csrf_note = "CSRF-like field present" if form.get("csrf_field_present") else "No obvious CSRF field"
