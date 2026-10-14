@@ -85,6 +85,7 @@ def test_static_javascript_extracts_request_methods_and_body_parameter_names():
     found = JSEndpointExtractor.extract_request_observations(code)
     by_url = {item["endpoint"]: item for item in found}
     assert by_url["/api/search"]["method"] == "POST"
+    assert set(by_url["/api/search"]["body_parameters"]) >= {"query", "page"}
     assert by_url["/api/items"]["method"] == "GET"
     assert by_url["/api/items/1"]["method"] == "PATCH"
 
