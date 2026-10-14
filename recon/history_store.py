@@ -215,6 +215,7 @@ class HistoryStore:
                 or report.get("wordlist_candidate_limit_reached")
                 or report.get("wordlist_recursion_depth_limit_reached")
                 or report.get("content_limit_reached")
+                or (report.get("seed_import_summary", {}) or {}).get("limit_reached")
             ) else
             "completed"
         )
