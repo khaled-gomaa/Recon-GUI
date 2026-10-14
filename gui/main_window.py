@@ -1310,10 +1310,22 @@ class MainWindow(QMainWindow):
         )
         crawler_limited = report.get("crawler_rate_limited_stop", False)
         discovery_limited = report.get("wordlist_rate_limited_stop", False)
+        page_limited = report.get("page_limit_reached", False)
+        depth_limited = report.get("depth_limit_reached", False)
+        wordlist_limited = report.get("wordlist_candidate_limit_reached", False)
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
         elif crawler_limited or discovery_limited:
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
+        elif page_limited or depth_limited or wordlist_limited:
+            reasons = []
+            if page_limited:
+                reasons.append("PAGE")
+            if depth_limited:
+                reasons.append("DEPTH")
+            if wordlist_limited:
+                reasons.append("WORDLIST")
+            self.status_label.setText("PARTIAL  ·  " + "/".join(reasons) + " LIMIT")
         else:
             self.status_label.setText(f"COMPLETE  ·  {total} pages")
 
@@ -1322,11 +1334,19 @@ class MainWindow(QMainWindow):
             f"{len(path_results)} content-discovery responses; {len(path_hits)} potential hits; "
             f"{len(report.get('endpoint_inventory', []))} endpoints; "
             f"{len(report.get('parameters', []))} parameter names; "
+            f"{len(report.get('network_observations', []))} runtime network requests; "
+            f"{len(report.get('cookie_map', []))} cookie metadata records; "
+            f"{report.get('wordlist_words_loaded', 0)} wordlist words / "
+            f"{report.get('wordlist_candidates', 0)} candidates; "
             f"{len(report.get('related_findings', []))} review findings; "
             f"{len(sim.get('exact_duplicates', []))} duplicate groups; "
             f"{len(sim.get('soft_404_candidates', []))} soft-404 candidates."
         )
         self._append_log(summary)
+        if page_limited:
+            self._append_log("[LIMIT] Page limit was reached; undiscovered same-host links remain in the queue/frontier.")
+        if depth_limited:
+            self._append_log("[LIMIT] Depth limit was reached while additional same-host links remained unvisited.")
         if crawler_limited or discovery_limited:
             self._append_log(
                 "[429] Scanning stopped or partially resumed to respect the target's "
