@@ -1,6 +1,8 @@
 """Async crawl engine with bounded workers, strict hostname scope, and TLS verification."""
 import asyncio
+import gzip
 import hashlib
+import io
 import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -10,6 +12,7 @@ import aiohttp
 from crawler.parser import PageParser
 
 MAX_BODY_BYTES = 5 * 1024 * 1024
+MAX_DECOMPRESSED_SITEMAP_BYTES = 20 * 1024 * 1024
 REDIRECT_CODES = {301, 302, 303, 307, 308}
 MAX_RETRY_AFTER_SECONDS = 120
 MAX_RATE_LIMIT_PAUSES = 3
@@ -545,7 +548,11 @@ class CrawlEngine:
                         continue
                     current_path = urlparse(current_url).path.lower()
                     is_html = "text/html" in content_type.lower() or "application/xhtml+xml" in content_type.lower()
-                    is_xml = "xml" in content_type.lower() or current_path.endswith(".xml")
+                    is_gzipped_sitemap = current_path.endswith(".xml.gz")
+                    is_xml = (
+                        "xml" in content_type.lower()
+                        or current_path.endswith((".xml", ".xml.gz"))
+                    )
                     is_robots = current_path == "/robots.txt" or current_path.endswith("/robots.txt")
                     if is_html or is_xml or is_robots:
                         body = await response.content.read(MAX_BODY_BYTES + 1)
@@ -553,7 +560,31 @@ class CrawlEngine:
                             response_body_truncated = True
                             body = body[:MAX_BODY_BYTES]
                             self._log(f"[LIMIT] Body truncated at {MAX_BODY_BYTES} bytes: {url}")
-                        html = body.decode(response.charset or "utf-8", errors="replace")
+                        if is_gzipped_sitemap:
+                            if response_body_truncated:
+                                self._log(
+                                    f"[LIMIT] Compressed sitemap exceeded {MAX_BODY_BYTES} bytes; "
+                                    f"it was not partially decompressed: {url}"
+                                )
+                                body = b""
+                            else:
+                                try:
+                                    with gzip.GzipFile(fileobj=io.BytesIO(body), mode="rb") as compressed:
+                                        body = compressed.read(MAX_DECOMPRESSED_SITEMAP_BYTES + 1)
+                                    if len(body) > MAX_DECOMPRESSED_SITEMAP_BYTES:
+                                        response_body_truncated = True
+                                        body = body[:MAX_DECOMPRESSED_SITEMAP_BYTES]
+                                        self._log(
+                                            f"[LIMIT] Decompressed sitemap capped at "
+                                            f"{MAX_DECOMPRESSED_SITEMAP_BYTES} bytes: {url}"
+                                        )
+                                except (OSError, EOFError, gzip.BadGzipFile) as exc:
+                                    response_body_truncated = True
+                                    body = b""
+                                    self._log(
+                                        f"[Sitemap] Could not decompress {url}: {type(exc).__name__}"
+                                    )
+                        html = body.decode("utf-8" if is_gzipped_sitemap else (response.charset or "utf-8"), errors="replace")
                     break
 
             parsed = self.parser.parse(html, current_url) if html else {
