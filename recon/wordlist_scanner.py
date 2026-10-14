@@ -56,6 +56,7 @@ class WordlistScanner:
         self.recursion_depth = max(1, min(int(recursion_depth), 5))
         self.recursive_dirs_found = 0
         self.recursion_rounds = 0
+        self.recursion_depth_limit_reached = False
         self.words_loaded = 0
         self.candidate_count = 0
         self.word_limit_reached = False
@@ -346,6 +347,9 @@ class WordlistScanner:
         self.path_limit_reached = False
         self.word_limit_reached = False
         self.candidate_limit_reached = False
+        self.recursive_dirs_found = 0
+        self.recursion_rounds = 0
+        self.recursion_depth_limit_reached = False
         self._log(
             f"[Wordlist] Streaming path discovery (concurrency={self.concurrency}, "
             f"delay={self.delay_ms}ms, extensions={len(self.extensions)}; "
@@ -516,6 +520,18 @@ class WordlistScanner:
                         if (prefix := self._recursive_directory_prefix(response))
                     } - explored_directories
                     self.recursive_dirs_found = len(explored_directories | new_directories)
+
+                if (
+                    self.recursive and new_directories
+                    and self.recursion_rounds >= self.recursion_depth
+                    and not self.should_stop() and not self._rate_limited
+                    and not self.path_limit_reached
+                ):
+                    self.recursion_depth_limit_reached = True
+                    self._log(
+                        f"[Wordlist] Recursion depth cap reached ({self.recursion_depth}); "
+                        "new directory-like paths remain for a deeper pass."
+                    )
             finally:
                 # Keep the queue bounded and workers alive until every recursive pass is done.
                 for _ in workers:
@@ -531,6 +547,7 @@ class WordlistScanner:
             f"[Wordlist] Finished: {len(self.responses)} responses recorded, "
             f"{len(self.hits)} potential hits, {self.candidate_count} candidates generated; "
             f"word limit reached={self.word_limit_reached}, candidate limit reached={self.path_limit_reached}; "
-            f"recursive rounds={self.recursion_rounds}, directory candidates={self.recursive_dirs_found}."
+            f"recursive rounds={self.recursion_rounds}, directory candidates={self.recursive_dirs_found}, "
+            f"recursion depth cap reached={self.recursion_depth_limit_reached}."
         )
         return self.hits
