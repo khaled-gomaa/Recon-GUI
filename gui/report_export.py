@@ -53,6 +53,26 @@ def render_text_report(report: dict) -> str:
             f"title={page.get('title', '')}"
         )
 
+    verification = report.get("subdomain_verification", {}) or {}
+    verified_hosts = verification.get("results", []) or []
+    _section(lines, "Selected Subdomain Verification (Explicit DNS + HTTP HEAD)")
+    if not verified_hosts:
+        lines.append("(not run or no valid selected subdomains)")
+    for item in verified_hosts:
+        lines.append(
+            f"{item.get('host', '')} | DNS={item.get('dns_status', 'unknown')} "
+            f"| IPs={', '.join(item.get('ip_addresses', []) or []) or '--'} "
+            f"| HTTP={item.get('http_status') if item.get('http_status') is not None else item.get('http_result', 'not tested')} "
+            f"| URL={item.get('http_url', '') or '--'}"
+        )
+        if item.get("error"):
+            lines.append(f"    Connection note: {item['error']}")
+    if verification.get("truncated"):
+        lines.append(
+            f"Verification was capped: {verification.get('verified_count', 0)} checked; "
+            f"{verification.get('skipped_count', 0)} remain unchecked."
+        )
+
     for title, key in (
         ("Emails", "emails"),
         ("Subdomains", "subdomains"),
@@ -343,6 +363,26 @@ def render_csv_report(report: dict) -> str:
                 json.dumps(item.get("set_cookie_names", []), ensure_ascii=False, sort_keys=True),
             ),
         ])
+    verification = report.get("subdomain_verification", {}) or {}
+    for item in verification.get("results", []) or []:
+        writer.writerow([
+            "subdomain_verification", item.get("http_url", "") or item.get("host", ""),
+            item.get("http_status") if item.get("http_status") is not None else item.get("dns_status", ""),
+            item.get("host", ""), item.get("dns_status", ""),
+            json.dumps({
+                "ip_addresses": item.get("ip_addresses", []),
+                "http_result": item.get("http_result", ""),
+                "http_url": item.get("http_url", ""),
+                "server": item.get("server", ""),
+                "error": item.get("error", ""),
+            }, ensure_ascii=False, sort_keys=True),
+        ])
+    if verification.get("truncated"):
+        writer.writerow([
+            "subdomain_verification_coverage", "", "", "", "partial",
+            f"verified={verification.get('verified_count', 0)}; unchecked={verification.get('skipped_count', 0)}",
+        ])
+
     for kind in (
         "emails", "subdomains", "endpoints", "discovered_routes", "js_files",
         "source_maps", "passive_subdomains", "historical_urls",
