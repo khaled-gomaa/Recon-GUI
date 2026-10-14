@@ -368,6 +368,7 @@ class HistoryStore:
                         "added_endpoint_count": diff.get("added_endpoint_count", 0),
                         "added_parameter_count": diff.get("added_parameter_count", 0),
                         "added_finding_count": diff.get("added_finding_count", 0),
+                        "added_asset_count": diff.get("added_asset_count", 0),
                     }),
                 ),
             )
