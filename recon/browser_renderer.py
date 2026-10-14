@@ -20,7 +20,8 @@ NAVIGATION_TIMEOUT_MS = 15000
 
 
 async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_network_event=None,
-                       max_pages: int = MAX_RENDER_PAGES, concurrency: int = MAX_RENDER_CONCURRENCY):
+                       max_pages: int = MAX_RENDER_PAGES, concurrency: int = MAX_RENDER_CONCURRENCY,
+                       storage_state=None, cookie_jar=None):
     """Render a bounded list of URLs and return their post-JavaScript DOM HTML."""
     stop = should_stop or (lambda: False)
     log = on_log or (lambda _message: None)
@@ -40,7 +41,7 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
     expected_origin = _origin(limited_urls[0])
     safe_headers = {
         str(k): str(v) for k, v in (headers or {}).items()
-        if str(k).lower() in {"authorization", "cookie", "accept-language"}
+        if str(k).lower() in {"authorization", "accept-language"}
         and "\r" not in str(v) and "\n" not in str(v)
     }
     semaphore = asyncio.Semaphore(max(1, min(int(concurrency), MAX_RENDER_CONCURRENCY)))
@@ -48,8 +49,35 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
     emit = on_network_event or (lambda _record: None)
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
-        context = await browser.new_context(extra_http_headers=safe_headers)
+        context_options = {"extra_http_headers": safe_headers}
+        if storage_state:
+            # This state is passed directly from the in-memory manual session. Never log
+            # or put it in the report: it can contain authenticated cookie/localStorage values.
+            context_options["storage_state"] = storage_state
+        context = await browser.new_context(**context_options)
         try:
+            if not storage_state and cookie_jar is not None:
+                from yarl import URL
+                initial_cookies = []
+                try:
+                    for name, morsel in cookie_jar.filter_cookies(URL(limited_urls[0])).items():
+                        item = {
+                            "name": str(name), "value": str(morsel.value),
+                            "path": morsel["path"] or "/",
+                            "secure": bool(morsel["secure"]),
+                            "httpOnly": bool(morsel["httponly"]),
+                        }
+                        if morsel["domain"]:
+                            item["domain"] = morsel["domain"]
+                        else:
+                            item["url"] = limited_urls[0]
+                        if morsel["samesite"]:
+                            item["sameSite"] = str(morsel["samesite"]).capitalize()
+                        initial_cookies.append(item)
+                    if initial_cookies:
+                        await context.add_cookies(initial_cookies)
+                except Exception as exc:
+                    log(f"[Browser] Could not seed the shared HTTP cookie jar: {type(exc).__name__}")
             async def render_one(url):
                 if stop() or (urlparse(url).hostname or "").lower() != expected_host or _origin(url) != expected_origin:
                     return
@@ -199,6 +227,8 @@ async def capture_manual_session(
     duration = max(15, min(int(duration_seconds), 600))
     observations = {}
     captured_cookies = []
+    browser_storage_state = {}
+    capture_started = asyncio.get_running_loop().time()
 
     def safe_url(value):
         parsed = urlsplit(value or "")
@@ -256,6 +286,29 @@ async def capture_manual_session(
             browser = await playwright.chromium.launch(headless=False)
             try:
                 context = await browser.new_context()
+                # Seed the interactive session with cookies already imported/captured by
+                # the HTTP phases. Values stay in browser memory and are never reported.
+                if cookie_jar is not None:
+                    initial_cookies = []
+                    try:
+                        for name, morsel in cookie_jar.filter_cookies(URL(start_url)).items():
+                            item = {
+                                "name": str(name), "value": str(morsel.value),
+                                "path": morsel["path"] or "/",
+                                "secure": bool(morsel["secure"]),
+                                "httpOnly": bool(morsel["httponly"]),
+                            }
+                            if morsel["domain"]:
+                                item["domain"] = morsel["domain"]
+                            else:
+                                item["url"] = start_url
+                            if morsel["samesite"]:
+                                item["sameSite"] = str(morsel["samesite"]).capitalize()
+                            initial_cookies.append(item)
+                        if initial_cookies:
+                            await context.add_cookies(initial_cookies)
+                    except Exception as exc:
+                        log(f"[Manual Browser] Could not import initial session cookies: {type(exc).__name__}")
                 page = await context.new_page()
 
                 def on_request(request):
@@ -375,6 +428,10 @@ async def capture_manual_session(
                             cookie_jar.update_cookies(morsel, response_url=URL(start_url))
                         except Exception as exc:
                             log(f"[Manual Browser] Could not transfer cookie '{metadata['name']}' to HTTP session: {type(exc).__name__}")
+                try:
+                    browser_storage_state.update(await context.storage_state())
+                except Exception as exc:
+                    log(f"[Manual Browser] Could not retain browser storage state in memory: {type(exc).__name__}")
                 await context.close()
             finally:
                 await browser.close()
@@ -388,8 +445,12 @@ async def capture_manual_session(
     except Exception as exc:
         raise RuntimeError(f"Manual browser capture failed: {type(exc).__name__}: {exc}") from exc
 
+    elapsed = max(0, int(asyncio.get_running_loop().time() - capture_started))
     return {
         "network_observations": list(observations.values()),
         "session_cookies": captured_cookies,
-        "manual_browser_seconds": duration,
+        "manual_browser_seconds": elapsed,
+        "manual_browser_window_seconds": duration,
+        # Private in-memory hand-off only; worker code deliberately excludes this from reports.
+        "_storage_state": browser_storage_state,
     }
