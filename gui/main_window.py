@@ -152,6 +152,23 @@ class MainWindow(QMainWindow):
         grid.addWidget(wordlist_label, 2, 0)
         grid.addWidget(self.wordlist_input, 2, 1, 1, 6)
         grid.addWidget(browse_btn, 2, 7)
+
+        extensions_label = QLabel("Extensions")
+        extensions_label.setObjectName("fieldLabel")
+        self.extensions_input = QLineEdit()
+        self.extensions_input.setClearButtonEnabled(True)
+        self.extensions_input.setPlaceholderText(
+            "Blank = built-in list; otherwise comma-separated, e.g. .php,.json,.bak,.old"
+        )
+        self.extensions_input.setToolTip(
+            "Content Discovery adds the exact path plus each extension here. "
+            "No fixed 500-word truncation is applied; very large lists may take a long time."
+        )
+        self.extensions_input.setMinimumHeight(29)
+        self.extensions_input.setMaximumHeight(33)
+        grid.addWidget(extensions_label, 3, 0)
+        grid.addWidget(self.extensions_input, 3, 1, 1, 7)
+
         for column, stretch in ((1, 2), (3, 1), (5, 1), (6, 1), (7, 0)):
             grid.setColumnStretch(column, stretch)
         root.addWidget(settings)
@@ -181,6 +198,21 @@ class MainWindow(QMainWindow):
         self.passive_check.setToolTip("Queries public indexes only; discovered hosts are not actively probed.")
         options_grid.addWidget(self.render_js_check, 0, 0, 1, 2)
         options_grid.addWidget(self.passive_check, 0, 2, 1, 2)
+        self.subfinder_check = QCheckBox("Subfinder (passive)")
+        self.subfinder_check.setChecked(True)
+        self.subfinder_check.setToolTip(
+            "Run Subfinder only if installed. It queries passive sources and does not crawl discovered hosts."
+        )
+        options_grid.addWidget(self.subfinder_check, 0, 4, 1, 2)
+
+        self.manual_browser_check = QCheckBox("Manual browser session + request capture")
+        self.manual_browser_check.setChecked(False)
+        self.manual_browser_check.setToolTip(
+            "Optional headed Chromium session before crawling. Log in and browse manually; "
+            "same-host request methods, URL parameter names, responses, and cookie metadata are captured. "
+            "Cookie/token values are not added to reports."
+        )
+        options_grid.addWidget(self.manual_browser_check, 1, 0, 1, 4)
         self.crawl_historical_check = QCheckBox("Crawl same-host historical URLs")
         self.crawl_historical_check.setToolTip(
             "Active requests to up to 50 historical URLs from public indexes. "
@@ -344,15 +376,16 @@ class MainWindow(QMainWindow):
         page_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.table, "Pages")
 
-        self.endpoint_table = QTableWidget(0, 5)
+        self.endpoint_table = QTableWidget(0, 6)
         self.endpoint_table.setHorizontalHeaderLabels([
-            "Endpoint", "Sources", "Parameters", "Pages", "Locations",
+            "Endpoint", "Methods", "Sources", "Parameters", "Pages", "Locations",
         ])
-        self.endpoint_table.setColumnWidth(1, 180)
-        self.endpoint_table.setColumnWidth(2, 100)
-        self.endpoint_table.setColumnWidth(3, 80)
+        self.endpoint_table.setColumnWidth(1, 90)
+        self.endpoint_table.setColumnWidth(2, 180)
+        self.endpoint_table.setColumnWidth(3, 100)
+        self.endpoint_table.setColumnWidth(4, 80)
         self.endpoint_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.endpoint_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.endpoint_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.endpoint_table, "Endpoints")
 
         self.parameter_table = QTableWidget(0, 6)
@@ -651,6 +684,7 @@ class MainWindow(QMainWindow):
         for record in report.get("endpoint_inventory", []) or []:
             values = (
                 record.get("endpoint", ""),
+                ", ".join(record.get("methods", []) or []),
                 ", ".join(record.get("sources", []) or []),
                 ", ".join(record.get("parameters", []) or []),
                 record.get("location_count", 0),
@@ -957,6 +991,12 @@ class MainWindow(QMainWindow):
             passive_discovery=self.passive_check.isChecked(),
             request_headers=request_headers,
             crawl_historical_urls=self.crawl_historical_check.isChecked(),
+            wordlist_extensions=(
+                [""] + [item.strip() for item in self.extensions_input.text().split(",") if item.strip()]
+                if self.extensions_input.text().strip() else None
+            ),
+            use_subfinder=self.subfinder_check.isChecked(),
+            manual_browser_session=self.manual_browser_check.isChecked(),
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
