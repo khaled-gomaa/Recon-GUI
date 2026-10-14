@@ -133,6 +133,13 @@ def render_text_report(report: dict) -> str:
             f"path cap reached: {coverage.get('wordlist_path_limit_reached', False)}"
         )
         lines.append(f"Wordlist limit reached: {coverage.get('wordlist_limit_reached', False)}")
+        lines.append(
+            f"Recursive discovery: enabled={coverage.get('wordlist_recursive_enabled', False)}; "
+            f"depth cap={coverage.get('wordlist_recursion_depth', 1)}; "
+            f"directory candidates={coverage.get('wordlist_recursive_dirs_found', 0)}; "
+            f"rounds completed={coverage.get('wordlist_recursion_rounds', 0)}; "
+            f"depth cap reached={coverage.get('wordlist_recursion_depth_limit_reached', False)}"
+        )
         lines.append(f"Content limit reached: {coverage.get('content_limit_reached', False)}")
     for note in report.get("content_limit_notes", []) or []:
         lines.append("WARNING: " + str(note))
