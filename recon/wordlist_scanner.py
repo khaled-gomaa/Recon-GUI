@@ -1,5 +1,6 @@
 """Low-rate optional wordlist path checks for authorized targets."""
 import asyncio
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -8,8 +9,15 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from crawler.fetcher import build_headers
 
-DEFAULT_EXTENSIONS = ["", ".html", ".php", ".bak", ".old", ".txt", ".zip"]
-MAX_WORDS = 500
+# Broad, common web extensions. Keep the extension list configurable in the GUI.
+DEFAULT_EXTENSIONS = [
+    "", ".html", ".htm", ".xhtml", ".php", ".php3", ".php4", ".php5", ".phtml",
+    ".asp", ".aspx", ".jsp", ".jspx", ".cfm", ".cgi", ".pl", ".py", ".rb",
+    ".json", ".xml", ".txt", ".js", ".mjs", ".css", ".map", ".yaml", ".yml",
+    ".conf", ".config", ".ini", ".env", ".log", ".bak", ".old", ".orig", ".save",
+    ".backup", ".swp", ".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".sql",
+    ".db", ".pdf", ".csv",
+]
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_RETRY_AFTER_SECONDS = 120
 MAX_RATE_LIMIT_PAUSES = 3
@@ -20,6 +28,7 @@ class WordlistScanner:
         self, base_url: str, wordlist_path: str, extensions=None,
         concurrency: int = 5, timeout: int = 8, delay_ms: int = 200,
         on_hit=None, on_log=None, should_stop=None, on_result=None, request_headers=None,
+        max_words: int = 0, max_candidates: int = 0, methods=None, cookie_jar=None,
     ):
         parsed = urlparse(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -27,7 +36,27 @@ class WordlistScanner:
         self.origin = f"{parsed.scheme}://{parsed.netloc}/"
         self.base_host = parsed.hostname.lower()
         self.wordlist_path = Path(wordlist_path)
-        self.extensions = extensions if extensions is not None else DEFAULT_EXTENSIONS
+        selected_extensions = DEFAULT_EXTENSIONS if extensions is None else list(extensions)
+        normalized_extensions = []
+        for extension in selected_extensions:
+            extension = str(extension or "").strip()
+            if extension and not extension.startswith("."):
+                extension = "." + extension
+            if extension and ("/" in extension or "\\" in extension or "?" in extension or "#" in extension):
+                continue
+            if extension not in normalized_extensions:
+                normalized_extensions.append(extension)
+        self.extensions = [""] + [item for item in normalized_extensions if item]
+        self.max_words = max(0, int(max_words))  # 0 means every non-comment line in the list.
+        self.max_candidates = max(0, int(max_candidates))  # 0 means no artificial candidate cap.
+        allowed_methods = {"GET", "HEAD", "OPTIONS"}
+        selected_methods = methods if methods is not None else ["GET"]
+        self.methods = list(dict.fromkeys(
+            str(item).strip().upper() for item in selected_methods
+            if str(item).strip().upper() in allowed_methods
+        )) or ["GET"]
+        self.cookie_jar = cookie_jar
+        self.scan_metadata = {}
         self.concurrency = max(1, min(int(concurrency), 5))
         self.timeout = max(1, int(timeout))
         self.delay_ms = max(0, int(delay_ms))
@@ -154,21 +183,34 @@ class WordlistScanner:
         entries = []
         for raw in self.wordlist_path.read_text(encoding="utf-8", errors="ignore").splitlines():
             word = raw.strip()
-            if word and not word.startswith("#"):
-                entries.append(word.lstrip("/"))
-            if len(entries) >= MAX_WORDS:
-                self._log(f"[Wordlist] Limited to first {MAX_WORDS} entries.")
+            if not word or word.startswith("#"):
+                continue
+            word = word.lstrip("/")
+            # Reject absolute URLs and path traversal before building candidates.
+            if "://" in word or word.startswith("//") or any(part == ".." for part in word.replace("\\\\", "/").split("/")):
+                continue
+            entries.append(word)
+            if self.max_words and len(entries) >= self.max_words:
+                self._log(f"[Wordlist] Word cap reached ({self.max_words}); remaining entries were not loaded.")
                 break
-        self._log(f"[Wordlist] Loaded {len(entries)} entries")
+        self._log(f"[Wordlist] Loaded {len(entries)} entries" + (" (no word cap)." if not self.max_words else ""))
         return entries
 
     def _build_targets(self, word: str):
-        # Only relative path candidates are permitted; absolute URLs in wordlists are ignored.
-        if "://" in word or word.startswith("//"):
+        # Only relative path candidates are permitted; absolute URLs and traversal are ignored.
+        word = str(word or "").strip().replace("\\\\", "/").lstrip("/")
+        if not word or "://" in word or word.startswith("//") or any(
+            part == ".." for part in word.split("/")
+        ):
             return []
-        words = [word] if "/" in word or word.startswith(".") else [word + ext for ext in self.extensions]
+        basename = word.rstrip("/").rsplit("/", 1)[-1]
+        has_extension = bool(re.search(r"\\.[A-Za-z0-9_-]{1,12}$", basename)) or basename.startswith(".")
+        if word.endswith("/") or has_extension:
+            candidates = [word]
+        else:
+            candidates = [word + extension for extension in self.extensions]
         result = []
-        for candidate in words:
+        for candidate in candidates:
             url = urljoin(self.origin, candidate)
             parsed = urlparse(url)
             if parsed.scheme in ("http", "https") and parsed.hostname and parsed.hostname.lower() == self.base_host:
@@ -208,17 +250,43 @@ class WordlistScanner:
 
     async def scan(self):
         words = self._load_wordlist()
-        targets = list(dict.fromkeys(target for word in words for target in self._build_targets(word)))
+        targets = []
+        seen_targets = set()
+        candidates_truncated = False
+        for word in words:
+            for target in self._build_targets(word):
+                if target in seen_targets:
+                    continue
+                if self.max_candidates and len(targets) >= self.max_candidates:
+                    candidates_truncated = True
+                    break
+                seen_targets.add(target)
+                targets.append(target)
+            if candidates_truncated:
+                break
+        if candidates_truncated:
+            self._log(
+                f"[Wordlist] Candidate cap reached ({self.max_candidates}); "
+                "increase the cap or set it to 0 to try every generated path."
+            )
+        request_candidates = [(method, url) for url in targets for method in self.methods]
+        self.scan_metadata = {
+            "words_loaded": len(words), "unique_path_candidates": len(targets),
+            "methods": list(self.methods), "request_candidates": len(request_candidates),
+            "max_words": self.max_words, "max_candidates": self.max_candidates,
+            "word_cap_enabled": bool(self.max_words), "candidate_cap_enabled": bool(self.max_candidates),
+            "candidates_truncated": candidates_truncated, "requests_completed": 0,
+        }
         self._log(
-            f"[Wordlist] Checking {len(targets)} candidates "
-            f"(concurrency={self.concurrency}, delay={self.delay_ms}ms)."
+            f"[Wordlist] Checking {len(targets)} paths / {len(request_candidates)} HTTP requests "
+            f"using {', '.join(self.methods)} (concurrency={self.concurrency}, delay={self.delay_ms}ms)."
         )
         self._resume_event = asyncio.Event()
         self._resume_event.set()
         self._rate_limit_lock = asyncio.Lock()
         queue = asyncio.Queue()
-        for target in targets:
-            queue.put_nowait(target)
+        for request_candidate in request_candidates:
+            queue.put_nowait(request_candidate)
         timeout = aiohttp.ClientTimeout(total=self.timeout, connect=min(self.timeout, 5))
         connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=True)
         headers = build_headers()
@@ -229,22 +297,23 @@ class WordlistScanner:
         })
 
         async with aiohttp.ClientSession(
-            connector=connector, timeout=timeout, headers=headers
+            connector=connector, timeout=timeout, headers=headers, cookie_jar=self.cookie_jar
         ) as session:
             await self._fetch_baseline(session)
 
             async def worker():
                 while True:
-                    url = await queue.get()
+                    request_item = await queue.get()
                     try:
-                        if url is None:
+                        if request_item is None:
                             return
+                        method, url = request_item
                         await self._resume_event.wait()
                         if self.should_stop() or self._rate_limited:
                             continue
                         try:
                             rate_limit_headers = None
-                            async with session.get(url, allow_redirects=False) as resp:
+                            async with session.request(method, url, allow_redirects=False) as resp:
                                 data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
                                 body = data[:MAX_RESPONSE_BYTES]
                                 size = len(body)
@@ -256,6 +325,7 @@ class WordlistScanner:
                                 )
                                 result = {
                                     "url": url,
+                                    "method": method,
                                     "status": resp.status,
                                     "size": size,
                                     "word_count": word_count,
@@ -268,6 +338,7 @@ class WordlistScanner:
                                     ),
                                 }
                                 self.responses.append(result)
+                                self.scan_metadata["requests_completed"] = len(self.responses)
                                 self._notify_result(result)
                                 if resp.status == 429:
                                     rate_limit_headers = dict(resp.headers)
@@ -302,5 +373,10 @@ class WordlistScanner:
         if self._rate_limited:
             self._log("[Wordlist] Ended early because the target is rate-limiting requests.")
         self.rate_limit_stopped = self._rate_limited and not self.should_stop()
-        self._log(f"[Wordlist] Finished: {len(self.hits)} potential hits.")
+        self.scan_metadata["requests_completed"] = len(self.responses)
+        self.scan_metadata["potential_hits"] = len(self.hits)
+        self._log(
+            f"[Wordlist] Finished: {len(self.responses)}/{len(request_candidates)} requests, "
+            f"{len(self.hits)} potential hits."
+        )
         return self.hits
