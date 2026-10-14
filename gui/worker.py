@@ -33,6 +33,7 @@ class CrawlWorker(QThread):
         wordlist_max_words=0, wordlist_max_candidates=0,
         recursive_content_discovery=False, content_recursion_depth=2,
         imported_seed_urls=None, seed_import_summary=None,
+        probe_assets=False, asset_probe_max=500,
     ):
         super().__init__()
         self.url = url
@@ -58,6 +59,8 @@ class CrawlWorker(QThread):
             if str(value).strip()
         ))[:100_000]
         self.seed_import_summary = dict(seed_import_summary or {})
+        self.probe_assets = bool(probe_assets)
+        self.asset_probe_max = max(1, min(int(asset_probe_max or 500), 5000))
         self.request_headers = {
             str(key): str(value) for key, value in (request_headers or {}).items()
             if str(key).lower() in {"authorization", "cookie", "accept-language"}
@@ -378,6 +381,59 @@ class CrawlWorker(QThread):
                 if scanner.rate_limit_stopped:
                     self.log_message.emit("[Content Discovery] Stopped safely because rate limiting did not permit a compliant resume.")
 
+            asset_probe_data = {
+                "results": [],
+                "summary": {
+                    "enabled": self.probe_assets, "unique_same_origin_candidates": 0,
+                    "selected_candidates": 0, "requests_completed": 0,
+                    "skipped_out_of_origin": 0, "limit": self.asset_probe_max,
+                    "limit_reached": False, "rate_limited": False,
+                    "rate_limited_stop": False, "stopped_by_user": False,
+                    "unattempted": 0, "partial": False, "method": "HEAD",
+                },
+            }
+            # Optional, same-origin-only HEAD checks validate referenced files without
+            # downloading bodies. Do not start another request phase after an HTTP 429.
+            if (
+                self.probe_assets and not self._stopping()
+                and not engine.rate_limit_stopped and not wordlist_rate_limited_stop
+            ):
+                from recon.asset_probe import probe_asset_references
+                candidates = [
+                    {
+                        "url": item.get("url", ""),
+                        "request_url": item.get("request_url") or item.get("url", ""),
+                        "kind": item.get("kind", "resource"),
+                        "extension": item.get("extension", ""),
+                    }
+                    for item in analyzer.asset_observations.values()
+                ]
+                self.log_message.emit(
+                    f"[Assets] HEAD-checking referenced resources (limit={self.asset_probe_max}); "
+                    "same-origin only, no response bodies, no redirects."
+                )
+                try:
+                    asset_probe_data = loop.run_until_complete(probe_asset_references(
+                        self.url, candidates, cookie_jar=session_cookie_jar,
+                        request_headers=self.request_headers, should_stop=self._stopping,
+                        on_log=self.log_message.emit, max_assets=self.asset_probe_max,
+                        delay_ms=max(200, int(engine.crawl_delay_seconds * 1000)),
+                    ))
+                except Exception as exc:
+                    self.log_message.emit(f"[Assets] Probe phase failed: {type(exc).__name__}")
+                    asset_probe_data["summary"].update({
+                        "enabled": True, "partial": True,
+                        "error": type(exc).__name__,
+                    })
+            elif self.probe_assets:
+                self.log_message.emit(
+                    "[Assets] HEAD phase skipped because the scan stopped or an earlier phase was rate-limited."
+                )
+                asset_probe_data["summary"].update({
+                    "enabled": True, "partial": True,
+                    "skipped_due_to_previous_stop_or_rate_limit": True,
+                })
+
             all_results = engine.results
             if not self.matcher.is_empty():
                 self.log_message.emit(f"[Matcher] Applying: {self.matcher.describe()}")
@@ -403,6 +459,21 @@ class CrawlWorker(QThread):
                 ) if any(header.lower() == key for header in self.request_headers)
             ]
             report["target"] = self.url
+            report["asset_probe_summary"] = asset_probe_data.get("summary", {})
+            report["asset_probe_results"] = asset_probe_data.get("results", [])
+            probes_by_url = {
+                str(item.get("url") or ""): item
+                for item in report["asset_probe_results"] if item.get("url")
+            }
+            for asset in report.get("asset_inventory", []) or []:
+                probe = probes_by_url.get(str(asset.get("url") or ""))
+                asset["probe_checked"] = bool(probe)
+                asset["probe_method"] = "HEAD" if probe else ""
+                asset["probe_status"] = probe.get("status") if probe else None
+                asset["probe_result"] = probe.get("result", "") if probe else ""
+                asset["probe_content_type"] = probe.get("content_type", "") if probe else ""
+                asset["probe_content_length"] = probe.get("content_length") if probe else None
+                asset["probe_error"] = probe.get("error", "") if probe else ""
             report["seed_import_summary"] = {
                 key: self.seed_import_summary.get(key)
                 for key in (
@@ -558,6 +629,10 @@ class CrawlWorker(QThread):
                 "imported_seed_candidates": len(self.imported_seed_urls),
                 "imported_seed_urls_crawled": report.get("imported_seed_urls_crawled", 0),
                 "imported_seed_limit_reached": bool(self.seed_import_summary.get("limit_reached")),
+                "asset_probe_candidates": asset_probe_data.get("summary", {}).get("unique_same_origin_candidates", 0),
+                "asset_probe_requests_completed": asset_probe_data.get("summary", {}).get("requests_completed", 0),
+                "asset_probe_limit_reached": asset_probe_data.get("summary", {}).get("limit_reached", False),
+                "asset_probe_partial": asset_probe_data.get("summary", {}).get("partial", False),
             }
             try:
                 from recon.history_store import HistoryStore
