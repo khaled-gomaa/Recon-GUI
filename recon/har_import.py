@@ -267,3 +267,170 @@ def load_har_file(
             "warnings": warnings,
         },
     }
+
+
+def merge_har_into_report(
+    report: dict,
+    imported_observations,
+    imported_cookies,
+    import_summaries,
+) -> dict:
+    """Overlay sanitized HAR metadata onto a fresh scan report without changing scan pages."""
+    from copy import deepcopy
+    from recon.parameter_intelligence import build_parameter_inventory
+
+    merged = deepcopy(report or {})
+    observations = {}
+    for record in (merged.get("network_observations", []) or []) + list(imported_observations or []):
+        if not isinstance(record, dict):
+            continue
+        safe_record = {
+            "url": str(record.get("url") or ""),
+            "method": str(record.get("method") or "UNKNOWN").upper(),
+            "status": record.get("status"),
+            "source": str(record.get("source") or "unknown"),
+            "page": str(record.get("page") or ""),
+            "resource_type": str(record.get("resource_type") or ""),
+            "query_parameters": sorted(set(str(v) for v in record.get("query_parameters", []) or [] if str(v))),
+            "body_parameters": sorted(set(str(v) for v in record.get("body_parameters", []) or [] if str(v))),
+            "content_type": str(record.get("content_type") or ""),
+        }
+        if not safe_record["url"]:
+            continue
+        key = (
+            safe_record["url"], safe_record["method"],
+            safe_record["page"], safe_record["source"],
+        )
+        current = observations.get(key)
+        if current is None:
+            observations[key] = safe_record
+        else:
+            current["query_parameters"] = sorted(
+                set(current["query_parameters"]) | set(safe_record["query_parameters"])
+            )
+            current["body_parameters"] = sorted(
+                set(current["body_parameters"]) | set(safe_record["body_parameters"])
+            )
+            if safe_record["status"] is not None:
+                current["status"] = safe_record["status"]
+            if safe_record["content_type"]:
+                current["content_type"] = safe_record["content_type"]
+            if safe_record["resource_type"] and not current["resource_type"]:
+                current["resource_type"] = safe_record["resource_type"]
+    merged_observations = sorted(
+        observations.values(),
+        key=lambda item: (item["url"], item["method"], item["source"], item["page"]),
+    )
+    merged["network_observations"] = merged_observations
+
+    cookies = {}
+    for item in (merged.get("cookie_map", []) or []) + list(imported_cookies or []):
+        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            continue
+        safe_cookie = {
+            "url": str(item.get("url") or ""),
+            "name": str(item.get("name") or ""),
+            "domain": str(item.get("domain") or ""),
+            "path": str(item.get("path") or "/"),
+            "secure": bool(item.get("secure", False)),
+            "httponly": bool(item.get("httponly", False)),
+            "samesite": str(item.get("samesite") or ""),
+            "source": str(item.get("source") or "unknown"),
+        }
+        key = (
+            safe_cookie["url"], safe_cookie["name"], safe_cookie["domain"],
+            safe_cookie["path"], safe_cookie["source"],
+        )
+        cookies[key] = safe_cookie
+    merged["cookie_map"] = sorted(
+        cookies.values(),
+        key=lambda item: (item["url"], item["name"], item["source"]),
+    )
+
+    # Extend existing endpoint rows rather than rebuilding away static, historical, or
+    # form observations that may not exist in the runtime network inventory.
+    endpoints = {}
+    for existing in merged.get("endpoint_inventory", []) or []:
+        if not isinstance(existing, dict) or not existing.get("endpoint"):
+            continue
+        item = deepcopy(existing)
+        item["sources"] = set(str(v) for v in item.get("sources", []) or [])
+        item["methods"] = set(str(v).upper() for v in item.get("methods", []) or [])
+        item["parameters"] = set(str(v) for v in item.get("parameters", []) or [])
+        item["locations"] = set(str(v) for v in item.get("locations", []) or [])
+        item["statuses"] = set(item.get("statuses", []) or [])
+        item["resource_types"] = set(item.get("resource_types", []) or [])
+        endpoints[str(item["endpoint"])] = item
+    for record in imported_observations or []:
+        endpoint = str(record.get("url") or "")
+        if not endpoint:
+            continue
+        item = endpoints.setdefault(endpoint, {
+            "endpoint": endpoint, "sources": set(), "source_count": 0,
+            "locations": set(), "location_count": 0,
+            "parameters": set(), "parameter_count": 0,
+            "methods": set(), "statuses": set(), "resource_types": set(),
+        })
+        for field, values in (
+            ("sources", [record.get("source", "burp-har-import")]),
+            ("methods", [record.get("method", "UNKNOWN")]),
+            ("parameters", list(record.get("query_parameters", []) or []) + list(record.get("body_parameters", []) or [])),
+            ("locations", [record.get("page", "")]),
+            ("resource_types", [record.get("resource_type", "")]),
+        ):
+            item[field].update(str(value) for value in values if str(value))
+        if record.get("status") is not None:
+            try:
+                item["statuses"].add(int(record["status"]))
+            except (TypeError, ValueError):
+                pass
+    merged["endpoint_inventory"] = []
+    for endpoint, item in sorted(endpoints.items(), key=lambda pair: pair[0].casefold()):
+        normalized = dict(item)
+        for field in ("sources", "methods", "parameters", "locations", "statuses", "resource_types"):
+            normalized[field] = sorted(item.get(field, set()))
+        normalized["source_count"] = len(normalized["sources"])
+        normalized["location_count"] = len(normalized["locations"])
+        normalized["parameter_count"] = len(normalized["parameters"])
+        merged["endpoint_inventory"].append(normalized)
+    merged["endpoints"] = [item["endpoint"] for item in merged["endpoint_inventory"]]
+
+    imported_parameters = build_parameter_inventory(
+        [], [], [], network_observations=list(imported_observations or [])
+    )
+    parameter_map = {
+        str(item.get("name")): deepcopy(item)
+        for item in merged.get("parameters", []) or []
+        if item.get("name")
+    }
+    for incoming in imported_parameters:
+        name = incoming["name"]
+        existing = parameter_map.get(name)
+        if existing is None:
+            parameter_map[name] = incoming
+            continue
+        existing["sources"] = sorted(set(existing.get("sources", []) or []) | set(incoming.get("sources", []) or []))
+        existing["methods"] = sorted(set(existing.get("methods", []) or []) | set(incoming.get("methods", []) or []))
+        existing["locations"] = sorted(set(existing.get("locations", []) or []) | set(incoming.get("locations", []) or []))[:25]
+        existing["occurrences"] = int(existing.get("occurrences", 0)) + int(incoming.get("occurrences", 0))
+        existing["source_count"] = len(existing["sources"])
+        existing["location_count"] = len(existing["locations"])
+    merged["parameters"] = sorted(
+        parameter_map.values(),
+        key=lambda item: (-int(item.get("occurrences", 0)), str(item.get("name", "")).casefold()),
+    )
+    merged["parameter_count"] = len(merged["parameters"])
+
+    summaries = [dict(item) for item in (import_summaries or [])]
+    merged["har_import_summary"] = {
+        "imports": summaries,
+        "files_imported": len(summaries),
+        "entries_seen": sum(int(item.get("entry_count", 0) or 0) for item in summaries),
+        "entries_imported": sum(int(item.get("entries_imported", 0) or 0) for item in summaries),
+        "unique_requests": sum(
+            int(item.get("unique_requests", 0) or 0) for item in summaries
+        ),
+        "truncated": any(bool(item.get("truncated")) for item in summaries),
+        "warnings": [warning for item in summaries for warning in item.get("warnings", []) or []],
+    }
+    return merged
