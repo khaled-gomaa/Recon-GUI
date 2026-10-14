@@ -14,7 +14,7 @@ def render_text_report(report: dict) -> str:
         "HAR metadata imported (no active scan run)" if import_only else
         "Stopped by user" if report.get("stopped_by_user") else
         "Partial (rate limited)" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") else
-        "Partial (coverage cap)" if report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") or (report.get("seed_import_summary", {}) or {}).get("limit_reached") else
+        "Partial (page/depth/wordlist/content cap)" if report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") or (report.get("seed_import_summary", {}) or {}).get("limit_reached") else
         "Completed"
     )
     lines = [
