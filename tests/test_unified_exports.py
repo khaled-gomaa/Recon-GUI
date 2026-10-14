@@ -165,3 +165,28 @@ def test_asset_reference_inventory_is_exported_without_query_values():
     assert "asset_reference" in csv
     assert "version" in csv
     assert "secret-value" not in txt + csv
+
+
+def test_exports_include_asset_history_diffs():
+    report = {
+        "target": "https://example.test/",
+        "pages": [],
+        "history_diff": {
+            "comparison_status": "complete",
+            "added_asset_count": 1,
+            "removed_asset_count": 1,
+            "changed_asset_count": 1,
+            "added_assets": ["https://example.test/new.js [javascript]"],
+            "removed_assets": ["https://example.test/old.css [stylesheet]"],
+            "changed_assets": ["https://example.test/app.js [javascript]"],
+        },
+    }
+    txt = render_text_report(report)
+    csv = render_csv_report(report)
+    assert "ASSET INVENTORY CHANGES" in txt
+    assert "[NEW ASSET] https://example.test/new.js [javascript]" in txt
+    assert "[REMOVED ASSET] https://example.test/old.css [stylesheet]" in txt
+    assert "[CHANGED ASSET] https://example.test/app.js [javascript]" in txt
+    assert "asset_added" in csv
+    assert "asset_removed" in csv
+    assert "asset_changed" in csv
