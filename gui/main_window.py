@@ -522,6 +522,17 @@ class MainWindow(QMainWindow):
         discovery_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.discovery_table, "Content Discovery")
 
+        self.asset_table = QTableWidget(0, 5)
+        self.asset_table.setHorizontalHeaderLabels([
+            "Asset URL (query values removed)", "Kind", "Extension", "Referrers", "Fetch evidence",
+        ])
+        self.asset_table.setColumnWidth(1, 115)
+        self.asset_table.setColumnWidth(2, 90)
+        self.asset_table.setColumnWidth(3, 85)
+        self.asset_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.asset_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.tabs.addTab(self.asset_table, "Asset References")
+
         self.network_table = QTableWidget(0, 8)
         self.network_table.setHorizontalHeaderLabels([
             "Endpoint", "Method", "Status", "Resource type", "Query names",
@@ -650,7 +661,7 @@ class MainWindow(QMainWindow):
 
         for table in (
             self.table, self.endpoint_table, self.parameter_table, self.findings_table,
-            self.discovery_table, self.network_table, self.cookie_table,
+            self.discovery_table, self.asset_table, self.network_table, self.cookie_table,
             self.subdomain_table, self.history_table,
         ):
             self._style_table(table)
@@ -827,7 +838,7 @@ class MainWindow(QMainWindow):
         return [
             getattr(self, name, None) for name in (
                 "table", "endpoint_table", "parameter_table", "findings_table",
-                "discovery_table", "network_table", "cookie_table", "subdomain_table", "history_table",
+                "discovery_table", "asset_table", "network_table", "cookie_table", "subdomain_table", "history_table",
             )
         ]
 
@@ -853,6 +864,33 @@ class MainWindow(QMainWindow):
             if item is not None:
                 values.append(item.text())
         table.setRowHidden(row, needle not in " ".join(values).casefold())
+
+    def _populate_asset_table(self, report: dict):
+        """List same-host and external resource references without claiming they were fetched."""
+        self.asset_table.setRowCount(0)
+        for record in report.get("asset_inventory", []) or []:
+            if not record.get("in_scope", False):
+                evidence = "External reference — not fetched"
+            elif record.get("fetched_by_page_crawler"):
+                evidence = "Page crawler requested URL"
+            elif record.get("fetched_by_js_collector"):
+                evidence = "JavaScript collector downloaded"
+            else:
+                evidence = "Reference only — not fetched"
+            values = (
+                record.get("url", ""),
+                record.get("kind", "resource"),
+                record.get("extension", ""),
+                record.get("reference_count", 0),
+                evidence,
+            )
+            row = self.asset_table.rowCount()
+            self.asset_table.insertRow(row)
+            for column, value in enumerate(values):
+                self.asset_table.setItem(row, column, QTableWidgetItem(str(value)))
+            self._filter_table_row(
+                self.asset_table, row, self.results_search.text().strip().casefold()
+            )
 
     def _populate_endpoint_parameter_findings(self, report: dict):
         """Populate structured result tables from the unified scan report."""
@@ -1353,6 +1391,8 @@ class MainWindow(QMainWindow):
         self.tabs.setTabText(self.tabs.indexOf(self.parameter_table), "Parameters")
         self.tabs.setTabText(self.tabs.indexOf(self.findings_table), "Findings")
         self.tabs.setTabText(self.tabs.indexOf(self.discovery_table), "Content Discovery")
+        self.asset_table.setRowCount(0)
+        self.tabs.setTabText(self.tabs.indexOf(self.asset_table), "Asset References")
         self.tabs.setCurrentWidget(self.log_view)
         self.export_btn.setEnabled(False)
         self.export_txt_btn.setEnabled(False)
@@ -1578,6 +1618,7 @@ class MainWindow(QMainWindow):
         self._rebuild_table_from_filtered(filtered, favicon)
         self._rebuild_content_discovery_table(report.get("wordlist_results", []))
         self._populate_endpoint_parameter_findings(report)
+        self._populate_asset_table(report)
         self._populate_network_cookie_tables(report)
         self._populate_subdomain_table(report)
         self._render_recon(report)
@@ -1615,6 +1656,10 @@ class MainWindow(QMainWindow):
         self.tabs.setTabText(
             self.tabs.indexOf(self.discovery_table),
             f"Content Discovery ({len(report.get('wordlist_results', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.asset_table),
+            f"Asset References ({len(report.get('asset_inventory', []))})",
         )
         self._set_result_table_sorting(True)
         self._filter_result_tables(self.results_search.text())
