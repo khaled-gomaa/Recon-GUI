@@ -637,15 +637,15 @@ class MainWindow(QMainWindow):
         )
         self.tabs.addTab(self.coverage_view, "Coverage / Gaps")
 
-        self.history_table = QTableWidget(0, 10)
+        self.history_table = QTableWidget(0, 11)
         self.history_table.setHorizontalHeaderLabels([
             "Scan #", "Started", "Status", "Pages", "New URLs", "Removed",
-            "Changed", "New endpoints", "New parameters", "New findings",
+            "Changed", "New endpoints", "New parameters", "New findings", "New assets",
         ])
         self.history_table.setColumnWidth(0, 70)
         self.history_table.setColumnWidth(1, 180)
         self.history_table.setColumnWidth(2, 105)
-        self.history_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
+        self.history_table.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.history_table, "Scan History")
         self.url_input.editingFinished.connect(self._refresh_history_for_target)
 
@@ -1274,6 +1274,7 @@ class MainWindow(QMainWindow):
                 scan.get("added_count", 0), scan.get("removed_count", 0),
                 scan.get("changed_count", 0), scan.get("added_endpoint_count", 0),
                 scan.get("added_parameter_count", 0), scan.get("added_finding_count", 0),
+                scan.get("added_asset_count", 0),
             )
             for column, value in enumerate(values):
                 self.history_table.setItem(row, column, QTableWidgetItem(str(value)))
