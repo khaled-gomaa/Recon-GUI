@@ -389,7 +389,7 @@ class CrawlEngine:
             queue.put_nowait((normalized, depth))
 
         if self.cookie_jar is None:
-            self.cookie_jar = aiohttp.CookieJar()
+            self.cookie_jar = aiohttp.CookieJar(unsafe=True)
         if not self._cookie_jar_seeded:
             raw_cookie = next(
                 (value for key, value in self.request_headers.items() if key.lower() == "cookie"), ""
