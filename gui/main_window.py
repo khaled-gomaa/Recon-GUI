@@ -902,6 +902,8 @@ class MainWindow(QMainWindow):
                 evidence = "JavaScript collector downloaded"
             else:
                 evidence = "Reference only — not fetched"
+            if record.get("probe_checked"):
+                evidence += " | HEAD checked (body not downloaded)"
             values = (
                 record.get("url", ""),
                 record.get("kind", "resource"),
@@ -1721,7 +1723,7 @@ class MainWindow(QMainWindow):
         asset_probe_limited = bool(asset_probe_summary.get("partial"))
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
-        elif crawler_limited or discovery_limited:
+        elif crawler_limited or discovery_limited or asset_probe_summary.get("rate_limited_stop"):
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
         elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited:
             reasons = []
@@ -1987,9 +1989,13 @@ class MainWindow(QMainWindow):
             lines.append(
                 f"HEAD checks: {asset_probe_summary.get('requests_completed', 0)} requests completed / "
                 f"{asset_probe_summary.get('selected_candidates', 0)} selected; "
+                f"external origins skipped={asset_probe_summary.get('skipped_out_of_origin', 0)}; "
                 f"rate-limited stop={asset_probe_summary.get('rate_limited_stop', False)}; "
-                f"limit reached={asset_probe_summary.get('limit_reached', False)}"
+                f"limit reached={asset_probe_summary.get('limit_reached', False)}; "
+                f"partial={asset_probe_summary.get('partial', False)}"
             )
+            if asset_probe_summary.get("unattempted"):
+                lines.append(f"HEAD requests not attempted: {asset_probe_summary.get('unattempted', 0)}")
         lines.append("")
 
         lines.append("=== CONTENT DISCOVERY / WORDLIST ===")
