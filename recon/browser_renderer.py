@@ -19,7 +19,7 @@ MAX_RENDER_CONCURRENCY = 2
 NAVIGATION_TIMEOUT_MS = 15000
 
 
-async def render_pages(urls, headers=None, should_stop=None, on_log=None,
+async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_network_event=None,
                        max_pages: int = MAX_RENDER_PAGES, concurrency: int = MAX_RENDER_CONCURRENCY):
     """Render a bounded list of URLs and return their post-JavaScript DOM HTML."""
     stop = should_stop or (lambda: False)
@@ -45,8 +45,10 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None,
     }
     semaphore = asyncio.Semaphore(max(1, min(int(concurrency), MAX_RENDER_CONCURRENCY)))
     rendered = {}
+    emit = on_network_event or (lambda _record: None)
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
+        context = await browser.new_context(extra_http_headers=safe_headers)
         try:
             async def render_one(url):
                 if stop() or (urlparse(url).hostname or "").lower() != expected_host or _origin(url) != expected_origin:
@@ -54,8 +56,70 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None,
                 async with semaphore:
                     if stop():
                         return
-                    context = await browser.new_context(extra_http_headers=safe_headers)
                     page = await context.new_page()
+
+                    from urllib.parse import parse_qsl, urlsplit, urlunsplit
+                    import json
+
+                    def safe_request_url(value):
+                        parsed = urlsplit(value or "")
+                        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", ""))
+
+                    def on_request(request):
+                        if (urlparse(request.url).hostname or "").lower() != expected_host or _origin(request.url) != expected_origin:
+                            return
+                        try:
+                            query_parameters = sorted({name for name, _ in parse_qsl(urlsplit(request.url).query, keep_blank_values=True) if name})
+                        except ValueError:
+                            query_parameters = []
+                        body_parameters = []
+                        post_data = request.post_data or ""
+                        try:
+                            content_type = str(request.headers.get("content-type", "")).lower()
+                            if "json" in content_type:
+                                value = json.loads(post_data)
+                                if isinstance(value, dict):
+                                    body_parameters = sorted(str(name) for name in value)
+                            elif "x-www-form-urlencoded" in content_type or (post_data and not content_type):
+                                body_parameters = sorted({name for name, _ in parse_qsl(post_data, keep_blank_values=True) if name})
+                        except (ValueError, TypeError):
+                            body_parameters = []
+                        record = {
+                            "url": safe_request_url(request.url),
+                            "method": str(request.method or "GET").upper(),
+                            "source": "rendered-browser",
+                            "page": safe_request_url(url),
+                            "resource_type": str(request.resource_type or ""),
+                            "query_parameters": query_parameters,
+                            "body_parameters": body_parameters,
+                            "status": None,
+                            "content_type": "",
+                        }
+                        requests_by_id[id(request)] = record
+                        try:
+                            emit(dict(record))
+                        except Exception:
+                            pass
+
+                    async def on_response(response):
+                        record = requests_by_id.get(id(response.request))
+                        if record is None:
+                            return
+                        record["status"] = int(response.status)
+                        try:
+                            response_headers = await response.all_headers()
+                            record["content_type"] = response_headers.get("content-type", "")
+                        except Exception:
+                            pass
+                        try:
+                            emit(dict(record))
+                        except Exception:
+                            pass
+
+                    requests_by_id = {}
+                    page.on("request", on_request)
+                    page.on("response", lambda response: asyncio.create_task(on_response(response)))
+
                     async def scope_guard(route):
                         request_host = (urlparse(route.request.url).hostname or "").lower()
                         if request_host != expected_host or _origin(route.request.url) != expected_origin:
@@ -75,7 +139,7 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None,
                     except Exception as exc:
                         log(f"[Browser] Render failed for {url}: {type(exc).__name__}: {exc}")
                     finally:
-                        await context.close()
+                        pass
             tasks = [asyncio.create_task(render_one(url)) for url in limited_urls]
             for task in tasks:
                 if stop():
@@ -90,6 +154,7 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None,
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
         finally:
+            await context.close()
             await browser.close()
     return rendered
 
