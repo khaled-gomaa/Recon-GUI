@@ -16,12 +16,13 @@ MAX_JS_FILES = 200
 
 
 class JSCollector:
-    def __init__(self, base_url: str, on_log=None, request_headers=None):
+    def __init__(self, base_url: str, on_log=None, request_headers=None, cookie_jar=None):
         self.base_url = base_url
         self.base_host = (urlparse(base_url).hostname or "").lower()
         self.base_origin = self._origin(base_url)
         self.on_log = on_log or (lambda msg: None)
         self.request_headers = dict(request_headers or {})
+        self.cookie_jar = cookie_jar
         self.rate_limit_stopped = False
         self.js_urls: set = set()
         self.js_contents: dict = {}
@@ -78,7 +79,7 @@ class JSCollector:
             concurrency = 1
         timeout = aiohttp.ClientTimeout(total=15, connect=8)
         connector = aiohttp.TCPConnector(limit=concurrency, ssl=True)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=self.cookie_jar) as session:
             while (
                 self.js_urls - self._analyzed_js_urls
                 and len(self._analyzed_js_urls) < MAX_JS_FILES
@@ -108,7 +109,7 @@ class JSCollector:
             if self._origin(url) == self.base_origin:
                 request_headers.update({
                     str(key): str(value) for key, value in self.request_headers.items()
-                    if str(key).lower() in {"authorization", "cookie", "accept-language"}
+                    if str(key).lower() in {"authorization", "accept-language"}
                     and "\r" not in str(value) and "\n" not in str(value)
                 })
             async with session.get(
