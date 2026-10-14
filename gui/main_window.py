@@ -454,6 +454,7 @@ class MainWindow(QMainWindow):
 
         # Passive discoveries are inert until the operator selects and verifies them.
         scope_page = QWidget()
+        self.subdomain_page = scope_page
         scope_layout = QVBoxLayout(scope_page)
         scope_layout.setContentsMargins(8, 8, 8, 8)
         scope_help = QLabel(
@@ -549,7 +550,8 @@ class MainWindow(QMainWindow):
 
         for table in (
             self.table, self.endpoint_table, self.parameter_table, self.findings_table,
-            self.discovery_table, self.history_table,
+            self.discovery_table, self.network_table, self.cookie_table,
+            self.subdomain_table, self.history_table,
         ):
             self._style_table(table)
             table.horizontalHeader().sortIndicatorChanged.connect(
@@ -845,7 +847,7 @@ class MainWindow(QMainWindow):
         count = self.subdomain_table.rowCount()
         self.verify_subdomains_btn.setEnabled(count > 0)
         self.use_subdomain_btn.setEnabled(count > 0)
-        self.tabs.setTabText(self.tabs.indexOf(self.subdomain_table.parentWidget()), f"Subdomains ({count})")
+        self.tabs.setTabText(self.tabs.indexOf(self.subdomain_page), f"Subdomains ({count})")
 
     def _verify_selected_subdomains(self):
         if self.scope_worker and self.scope_worker.isRunning():
