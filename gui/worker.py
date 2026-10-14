@@ -377,6 +377,9 @@ class CrawlWorker(QThread):
             report["target"] = self.url
             report["manual_browser_session_enabled"] = self.manual_browser_session
             report["manual_browser_seconds"] = manual_browser_results.get("manual_browser_seconds", 0)
+            report["manual_browser_window_seconds"] = manual_browser_results.get(
+                "manual_browser_window_seconds", self.manual_browser_duration if self.manual_browser_session else 0
+            )
             report["pages"] = [result.to_dict() for result in all_results]
             report["wordlist_results"] = wordlist_results
             report["wordlist_candidates"] = (
