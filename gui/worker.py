@@ -420,6 +420,50 @@ class CrawlWorker(QThread):
             report["matcher_description"] = self.matcher.describe()
             report["matcher_applied"] = not self.matcher.is_empty()
             report["stopped_by_user"] = self._stopping()
+
+            # Make inspection caps visible instead of presenting truncated evidence as complete.
+            body_truncated_pages = [
+                page.get("url", "") for page in report.get("pages", []) if page.get("body_truncated")
+            ]
+            truncated_js_files = report.get("truncated_js_files", []) or []
+            truncated_wordlist_urls = [
+                item.get("url", "") for item in wordlist_results if item.get("response_truncated")
+            ]
+            content_limit_notes = []
+            if body_truncated_pages:
+                content_limit_notes.append(
+                    f"{len(body_truncated_pages)} HTML/XML/robots response body/bodies truncated at the crawler body cap."
+                )
+            if truncated_js_files:
+                content_limit_notes.append(
+                    f"{len(truncated_js_files)} JavaScript file(s) truncated at the per-file JS byte cap."
+                )
+            if truncated_wordlist_urls:
+                content_limit_notes.append(
+                    f"{len(truncated_wordlist_urls)} Content Discovery response(s) truncated at the response byte cap."
+                )
+            report["body_truncated_pages"] = body_truncated_pages
+            report["truncated_js_files"] = truncated_js_files
+            report["truncated_wordlist_urls"] = truncated_wordlist_urls
+            report["content_limit_reached"] = bool(
+                body_truncated_pages or truncated_js_files or truncated_wordlist_urls
+            )
+            report["content_limit_notes"] = content_limit_notes
+            report["coverage_summary"] = {
+                "pages_crawled": len(all_results),
+                "page_cap": self.max_pages,
+                "max_depth": self.max_depth,
+                "page_limit_reached": engine.page_limit_reached,
+                "depth_limit_reached": engine.depth_limit_reached,
+                "wordlist_words_loaded": report.get("wordlist_words_loaded", 0),
+                "wordlist_candidates": report.get("wordlist_candidates", 0),
+                "wordlist_limit_reached": report.get("wordlist_candidate_limit_reached", False),
+                "javascript_files_discovered": len(analyzer.js_collector.js_urls),
+                "javascript_files_attempted": len(analyzer.js_collector._analyzed_js_urls),
+                "javascript_files_truncated": len(truncated_js_files),
+                "response_bodies_truncated": len(body_truncated_pages) + len(truncated_wordlist_urls),
+                "content_limit_reached": report["content_limit_reached"],
+            }
             try:
                 from recon.history_store import HistoryStore
                 report = HistoryStore().save_report(report)
