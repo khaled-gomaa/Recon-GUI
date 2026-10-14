@@ -13,6 +13,13 @@ STATIC_SUFFIXES = (
     ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
     ".webp", ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3",
 )
+DOWNLOAD_SUFFIXES = (
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".zip",
+    ".7z", ".rar", ".tar", ".gz", ".tgz", ".sql", ".db", ".sqlite", ".bak",
+    ".old", ".orig", ".backup", ".conf", ".config", ".env", ".log", ".wasm",
+)
+SRCSET_RE = re.compile(r"""(?:^|,)\\s*([^,\\s]+)""")
+CSS_URL_RE = re.compile(r"""url\\(\\s*['"]?([^'")\\s]+)""", re.IGNORECASE)
 
 
 class PageParser:
@@ -44,6 +51,7 @@ class PageParser:
             "raw_html": html or "",
             "text": soup.get_text(separator=" ", strip=True),
             "scripts": self._extract_script_srcs(soup, document_base),
+            "assets": self._extract_asset_references(soup, document_base),
             "hidden_routes": sorted(self._resolve_candidates(inline_routes, document_base)),
         }
 
@@ -175,6 +183,107 @@ class PageParser:
                     links.add(candidate)
 
         return sorted(links)
+
+    @staticmethod
+    def _resource_candidate_url(value: str, current_url: str):
+        """Resolve an HTTP resource URL without dropping static-file extensions."""
+        value = (value or "").strip()
+        if not value or value.lower().startswith(
+            ("#", "mailto:", "tel:", "javascript:", "data:", "blob:")
+        ):
+            return None
+        try:
+            absolute, _ = urldefrag(urljoin(current_url, value))
+            parsed = urlparse(absolute)
+            if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+                return None
+            _ = parsed.port
+            if parsed.username or parsed.password:
+                return None
+            return absolute
+        except (TypeError, ValueError, UnicodeError):
+            return None
+
+    def _extract_asset_references(self, soup: BeautifulSoup, current_url: str) -> list:
+        """Inventory static resources without queuing them as crawl pages."""
+        assets = {}
+
+        def add(value, hinted_kind="resource"):
+            url = self._resource_candidate_url(value, current_url)
+            if not url:
+                return
+            parsed = urlparse(url)
+            path = parsed.path.lower()
+            extension = Path(path).suffix.lower() if False else ""
+            # Avoid pathlib platform-specific path rules and ignore query strings.
+            leaf = path.rsplit("/", 1)[-1]
+            extension = "." + leaf.rsplit(".", 1)[-1] if "." in leaf else ""
+            kind = hinted_kind
+            if extension in {".js", ".mjs"}:
+                kind = "javascript"
+            elif extension == ".css":
+                kind = "stylesheet"
+            elif extension in {".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif", ".bmp"}:
+                kind = "image"
+            elif extension in {".woff", ".woff2", ".ttf", ".otf", ".eot"}:
+                kind = "font"
+            elif extension in {".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg", ".m4a"}:
+                kind = "media"
+            elif extension in DOWNLOAD_SUFFIXES:
+                kind = "download"
+            key = (url, kind)
+            assets[key] = {"url": url, "kind": kind, "extension": extension}
+
+        attributes = (
+            ("img", "src", "image"), ("img", "data-src", "image"),
+            ("input", "src", "image"), ("video", "src", "media"),
+            ("video", "poster", "image"), ("audio", "src", "media"),
+            ("source", "src", "media"), ("track", "src", "media"),
+            ("script", "src", "javascript"), ("object", "data", "download"),
+            ("embed", "src", "download"), ("image", "href", "image"),
+            ("image", "xlink:href", "image"),
+        )
+        for tag_name, attribute, kind in attributes:
+            for tag in soup.find_all(tag_name, attrs={attribute: True}):
+                add(tag.get(attribute, ""), kind)
+
+        for tag_name in ("img", "source"):
+            for tag in soup.find_all(tag_name, attrs={"srcset": True}):
+                for match in SRCSET_RE.finditer(tag.get("srcset", "")):
+                    add(match.group(1), "image" if tag_name == "img" else "media")
+            for tag in soup.find_all(tag_name, attrs={"data-srcset": True}):
+                for match in SRCSET_RE.finditer(tag.get("data-srcset", "")):
+                    add(match.group(1), "image" if tag_name == "img" else "media")
+
+        for tag in soup.find_all("link", href=True):
+            rel = {str(value).lower() for value in (tag.get("rel") or [])}
+            as_type = str(tag.get("as") or "").lower()
+            if rel.intersection({
+                "stylesheet", "icon", "apple-touch-icon", "manifest", "preload",
+                "prefetch", "modulepreload", "mask-icon",
+            }) or urlparse(tag.get("href", "")).path.lower().endswith(STATIC_SUFFIXES + DOWNLOAD_SUFFIXES):
+                hint = {
+                    "style": "stylesheet", "script": "javascript", "image": "image",
+                    "font": "font", "video": "media", "audio": "media", "document": "download",
+                }.get(as_type, "stylesheet" if "stylesheet" in rel else "resource")
+                add(tag["href"], hint)
+
+        # Expose direct download anchors as assets even when their URLs are also crawl seeds.
+        for tag_name in ("a", "area"):
+            for tag in soup.find_all(tag_name, href=True):
+                path = urlparse(tag["href"].strip()).path.lower()
+                if path.endswith(DOWNLOAD_SUFFIXES):
+                    add(tag["href"], "download")
+
+        for tag in soup.find_all(True):
+            style = tag.get("style", "")
+            for match in CSS_URL_RE.finditer(style):
+                add(match.group(1), "css-resource")
+        for style_tag in soup.find_all("style"):
+            for match in CSS_URL_RE.finditer(style_tag.get_text() or ""):
+                add(match.group(1), "css-resource")
+
+        return sorted(assets.values(), key=lambda item: (item["url"].casefold(), item["kind"]))
 
     def _extract_script_srcs(self, soup: BeautifulSoup, current_url: str) -> list:
         scripts = set()
