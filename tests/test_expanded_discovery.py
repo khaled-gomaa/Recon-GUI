@@ -3,6 +3,7 @@ import subprocess
 
 from aiohttp import web
 
+from recon.analyzer import ReconAnalyzer
 from recon.js_endpoint_extractor import JSEndpointExtractor
 from recon.subfinder import discover_subdomains
 from recon.wordlist_scanner import WordlistScanner
@@ -102,3 +103,20 @@ def test_subfinder_results_are_filtered_to_the_requested_domain(monkeypatch):
     assert result["subfinder_status"] == "queried"
     assert result["subfinder_subdomains"] == ["api.example.test", "staging.example.test"]
     assert "other.invalid" not in repr(result)
+
+
+def test_html_form_inventory_includes_declared_post_method_and_field_names():
+    analyzer = ReconAnalyzer("https://example.test/")
+    html = """
+    <form action="/api/session" method="POST">
+      <input name="username">
+      <input name="password" type="password">
+      <input name="csrf_token" type="hidden">
+    </form>
+    """
+    analyzer.analyze_page("https://example.test/login", html)
+    report = analyzer.to_dict()
+    endpoint = next(item for item in report["endpoint_inventory"] if item["endpoint"] == "/api/session")
+    assert "POST" in endpoint["methods"]
+    assert set(endpoint["parameters"]) >= {"username", "password", "csrf_token"}
+    assert "POST" in next(item for item in report["parameters"] if item["name"] == "password")["methods"]
