@@ -3,6 +3,9 @@ import asyncio
 import hashlib
 import threading
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
+
+from yarl import URL
 
 import aiohttp
 from PySide6.QtCore import QThread, Signal
@@ -25,7 +28,8 @@ class CrawlWorker(QThread):
         self, url, max_depth, max_pages, concurrency=10,
         wordlist_path=None, matcher: MatcherFilter = None,
         render_javascript=False, passive_discovery=False, request_headers=None,
-        crawl_historical_urls=False,
+        crawl_historical_urls=False, wordlist_extensions=None,
+        use_subfinder=True, manual_browser_session=False,
     ):
         super().__init__()
         self.url = url
@@ -37,6 +41,9 @@ class CrawlWorker(QThread):
         self.render_javascript = bool(render_javascript)
         self.passive_discovery = bool(passive_discovery)
         self.crawl_historical_urls = bool(crawl_historical_urls)
+        self.wordlist_extensions = list(wordlist_extensions) if wordlist_extensions is not None else None
+        self.use_subfinder = bool(use_subfinder)
+        self.manual_browser_session = bool(manual_browser_session)
         self.request_headers = {
             str(key): str(value) for key, value in (request_headers or {}).items()
             if str(key).lower() in {"authorization", "cookie", "accept-language"}
@@ -58,7 +65,29 @@ class CrawlWorker(QThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            analyzer = ReconAnalyzer(self.url, request_headers=self.request_headers, on_log=self.log_message.emit)
+            # One cookie jar is reused between the crawl, JS download, and Content Discovery
+            # sessions. The user-supplied Cookie header is imported into the jar once so
+            # cookie Domain/Path/Secure rules can be handled by the HTTP client.
+            session_cookie_jar = aiohttp.CookieJar(unsafe=True)
+            phase_headers = dict(self.request_headers)
+            raw_cookie_header = ""
+            for header_name in list(phase_headers):
+                if header_name.lower() == "cookie":
+                    raw_cookie_header = phase_headers.pop(header_name)
+                    break
+            if raw_cookie_header:
+                parsed_cookies = SimpleCookie()
+                try:
+                    parsed_cookies.load(raw_cookie_header)
+                    if parsed_cookies:
+                        session_cookie_jar.update_cookies(parsed_cookies, response_url=URL(self.url))
+                        self.log_message.emit("[Session] Imported supplied cookie names into the in-memory session jar.")
+                except Exception as exc:
+                    self.log_message.emit(f"[Session] Supplied Cookie header could not be parsed: {type(exc).__name__}.")
+            analyzer = ReconAnalyzer(
+                self.url, request_headers=phase_headers, on_log=self.log_message.emit,
+                cookie_jar=session_cookie_jar,
+            )
             engine = CrawlEngine(
                 start_url=self.url,
                 max_depth=self.max_depth,
@@ -67,13 +96,34 @@ class CrawlWorker(QThread):
                 on_log=lambda msg: self.log_message.emit(msg),
                 on_page_crawled=lambda result: self.page_crawled.emit(result),
                 should_stop=self._stopping,
-                request_headers=self.request_headers,
+                request_headers=phase_headers,
                 respect_robots=True,
+                cookie_jar=session_cookie_jar,
             )
             passive_results = {
                 "passive_subdomains": [], "historical_urls": [],
                 "passive_sources": [], "passive_errors": [],
+                "subfinder_subdomains": [], "subfinder_status": "not-run", "subfinder_error": "",
             }
+            manual_browser_results = {
+                "network_observations": [], "session_cookies": [], "manual_browser_seconds": 0,
+            }
+            if self.manual_browser_session and not self._stopping():
+                self.log_message.emit("[Manual Browser] Starting an interactive session before crawling.")
+                try:
+                    from recon.browser_renderer import capture_manual_session
+                    manual_browser_results = loop.run_until_complete(capture_manual_session(
+                        self.url, cookie_jar=session_cookie_jar,
+                        should_stop=self._stopping, on_log=self.log_message.emit,
+                        on_network_event=analyzer.record_network_observation,
+                        duration_seconds=90,
+                    ))
+                    self.log_message.emit(
+                        f"[Manual Browser] Captured {len(manual_browser_results.get('network_observations', []))} request records "
+                        f"and {len(manual_browser_results.get('session_cookies', []))} cookie metadata records."
+                    )
+                except RuntimeError as exc:
+                    self.log_message.emit(f"[Manual Browser] {exc} Continuing with HTTP-only session.")
             if self.passive_discovery and not self._stopping():
                 self.log_message.emit(
                     "[Passive] Querying Certificate Transparency and Wayback (no target probing)."
@@ -85,6 +135,37 @@ class CrawlWorker(QThread):
                 except Exception as exc:
                     self.log_message.emit(f"[Passive] {type(exc).__name__}: {exc}")
                     passive_results["passive_errors"].append(f"{type(exc).__name__}: {exc}")
+
+            if self.use_subfinder and not self._stopping():
+                self.log_message.emit("[Subfinder] Starting optional passive hostname discovery.")
+                try:
+                    from recon.subfinder import discover_subdomains
+                    result = discover_subdomains(
+                        self.url, should_stop=self._stopping, on_log=self.log_message.emit,
+                    )
+                    passive_results["subfinder_subdomains"] = result.get("subfinder_subdomains", [])
+                    passive_results["subfinder_status"] = result.get("subfinder_status", "unknown")
+                    passive_results["subfinder_error"] = result.get("subfinder_error", "")
+                    merged_hosts = set(passive_results.get("passive_subdomains", []))
+                    merged_hosts.update(passive_results["subfinder_subdomains"])
+                    passive_results["passive_subdomains"] = sorted(merged_hosts)
+                    passive_results["passive_sources"].append({
+                        "name": "Subfinder",
+                        "status": passive_results["subfinder_status"],
+                        "count": len(passive_results["subfinder_subdomains"]),
+                    })
+                    if passive_results["subfinder_error"]:
+                        passive_results["passive_errors"].append(
+                            "Subfinder: " + passive_results["subfinder_error"]
+                        )
+                    analyzer.report.subdomains.update(passive_results["subfinder_subdomains"])
+                except Exception as exc:
+                    passive_results["subfinder_status"] = "error"
+                    passive_results["subfinder_error"] = f"{type(exc).__name__}: {exc}"
+                    passive_results["passive_errors"].append(
+                        "Subfinder: " + passive_results["subfinder_error"]
+                    )
+                    self.log_message.emit(f"[Subfinder] {type(exc).__name__}: {exc}")
 
             historical_seeds = []
             if self.crawl_historical_urls and not self._stopping():
@@ -137,6 +218,7 @@ class CrawlWorker(QThread):
                     rendered = loop.run_until_complete(render_pages(
                         candidates, headers=self.request_headers,
                         should_stop=self._stopping, on_log=self.log_message.emit,
+                        on_network_event=analyzer.record_network_observation,
                     ))
                 except RuntimeError as exc:
                     rendered = {}
@@ -227,6 +309,7 @@ class CrawlWorker(QThread):
                 scanner = WordlistScanner(
                     base_url=self.url,
                     wordlist_path=self.wordlist_path,
+                    extensions=self.wordlist_extensions,
                     concurrency=1 if engine.crawl_delay_seconds > 0 else self.concurrency,
                     on_hit=lambda url, status, size: self.log_message.emit(
                         f"[HIT {status}] {url} ({size} bytes)"
@@ -234,7 +317,8 @@ class CrawlWorker(QThread):
                     on_log=lambda message: self.log_message.emit(message),
                     should_stop=self._stopping,
                     on_result=lambda result: self.discovery_result.emit(result),
-                    request_headers=self.request_headers,
+                    request_headers=phase_headers,
+                    cookie_jar=session_cookie_jar,
                     delay_ms=max(200, int(engine.crawl_delay_seconds * 1000)),
                 )
                 analyzer.wordlist_hits = loop.run_until_complete(scanner.scan())
@@ -268,8 +352,30 @@ class CrawlWorker(QThread):
                 ) if any(header.lower() == key for header in self.request_headers)
             ]
             report["target"] = self.url
+            report["manual_browser_session_enabled"] = self.manual_browser_session
+            report["manual_browser_seconds"] = manual_browser_results.get("manual_browser_seconds", 0)
             report["pages"] = [result.to_dict() for result in all_results]
             report["wordlist_results"] = wordlist_results
+            # The cookie map stores names and attributes only, never cookie values.
+            cookie_map = []
+            for result in all_results:
+                for event in getattr(result, "cookie_events", []) or []:
+                    cookie_map.append({"url": result.url, "source": "http-response", **event})
+            for result in wordlist_results:
+                for event in result.get("set_cookie_names", []) or []:
+                    cookie_map.append({"url": result.get("url", ""), "source": "content-discovery", **event})
+            cookie_map.extend(manual_browser_results.get("session_cookies", []) or [])
+            unique_cookie_map = {}
+            for event in cookie_map:
+                key = (
+                    event.get("url", ""), event.get("name", ""), event.get("domain", ""),
+                    event.get("path", ""), event.get("source", ""),
+                )
+                unique_cookie_map[key] = event
+            report["cookie_map"] = sorted(
+                unique_cookie_map.values(),
+                key=lambda item: (item.get("url", ""), item.get("name", ""), item.get("source", "")),
+            )
             report["wordlist_rate_limited_stop"] = wordlist_rate_limited_stop
             report["crawler_rate_limited_stop"] = engine.rate_limit_stopped
             report["filtered_pages"] = [result.to_dict() for result in filtered]
