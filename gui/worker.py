@@ -425,6 +425,9 @@ class CrawlWorker(QThread):
             report["wordlist_recursion_rounds"] = (
                 scanner.recursion_rounds if self.wordlist_path and "scanner" in locals() else 0
             )
+            report["wordlist_recursion_depth_limit_reached"] = (
+                scanner.recursion_depth_limit_reached if self.wordlist_path and "scanner" in locals() else False
+            )
             report["wordlist_limit_summary"] = {
                 "words_loaded": report["wordlist_words_loaded"],
                 "unique_candidates_generated": report["wordlist_candidates"],
@@ -505,6 +508,7 @@ class CrawlWorker(QThread):
                 "wordlist_recursion_depth": report.get("wordlist_recursion_depth", 1),
                 "wordlist_recursive_dirs_found": report.get("wordlist_recursive_dirs_found", 0),
                 "wordlist_recursion_rounds": report.get("wordlist_recursion_rounds", 0),
+                "wordlist_recursion_depth_limit_reached": report.get("wordlist_recursion_depth_limit_reached", False),
                 "wordlist_word_limit_reached": report.get("wordlist_word_limit_reached", False),
                 "wordlist_path_limit_reached": report.get("wordlist_path_limit_reached", False),
                 "wordlist_limit_reached": report.get("wordlist_candidate_limit_reached", False),
