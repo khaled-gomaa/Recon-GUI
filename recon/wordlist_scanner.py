@@ -175,26 +175,39 @@ class WordlistScanner:
         if not self.wordlist_path.is_file():
             raise FileNotFoundError(f"Wordlist not found: {self.wordlist_path}")
         entries, seen = [], set()
+        skipped_query_lines = 0
         self.candidate_limit_reached = False
-        for raw in self.wordlist_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            word = raw.strip()
-            if not word or word.startswith("#"):
-                continue
-            word = word.lstrip("/")
-            if not word or word in seen:
-                continue
-            seen.add(word)
-            entries.append(word)
-            if self.max_words and len(entries) >= self.max_words:
-                self.candidate_limit_reached = True
-                self._log(
-                    f"[Wordlist] Explicit word limit reached ({self.max_words}); "
-                    "remaining entries were not loaded. Raise the limit or set it to 0 for unlimited."
-                )
-                break
+        # Stream the file line-by-line so large recon wordlists are not duplicated in RAM.
+        with self.wordlist_path.open("r", encoding="utf-8", errors="ignore") as stream:
+            for raw in stream:
+                word = raw.strip()
+                if not word or word.startswith("#"):
+                    continue
+                word = word.lstrip("/")
+                if not word or word in seen:
+                    continue
+                # This module is path discovery (GET only). Query-parameter mining is
+                # handled by archive/network analyzers; never silently export query values.
+                if "?" in word or "#" in word:
+                    skipped_query_lines += 1
+                    continue
+                if self.max_words and len(entries) >= self.max_words:
+                    self.candidate_limit_reached = True
+                    self._log(
+                        f"[Wordlist] Explicit word limit reached ({self.max_words}); "
+                        "remaining entries were not loaded. Raise the limit or set it to 0 for unlimited."
+                    )
+                    break
+                seen.add(word)
+                entries.append(word)
         self.words_loaded = len(entries)
         cap_note = f" (explicit cap: {self.max_words})" if self.max_words else " (no implicit word-count cap)"
         self._log(f"[Wordlist] Loaded {len(entries)} unique entries{cap_note}")
+        if skipped_query_lines:
+            self._log(
+                f"[Wordlist] Skipped {skipped_query_lines} entry lines with query strings/fragments; "
+                "parameter names are collected separately."
+            )
         return entries
 
     def _build_targets(self, word: str):
