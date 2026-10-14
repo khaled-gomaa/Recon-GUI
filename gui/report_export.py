@@ -148,12 +148,29 @@ def render_text_report(report: dict) -> str:
         else:
             label = "RESPONSE"
         lines.append(
-            f"[{item.get('status', '')}] [{label}] {item.get('url', '')} | "
-            f"bytes={item.get('size', 0)} | words={item.get('word_count', 0)} | "
-            f"type={item.get('content_type', '')}"
+            f"[{item.get('status', '')}] [{label}] [{item.get('method', 'GET')}] "
+            f"{item.get('url', '')} | bytes={item.get('size', 0)} | "
+            f"words={item.get('word_count', 0)} | type={item.get('content_type', '')} | "
+            f"hash={item.get('content_hash', '')} | truncated={item.get('response_truncated', False)}"
         )
-        if item.get("location"):
-            lines.append(f"    Location: {item['location']}")
+        for field, label_text in (
+            ("final_url", "Final URL"), ("location", "Redirect Location"),
+            ("server", "Server"), ("last_modified", "Last-Modified"),
+            ("allow", "Allow"), ("www_authenticate", "WWW-Authenticate"),
+        ):
+            if item.get(field):
+                lines.append(f"    {label_text}: {item[field]}")
+        if item.get("set_cookie_names"):
+            lines.append("    Set-Cookie metadata: " + ", ".join(
+                cookie.get("name", "") + "(" + "/".join(
+                    flag for flag, enabled in (
+                        ("Secure", cookie.get("secure")),
+                        ("HttpOnly", cookie.get("httponly")),
+                        ("SameSite=" + str(cookie.get("samesite")), bool(cookie.get("samesite"))),
+                    ) if enabled
+                ) + ")"
+                for cookie in item["set_cookie_names"]
+            ))
 
     _section(lines, "Potential Content Discovery Hits")
     hits = report.get("wordlist_hits", [])
@@ -313,9 +330,17 @@ def render_csv_report(report: dict) -> str:
         writer.writerow([
             "content_discovery", item.get("url", ""), item.get("status", ""),
             "", "potential" if item.get("potential_hit") else "",
-            "bytes={}; words={}; type={}; baseline_match={}".format(
+            "method={}; source={}; bytes={}; words={}; type={}; final_url={}; "
+            "location={}; server={}; last_modified={}; allow={}; content_hash={}; "
+            "response_truncated={}; baseline_match={}; set_cookie_names={}".format(
+                item.get("method", "GET"), item.get("source", "wordlist"),
                 item.get("size", 0), item.get("word_count", 0),
-                item.get("content_type", ""), item.get("baseline_match", False),
+                item.get("content_type", ""), item.get("final_url", ""),
+                item.get("location", ""), item.get("server", ""),
+                item.get("last_modified", ""), item.get("allow", ""),
+                item.get("content_hash", ""), item.get("response_truncated", False),
+                item.get("baseline_match", False),
+                json.dumps(item.get("set_cookie_names", []), ensure_ascii=False, sort_keys=True),
             ),
         ])
     for kind in (
