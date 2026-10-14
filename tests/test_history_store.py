@@ -260,3 +260,5 @@ def test_scan_history_tracks_asset_additions_removals_and_probe_changes(tmp_path
     assert diff["changed_assets"] == ["https://asset-history.example/static/app.js [javascript]"]
     assert diff["added_asset_count"] == 1
     assert first["history_diff"]["added_asset_count"] == 2
+    latest_summary = store.recent_scans("https://asset-history.example/")[0]
+    assert latest_summary["added_asset_count"] == 1
