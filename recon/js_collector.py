@@ -28,6 +28,7 @@ class JSCollector:
         self.rate_limit_stopped = False
         self.js_urls: set = set()
         self.js_contents: dict = {}
+        self.truncated_js_files: set = set()
         self.inline_scripts: list = []
         self.endpoints: set = set()
         self.source_maps: set = set()
@@ -129,6 +130,7 @@ class JSCollector:
                     return
                 data = await resp.content.read(MAX_JS_BYTES + 1)
                 if len(data) > MAX_JS_BYTES:
+                    self.truncated_js_files.add(url)
                     data = data[:MAX_JS_BYTES]
                     self.on_log(f"[JS] Truncated oversized file: {url}")
                 content = data.decode(resp.charset or "utf-8", errors="replace")
@@ -158,6 +160,7 @@ class JSCollector:
     def to_dict(self) -> dict:
         return {
             "js_files": sorted(self.js_urls),
+            "truncated_js_files": sorted(self.truncated_js_files),
             "inline_script_count": len(self.inline_scripts),
             "endpoints": sorted(self.endpoints),
             "source_maps": sorted(self.source_maps),
