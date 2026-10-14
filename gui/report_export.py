@@ -410,6 +410,16 @@ def render_text_report(report: dict) -> str:
     for name in diff.get("removed_parameters", []):
         lines.append(f"[REMOVED PARAMETER] {name}")
     lines.append(f"New review findings: {diff.get('added_finding_count', len(diff.get('added_findings', [])))}")
+    _section(lines, "Asset Inventory Changes")
+    lines.append(f"Comparison status: {diff.get('comparison_status', '(no previous scan)')}")
+    for key, label in (
+        ("added_assets", "NEW ASSET"),
+        ("removed_assets", "REMOVED ASSET"),
+        ("changed_assets", "CHANGED ASSET"),
+    ):
+        lines.append(f"{label.title()} count: {diff.get(key.replace('_assets', '_asset_count'), len(diff.get(key, [])))}")
+        for asset in diff.get(key, []) or []:
+            lines.append(f"[{label}] {asset}")
 
     if report.get("history_error"):
         lines.append(f"History warning: {report['history_error']}")
@@ -613,6 +623,29 @@ def render_csv_report(report: dict) -> str:
                 "recommendation": item.get("recommendation", ""),
             }, ensure_ascii=False, sort_keys=True),
         ])
+
+    history_diff = report.get("history_diff", {}) or {}
+    if history_diff:
+        writer.writerow([
+            "history_diff_summary", "", "", "",
+            "partial" if str(history_diff.get("comparison_status", "")).startswith("partial") else "",
+            json.dumps({
+                key: history_diff.get(key, [])
+                for key in (
+                    "added_assets", "removed_assets", "changed_assets",
+                    "added_endpoints", "removed_endpoints", "changed_endpoints",
+                    "added_parameters", "removed_parameters", "changed_parameters",
+                    "added_urls", "removed_urls", "changed_urls",
+                )
+            }, ensure_ascii=False, sort_keys=True),
+        ])
+        for key, record_type in (
+            ("added_assets", "asset_added"),
+            ("removed_assets", "asset_removed"),
+            ("changed_assets", "asset_changed"),
+        ):
+            for asset in history_diff.get(key, []) or []:
+                writer.writerow([record_type, str(asset), "", "", "", "source=scan_history_diff"])
 
     for audit in report.get("header_audits", []) or []:
         writer.writerow([
