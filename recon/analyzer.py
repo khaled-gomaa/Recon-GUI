@@ -154,6 +154,19 @@ class ReconAnalyzer:
         for form in advanced["forms"]:
             key = (form.get("page"), form.get("method"), form.get("action"))
             self.forms[key] = form
+            action = str(form.get("action") or "").strip()
+            method = str(form.get("method") or "GET").upper()
+            field_names = sorted({
+                str(field.get("name") or "").strip()
+                for field in (form.get("fields") or [])
+                if str(field.get("name") or "").strip()
+            })
+            if action:
+                self._record_endpoint(
+                    action, "html-form-declaration", url, method=method,
+                    query_parameters=field_names if method == "GET" else [],
+                    body_parameters=field_names if method not in {"GET", "HEAD"} else [],
+                )
         for item in advanced["json_ld"]:
             key = (item.get("page"), item.get("type"), item.get("name", ""))
             self.json_ld[key] = item
