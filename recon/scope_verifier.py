@@ -7,6 +7,7 @@ HTTP fallback only when HTTPS cannot be contacted. Redirects are never followed.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import socket
 from urllib.parse import urlparse
 
@@ -17,6 +18,37 @@ from recon.subdomain_finder import SubdomainFinder
 MAX_VERIFY_HOSTS = 200
 MAX_VERIFY_CONCURRENCY = 5
 MAX_TIMEOUT_SECONDS = 8
+
+
+class _PinnedDNSResolver(aiohttp.abc.AbstractResolver):
+    """Resolve only from IPs validated for the current explicit verification run."""
+
+    def __init__(self):
+        self._records = {}
+
+    def pin(self, hostname: str, addresses):
+        self._records[str(hostname).lower().rstrip(".")] = tuple(addresses)
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        hostname = str(host).lower().rstrip(".")
+        addresses = self._records.get(hostname)
+        if not addresses:
+            raise OSError("No validated DNS result is available for this hostname")
+        output = []
+        for value in addresses:
+            address = ipaddress.ip_address(value)
+            output.append({
+                "hostname": hostname,
+                "host": str(address),
+                "port": int(port),
+                "family": socket.AF_INET if address.version == 4 else socket.AF_INET6,
+                "proto": socket.IPPROTO_TCP,
+                "flags": 0,
+            })
+        return output
+
+    async def close(self):
+        self._records.clear()
 
 
 def normalize_in_scope_hosts(target: str, candidates) -> list[str]:
@@ -81,7 +113,10 @@ async def verify_subdomains(
 
     request_timeout = max(1, min(int(timeout), MAX_TIMEOUT_SECONDS))
     semaphore = asyncio.Semaphore(max(1, min(int(concurrency), MAX_VERIFY_CONCURRENCY)))
-    connector = aiohttp.TCPConnector(limit=max(1, min(int(concurrency), MAX_VERIFY_CONCURRENCY)), ssl=True)
+    resolver = _PinnedDNSResolver()
+    connector = aiohttp.TCPConnector(
+        limit=max(1, min(int(concurrency), MAX_VERIFY_CONCURRENCY)), ssl=True, resolver=resolver,
+    )
     client_timeout = aiohttp.ClientTimeout(total=request_timeout, connect=request_timeout)
     results = []
     loop = asyncio.get_running_loop()
@@ -118,6 +153,15 @@ async def verify_subdomains(
                         record["http_result"] = "not-tested"
                         return record
                     record["dns_status"] = "resolved"
+                    parsed_ips = [ipaddress.ip_address(value) for value in ips]
+                    if any(not address.is_global for address in parsed_ips):
+                        record["http_result"] = "blocked-nonpublic-address"
+                        record["error"] = "HTTP probing blocked because DNS returned a non-public IP address."
+                        log(f"[Scope] HTTP probe blocked for {host}: DNS returned a non-public IP.")
+                        return record
+                    # Pin the subsequent request to the exact validated addresses to avoid
+                    # a second DNS resolution changing the destination (DNS rebinding).
+                    resolver.pin(host, ips)
                 except (OSError, asyncio.TimeoutError, socket.gaierror) as exc:
                     record["dns_status"] = "failed"
                     record["http_result"] = "not-tested"
