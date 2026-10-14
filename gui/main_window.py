@@ -33,6 +33,9 @@ class MainWindow(QMainWindow):
         self.tool_worker = None
         self.scope_worker = None
         self.scope_verification_by_host = {}
+        self.imported_seed_urls = []
+        self.seed_import_summary = {}
+        self.seed_import_target_host = ""
         self.recon_report = {}
         self.active_matcher = MatcherFilter()
         self.live_results = []
@@ -232,6 +235,23 @@ class MainWindow(QMainWindow):
         self.recursive_content_check.toggled.connect(
             lambda enabled: self.content_discovery_check.setChecked(True) if enabled else None
         )
+
+        self.import_seeds_btn = QPushButton("Import URL Seeds / Sitemap / Logs")
+        self.import_seeds_btn.setMinimumHeight(29)
+        self.import_seeds_btn.setToolTip(
+            "Import same-host URLs from TXT, Search Console-style CSV, XML sitemap, "
+            "gzip XML sitemap, JSON URL collection, or common access logs. Imported "
+            "URLs become depth-0 crawl seeds and obey all normal scan limits."
+        )
+        self.import_seeds_btn.clicked.connect(self._import_seed_file)
+        self.clear_seeds_btn = QPushButton("Clear seeds")
+        self.clear_seeds_btn.setMinimumHeight(29)
+        self.clear_seeds_btn.clicked.connect(self._clear_seed_import)
+        self.seed_import_label = QLabel("No external URL seeds imported")
+        self.seed_import_label.setObjectName("mutedText")
+        grid.addWidget(self.import_seeds_btn, 6, 0, 1, 2)
+        grid.addWidget(self.clear_seeds_btn, 6, 2)
+        grid.addWidget(self.seed_import_label, 6, 3, 1, 5)
 
         for column, stretch in ((1, 2), (3, 1), (5, 1), (6, 1), (7, 0)):
             grid.setColumnStretch(column, stretch)
@@ -1297,6 +1317,11 @@ class MainWindow(QMainWindow):
         self._pending_discovery_results.clear()
         self._result_batch_timer.stop()
         self.log_view.clear()
+        if self.imported_seed_urls:
+            self._append_log(
+                f"[Seeds] {len(self.imported_seed_urls)} external same-host seeds are queued "
+                f"from {self.seed_import_summary.get('source_file', 'imported source')}."
+            )
         self.table.setRowCount(0)
         self.endpoint_table.setRowCount(0)
         self.parameter_table.setRowCount(0)
@@ -1344,6 +1369,8 @@ class MainWindow(QMainWindow):
             wordlist_max_candidates=self.candidate_cap_spin.value(),
             recursive_content_discovery=self.recursive_content_check.isChecked(),
             content_recursion_depth=self.recursion_depth_spin.value(),
+            imported_seed_urls=self.imported_seed_urls,
+            seed_import_summary=self.seed_import_summary,
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
@@ -1789,6 +1816,18 @@ class MainWindow(QMainWindow):
         lines = []
         lines.append("=== SCAN COVERAGE / GAPS ===")
         lines.append(f"Target: {report.get('target') or '(no target recorded)'}")
+        seed_info = report.get("seed_import_summary", {}) or {}
+        if seed_info:
+            lines.append(
+                f"Imported seeds: {seed_info.get('accepted_count', 0)} accepted from "
+                f"{seed_info.get('source_file', 'external source')}; "
+                f"{seed_info.get('rejected_or_out_of_scope', 0)} rejected/out-of-scope; "
+                f"{report.get('imported_seed_urls_crawled', 0)} crawled."
+            )
+            if seed_info.get("limit_reached"):
+                lines.append("WARNING: seed import cap reached; the source file may contain additional URLs.")
+        if coverage.get("imported_seed_limit_reached"):
+            lines.append("WARNING: imported seed cap reached; only a portion of the source candidates were loaded.")
         if report.get("har_import_summary"):
             imported = report.get("har_import_summary", {}) or {}
             lines.append(
