@@ -12,7 +12,7 @@ def render_text_report(report: dict) -> str:
     lines = [
         "RECON-GUI - RECONNAISSANCE REPORT",
         f"Target: {report.get('target', '(not recorded)')}",
-        f"Status: {'Stopped by user' if report.get('stopped_by_user') else 'Partial (rate limited)' if report.get('crawler_rate_limited_stop') or report.get('wordlist_rate_limited_stop') else 'Completed'}",
+        f"Status: {'Stopped by user' if report.get('stopped_by_user') else 'Partial (rate limited)' if report.get('crawler_rate_limited_stop') or report.get('wordlist_rate_limited_stop') else 'Partial (page/depth/wordlist cap)' if report.get('page_limit_reached') or report.get('depth_limit_reached') or report.get('wordlist_candidate_limit_reached') else 'Completed'}",
         f"Pages crawled: {len(report.get('pages', []))}",
         f"Pages after filters: {len(report.get('filtered_pages', []))}",
         f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}",
@@ -270,6 +270,9 @@ def render_text_report(report: dict) -> str:
     lines.append(f"JavaScript rendering enabled: {report.get('rendering_enabled', False)}")
     lines.append(f"Rendered pages: {report.get('rendered_pages', 0)}")
     lines.append(f"Historical URLs actively crawled: {report.get('historical_urls_crawled', False)}")
+    lines.append(f"Page limit reached: {report.get('page_limit_reached', False)}")
+    lines.append(f"Depth limit reached with unvisited links: {report.get('depth_limit_reached', False)}")
+    lines.append(f"Wordlist candidate limit reached: {report.get('wordlist_candidate_limit_reached', False)}")
     lines.append(f"Endpoint records: {len(report.get('endpoint_inventory', []))}")
     lines.append(f"Parameter names: {len(report.get('parameters', []))}")
     lines.append(f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}")
