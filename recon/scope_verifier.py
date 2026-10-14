@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from recon.subdomain_finder import SubdomainFinder
+from recon.domain_scope import registrable_domain
 
 MAX_VERIFY_HOSTS = 200
 MAX_VERIFY_CONCURRENCY = 5
@@ -60,7 +60,13 @@ def normalize_in_scope_hosts(target: str, candidates) -> list[str]:
     parsed = urlparse((target or "").strip())
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         raise ValueError("target must be a full HTTP(S) URL")
-    root_domain = SubdomainFinder(parsed.hostname).base_domain.encode("idna").decode("ascii").lower()
+    target_host = (parsed.hostname or "").rstrip(".").lower()
+    root_domain = registrable_domain(target_host)
+    if not root_domain:
+        raise ValueError(
+            "Subdomain verification requires a registrable DNS domain. "
+            "IP addresses and public suffixes (for example, co.uk) cannot define the verification scope."
+        )
     normalized = set()
     for raw in candidates or []:
         value = str(raw or "").strip().lower().rstrip(".")
