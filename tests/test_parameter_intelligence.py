@@ -44,3 +44,45 @@ def test_endpoint_inventory_merges_sources_and_strips_query_values():
     assert item["parameters"] == ["id"]
     assert "123" not in repr(inventory)
     assert "456" not in repr(inventory)
+
+
+def test_endpoint_inventory_records_actual_browser_methods_and_statuses():
+    requests = [
+        {
+            "url": "https://example.com/api/users?search=private-value",
+            "method": "POST",
+            "status": 201,
+            "resource_type": "fetch",
+            "page_url": "https://example.com/app",
+            "parameter_names": ["profileId"],
+        }
+    ]
+    endpoints = build_endpoint_inventory([], request_observations=requests)
+    assert len(endpoints) == 1
+    item = endpoints[0]
+    assert item["methods"] == ["POST"]
+    assert item["statuses"] == [201]
+    assert item["resource_types"] == ["fetch"]
+    assert item["parameters"] == ["profileId", "search"]
+    assert "private-value" not in repr(endpoints)
+
+
+def test_runtime_body_parameter_names_are_kept_but_values_are_not():
+    requests = [
+        {
+            "url": "https://example.com/api/profile",
+            "method": "POST",
+            "status": 200,
+            "page_url": "https://example.com/settings",
+            "parameter_names": ["userId", "displayName"],
+        }
+    ]
+    parameters = build_parameter_inventory(
+        [], [], [], request_observations=requests,
+        historical_urls=["https://example.com/old?archiveKey=do-not-store"],
+    )
+    by_name = {item["name"]: item for item in parameters}
+    assert by_name["userId"]["methods"] == ["POST"]
+    assert "browser-network-body-name" in by_name["userId"]["sources"]
+    assert "archiveKey" in by_name
+    assert "do-not-store" not in repr(parameters)
