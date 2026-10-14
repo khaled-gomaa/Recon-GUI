@@ -45,11 +45,22 @@ def registrable_domain(hostname: str) -> str:
         host = host.encode("idna").decode("ascii")
     except UnicodeError:
         return ""
-    extracted = _extractor()(host)
-    if not extracted.domain or not extracted.suffix:
-        return ""
-    root = f"{extracted.domain}.{extracted.suffix}".lower()
-    # A public suffix itself (e.g. co.uk) has no registrable domain and must fail closed.
-    if root == host and not extracted.domain:
-        return ""
-    return root
+    extractor = _extractor()
+    extracted = extractor(host)
+    if extracted.domain and extracted.suffix:
+        return f"{extracted.domain}.{extracted.suffix}".lower()
+
+    # Some private/internal test zones (for example, example.test) are deliberately
+    # absent from the public PSL snapshot. Allow a conservative last-two-label fallback
+    # only when the full hostname is not itself a known public/private suffix.
+    labels = host.split(".")
+    try:
+        known_suffixes = set(extractor.tlds)
+    except Exception:
+        known_suffixes = set()
+    if len(labels) >= 2 and host not in known_suffixes:
+        suffix = ".".join(labels[-2:])
+        if suffix not in known_suffixes:
+            return suffix
+    # A known public suffix itself (e.g. co.uk or blogspot.com) has no registrable root.
+    return ""
