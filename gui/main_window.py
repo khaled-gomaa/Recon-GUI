@@ -600,9 +600,16 @@ class MainWindow(QMainWindow):
 
         # Export and status footer
         footer = QHBoxLayout()
-        export_caption = QLabel("Export report:")
-        export_caption.setObjectName("mutedText")
-        footer.addWidget(export_caption)
+        self.import_har_btn = QPushButton("Import HAR / Burp")
+        self.import_har_btn.setObjectName("secondaryButton")
+        self.import_har_btn.setToolTip(
+            "Import a browser or Burp-exported HAR file. Only same-host request metadata is merged; "
+            "query/body/cookie values are not retained."
+        )
+        self.import_har_btn.clicked.connect(self._import_har_file)
+        footer.addWidget(self.import_har_btn)
+        footer.addSpacing(12)
+        footer.addWidget(QLabel("Export report:"))
         self.export_txt_btn = QPushButton("Export TXT")
         self.export_txt_btn.setObjectName("secondaryButton")
         self.export_txt_btn.setEnabled(False)
@@ -1761,6 +1768,108 @@ class MainWindow(QMainWindow):
                 lines.append(f"    <- {s}")
 
         self.similarity_view.setPlainText("\n".join(lines))
+
+    def _import_har_file(self):
+        """Import sanitized same-host traffic metadata from a browser or Burp HAR export."""
+        from urllib.parse import urlparse
+        from recon.har_import import load_har_file, merge_har_into_report
+
+        target = self.url_input.text().strip()
+        parsed_target = urlparse(target)
+        if parsed_target.scheme.lower() not in {"http", "https"} or not parsed_target.hostname:
+            QMessageBox.warning(self, "Invalid target", "Enter a full HTTP(S) target before importing a HAR file.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import browser / Burp HAR", "", "HAR / JSON files (*.har *.json);;All files (*)"
+        )
+        if not path:
+            return
+        existing_target = str((self.recon_report or {}).get("target") or "").strip()
+        existing_host = (urlparse(existing_target).hostname or "").lower()
+        incoming_host = (parsed_target.hostname or "").lower()
+        if existing_host and existing_host != incoming_host:
+            answer = QMessageBox.question(
+                self, "Replace current report?",
+                f"The current report is for {existing_host}, while the selected target is {incoming_host}. "
+                "Importing into a different target would mix unrelated findings. Reset the current report and import only this HAR?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self.recon_report = {}
+
+        try:
+            imported = load_har_file(path, target)
+            base_report = dict(self.recon_report or {})
+            base_report.setdefault("target", target)
+            base_report.setdefault("pages", [])
+            base_report.setdefault("filtered_pages", [])
+            base_report.setdefault("endpoint_inventory", [])
+            base_report.setdefault("endpoints", [])
+            base_report.setdefault("parameters", [])
+            base_report.setdefault("network_observations", [])
+            base_report.setdefault("cookie_map", [])
+            base_report.setdefault("subdomains", [])
+            base_report.setdefault("passive_subdomains", [])
+            base_report.setdefault("subfinder_subdomains", [])
+            base_report.setdefault("emails", [])
+            base_report.setdefault("forms", [])
+            base_report.setdefault("header_audits", [])
+            base_report.setdefault("wordlist_results", [])
+            base_report.setdefault("wordlist_hits", [])
+            base_report.setdefault("related_findings", [])
+            base_report.setdefault("history_diff", {})
+            base_report.setdefault("recent_scans", [])
+            base_report.setdefault("similarity", {})
+            merged = merge_har_into_report(
+                base_report,
+                imported.get("network_observations", []),
+                imported.get("cookie_map", []),
+                [imported.get("summary", {})],
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "HAR import failed", f"{type(exc).__name__}: {exc}")
+            return
+
+        self.recon_report = merged
+        self._refresh_report_filters()
+        self._rebuild_table_from_filtered(self.recon_report.get("filtered_pages", []), "")
+        self._populate_endpoint_parameter_findings(self.recon_report)
+        self._populate_network_cookie_tables(self.recon_report)
+        self._populate_subdomain_table(self.recon_report)
+        self._render_recon(self.recon_report)
+        self._render_similarity(self.recon_report.get("similarity", {}))
+        self._populate_history(self.recon_report.get("recent_scans", []))
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.endpoint_table),
+            f"Endpoints ({len(self.recon_report.get('endpoint_inventory', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.network_table),
+            f"Network Requests ({len(self.recon_report.get('network_observations', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.cookie_table),
+            f"Cookie Map ({len(self.recon_report.get('cookie_map', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.parameter_table),
+            f"Parameters ({len(self.recon_report.get('parameters', []))})",
+        )
+        self.export_btn.setEnabled(True)
+        self.export_txt_btn.setEnabled(True)
+        self.export_csv_btn.setEnabled(True)
+        summary = imported.get("summary", {})
+        self.status_label.setText("HAR IMPORTED")
+        self._append_log(
+            f"[HAR] Imported {summary.get('entries_imported', 0)} in-scope entries "
+            f"({summary.get('unique_requests', 0)} unique request records, "
+            f"{summary.get('cookie_metadata_count', 0)} cookie metadata records)."
+        )
+        for warning in summary.get("warnings", []) or []:
+            self._append_log("[HAR] Warning: " + str(warning))
+        self.tabs.setCurrentWidget(self.network_table)
 
     def _export_txt(self):
         if not self.recon_report:
