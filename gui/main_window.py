@@ -1939,6 +1939,16 @@ class MainWindow(QMainWindow):
         lines.append("Active crawl scope: starting hostname only; discovered subdomains are never added automatically.")
         lines.append("")
 
+        lines.append("=== STATIC ASSET REFERENCES ===")
+        lines.append(
+            f"References: {coverage.get('asset_references', len(report.get('asset_inventory', [])))}; "
+            f"external references: {coverage.get('external_asset_references', 0)}; "
+            f"references not downloaded by page/JS phases: "
+            f"{coverage.get('asset_references_without_page_or_js_fetch', 0)}"
+        )
+        lines.append("Note: this inventory is extracted from markup; a reference does not prove the asset exists or was fetched.")
+        lines.append("")
+
         lines.append("=== CONTENT DISCOVERY / WORDLIST ===")
         if report.get("wordlist_path"):
             lines.append(f"Wordlist: {report.get('wordlist_path')}")
