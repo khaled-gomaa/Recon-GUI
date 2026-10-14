@@ -33,8 +33,9 @@ def test_target_validation_and_unknown_tools_are_rejected():
 
 
 
-def test_subfinder_and_nmap_are_not_in_the_crawler_toolchain():
-    with pytest.raises(ValueError):
-        build_command("subfinder", "https://example.com")
+def test_subfinder_is_available_as_passive_tool_but_nmap_is_rejected():
+    assert build_command("subfinder", "https://example.com/app") == [
+        "subfinder", "-silent", "-d", "example.com"
+    ]
     with pytest.raises(ValueError):
         build_command("nmap", "https://example.com")
