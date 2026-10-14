@@ -319,6 +319,26 @@ class MainWindow(QMainWindow):
         options_grid.addWidget(capture_duration_label, 4, 0)
         options_grid.addWidget(self.manual_browser_duration_spin, 4, 1, 1, 2)
 
+        self.probe_assets_check = QCheckBox("Check same-origin asset links with HEAD")
+        self.probe_assets_check.setChecked(False)
+        self.probe_assets_check.setToolTip(
+            "Optional metadata-only requests for asset URLs found in markup. Sends HEAD only, "
+            "does not follow redirects or download bodies, skips external origins, shares the "
+            "in-memory target session, and stops safely on unsupported rate limits."
+        )
+        self.asset_probe_limit_spin = QSpinBox()
+        self.asset_probe_limit_spin.setRange(1, 5000)
+        self.asset_probe_limit_spin.setValue(500)
+        self.asset_probe_limit_spin.setSuffix(" assets")
+        self.asset_probe_limit_spin.setToolTip(
+            "Maximum same-origin asset references to check. If more are discovered, coverage is marked partial."
+        )
+        self.asset_probe_limit_spin.setEnabled(False)
+        self.probe_assets_check.toggled.connect(self.asset_probe_limit_spin.setEnabled)
+        options_grid.addWidget(self.probe_assets_check, 5, 0, 1, 4)
+        options_grid.addWidget(QLabel("HEAD cap"), 5, 4)
+        options_grid.addWidget(self.asset_probe_limit_spin, 5, 5)
+
         token_label = QLabel("Bearer token")
         token_label.setObjectName("fieldLabel")
         self.auth_token_input = QLineEdit()
@@ -522,15 +542,20 @@ class MainWindow(QMainWindow):
         discovery_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.discovery_table, "Content Discovery")
 
-        self.asset_table = QTableWidget(0, 5)
+        self.asset_table = QTableWidget(0, 9)
         self.asset_table.setHorizontalHeaderLabels([
-            "Asset URL (query values removed)", "Kind", "Extension", "Referrers", "Fetch evidence",
+            "Asset URL (query values removed)", "Kind", "Extension", "Referrers",
+            "Fetch evidence", "HEAD status", "HEAD result", "Content type", "Bytes",
         ])
-        self.asset_table.setColumnWidth(1, 115)
-        self.asset_table.setColumnWidth(2, 90)
-        self.asset_table.setColumnWidth(3, 85)
+        self.asset_table.setColumnWidth(1, 105)
+        self.asset_table.setColumnWidth(2, 80)
+        self.asset_table.setColumnWidth(3, 78)
+        self.asset_table.setColumnWidth(5, 78)
+        self.asset_table.setColumnWidth(6, 190)
+        self.asset_table.setColumnWidth(8, 80)
         self.asset_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.asset_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.asset_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.asset_table, "Asset References")
 
         self.network_table = QTableWidget(0, 8)
@@ -883,6 +908,10 @@ class MainWindow(QMainWindow):
                 record.get("extension", ""),
                 record.get("reference_count", 0),
                 evidence,
+                record.get("probe_status") if record.get("probe_checked") and record.get("probe_status") is not None else "--",
+                record.get("probe_result", "") or "--",
+                record.get("probe_content_type", "") or "--",
+                record.get("probe_content_length") if record.get("probe_content_length") is not None else "--",
             )
             row = self.asset_table.rowCount()
             self.asset_table.insertRow(row)
@@ -1425,6 +1454,8 @@ class MainWindow(QMainWindow):
             content_recursion_depth=self.recursion_depth_spin.value(),
             imported_seed_urls=self.imported_seed_urls,
             seed_import_summary=self.seed_import_summary,
+            probe_assets=self.probe_assets_check.isChecked(),
+            asset_probe_max=self.asset_probe_limit_spin.value(),
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
@@ -1686,11 +1717,13 @@ class MainWindow(QMainWindow):
         content_limited = report.get("content_limit_reached", False)
         recursion_depth_limited = report.get("wordlist_recursion_depth_limit_reached", False)
         seed_import_limited = bool((report.get("seed_import_summary", {}) or {}).get("limit_reached"))
+        asset_probe_summary = report.get("asset_probe_summary", {}) or {}
+        asset_probe_limited = bool(asset_probe_summary.get("partial"))
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
         elif crawler_limited or discovery_limited:
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
-        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited:
+        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited:
             reasons = []
             if page_limited:
                 reasons.append("PAGE")
@@ -1704,6 +1737,8 @@ class MainWindow(QMainWindow):
                 reasons.append("RECURSION")
             if seed_import_limited:
                 reasons.append("SEED IMPORT")
+            if asset_probe_limited:
+                reasons.append("ASSET HEAD")
             self.status_label.setText("PARTIAL  ·  " + "/".join(reasons) + " LIMIT")
         else:
             self.status_label.setText(f"COMPLETE  ·  {total} pages")
@@ -1912,6 +1947,7 @@ class MainWindow(QMainWindow):
             or coverage.get("wordlist_path_limit_reached")
             or coverage.get("wordlist_recursion_depth_limit_reached")
             or coverage.get("imported_seed_limit_reached")
+            or coverage.get("asset_probe_partial")
             or content_limited
         ):
             overall = "PARTIAL — ONE OR MORE COVERAGE LIMITS REACHED"
@@ -1947,6 +1983,13 @@ class MainWindow(QMainWindow):
             f"{coverage.get('asset_references_without_page_or_js_fetch', 0)}"
         )
         lines.append("Note: this inventory is extracted from markup; a reference does not prove the asset exists or was fetched.")
+        if asset_probe_summary.get("enabled"):
+            lines.append(
+                f"HEAD checks: {asset_probe_summary.get('requests_completed', 0)} requests completed / "
+                f"{asset_probe_summary.get('selected_candidates', 0)} selected; "
+                f"rate-limited stop={asset_probe_summary.get('rate_limited_stop', False)}; "
+                f"limit reached={asset_probe_summary.get('limit_reached', False)}"
+            )
         lines.append("")
 
         lines.append("=== CONTENT DISCOVERY / WORDLIST ===")
