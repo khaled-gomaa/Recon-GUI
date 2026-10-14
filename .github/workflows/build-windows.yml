@@ -40,7 +40,7 @@ jobs:
       - name: Build Windows application folder
         timeout-minutes: 8
         run: |
-          pyinstaller --noconfirm --clean --windowed --onedir --name ReconGUI --add-data "wordlists/common.txt;wordlists" main.py
+          pyinstaller --noconfirm --clean --windowed --onedir --name ReconGUI --collect-data tldextract --add-data "wordlists/common.txt;wordlists" main.py
 
       - name: Verify executable and bundled wordlist
         shell: pwsh
