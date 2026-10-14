@@ -154,8 +154,11 @@ def load_seed_urls(path: str | Path, target_url: str, max_seeds: int = MAX_IMPOR
     are performed elsewhere after this function validates the hostname boundary.
     """
     target = urlsplit(str(target_url or "").strip())
-    if target.scheme.lower() not in {"http", "https"} or not target.hostname:
-        raise ValueError("target_url must be a full HTTP(S) URL.")
+    if (
+        target.scheme.lower() not in {"http", "https"} or not target.hostname
+        or target.username or target.password
+    ):
+        raise ValueError("target_url must be a full HTTP(S) URL without embedded credentials.")
     target_host = target.hostname.rstrip(".").lower().encode("idna").decode("ascii")
     target_url = urlunsplit((target.scheme.lower(), target.netloc, target.path or "/", "", ""))
     source_path = Path(path)
