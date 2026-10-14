@@ -43,33 +43,63 @@ def _normalize_endpoint(value: str) -> str:
         return value.split("?", 1)[0]
 
 
-def build_endpoint_inventory(observations, discovered_routes=None, page_urls=None):
-    """Merge duplicate endpoints without preserving query values."""
-    grouped = defaultdict(lambda: {"sources": set(), "locations": set(), "parameters": set()})
-    for record in observations or []:
-        raw = record.get("endpoint", "")
-        endpoint = _normalize_endpoint(raw)
+def build_endpoint_inventory(
+    observations, discovered_routes=None, page_urls=None, forms=None, request_observations=None
+):
+    """Merge endpoints and attach observed/declaration methods without retaining query values."""
+    grouped = defaultdict(lambda: {
+        "sources": set(), "locations": set(), "parameters": set(),
+        "methods": set(), "statuses": set(), "resource_types": set(),
+    })
+
+    def add_record(raw_url, source, location="", method="", status=None, resource_type=""):
+        raw_url = str(raw_url or "")
+        endpoint = _normalize_endpoint(raw_url)
         if not endpoint:
-            continue
+            return
         item = grouped[endpoint]
-        item["sources"].add(str(record.get("source") or "unknown"))
-        location = _safe_path(str(record.get("location") or ""))
-        if location:
-            item["locations"].add(location)
-        for name in _names_from_url(raw):
+        item["sources"].add(str(source or "unknown"))
+        safe_location = _safe_path(str(location or ""))
+        if safe_location:
+            item["locations"].add(safe_location)
+        for name in _names_from_url(raw_url):
             item["parameters"].add(name)
+        if method:
+            item["methods"].add(str(method).upper())
+        if status is not None:
+            try:
+                item["statuses"].add(int(status))
+            except (TypeError, ValueError):
+                pass
+        if resource_type:
+            item["resource_types"].add(str(resource_type))
+
+    for record in observations or []:
+        add_record(
+            record.get("endpoint", ""), record.get("source") or "unknown",
+            record.get("location", ""), record.get("method", ""),
+        )
     for route in discovered_routes or []:
-        endpoint = _normalize_endpoint(str(route))
-        if endpoint:
-            grouped[endpoint]["sources"].add("discovered-route")
-            for name in _names_from_url(str(route)):
-                grouped[endpoint]["parameters"].add(name)
+        add_record(str(route), "discovered-route")
     for url in page_urls or []:
         if _names_from_url(str(url)):
-            endpoint = _normalize_endpoint(str(url))
-            grouped[endpoint]["sources"].add("crawled-page")
-            grouped[endpoint]["locations"].add(_safe_path(str(url)))
-            grouped[endpoint]["parameters"].update(_names_from_url(str(url)))
+            add_record(str(url), "crawled-page", str(url), "GET")
+    for form in forms or []:
+        add_record(
+            form.get("action", ""), "html-form-action", form.get("page", ""),
+            form.get("method", "GET"),
+        )
+    for observation in request_observations or []:
+        add_record(
+            observation.get("url", ""), observation.get("source", "browser-network"),
+            observation.get("page_url", ""), observation.get("method", ""),
+            observation.get("status"), observation.get("resource_type", ""),
+        )
+        endpoint = _normalize_endpoint(str(observation.get("url", "")))
+        if endpoint:
+            grouped[endpoint]["parameters"].update(
+                str(name) for name in observation.get("parameter_names", []) if str(name).strip()
+            )
     return [
         {
             "endpoint": endpoint,
@@ -79,13 +109,17 @@ def build_endpoint_inventory(observations, discovered_routes=None, page_urls=Non
             "location_count": len(item["locations"]),
             "parameters": sorted(item["parameters"], key=str.casefold),
             "parameter_count": len(item["parameters"]),
+            "methods": sorted(item["methods"]),
+            "statuses": sorted(item["statuses"]),
+            "resource_types": sorted(item["resource_types"]),
         }
         for endpoint, item in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
     ]
 
 
 def build_parameter_inventory(
-    page_urls, forms, endpoint_observations, discovered_routes=None, candidate_urls=None
+    page_urls, forms, endpoint_observations, discovered_routes=None, candidate_urls=None,
+    request_observations=None, historical_urls=None,
 ):
     """Group names only; values from query strings and form inputs are never retained."""
     grouped = defaultdict(lambda: {"sources": set(), "locations": set(), "methods": set(), "occurrences": 0})
@@ -129,6 +163,18 @@ def build_parameter_inventory(
     for candidate in candidate_urls or []:
         for name in _names_from_url(str(candidate)):
             add(name, "discovered-link-query", str(candidate))
+
+    for candidate in historical_urls or []:
+        for name in _names_from_url(str(candidate)):
+            add(name, "historical-archive-query", str(candidate))
+
+    for observation in request_observations or []:
+        location = str(observation.get("page_url") or "")
+        method = str(observation.get("method") or "")
+        for name in _names_from_url(str(observation.get("url") or "")):
+            add(name, "browser-network-query", location, method)
+        for name in observation.get("parameter_names", []) or []:
+            add(name, "browser-network-body-name", location, method)
 
     result = []
     for name, item in grouped.items():
