@@ -10,6 +10,8 @@ import shutil
 import subprocess
 from urllib.parse import urlparse
 
+from recon.domain_scope import registrable_domain
+
 HOST_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 
@@ -19,7 +21,12 @@ def discover_subdomains(target: str, timeout: int = 90, should_stop=None, on_log
     parsed = urlparse((target or "").strip())
     if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
         raise ValueError("target must be a full HTTP(S) URL")
-    root = parsed.hostname.lower().rstrip(".").encode("idna").decode("ascii")
+    root = registrable_domain(parsed.hostname)
+    if not root:
+        raise ValueError(
+            "Subfinder requires a registrable DNS domain; IP addresses and public suffixes "
+            "cannot define the root scope."
+        )
     log = on_log or (lambda _message: None)
     stop = should_stop or (lambda: False)
     executable = shutil.which("subfinder")
