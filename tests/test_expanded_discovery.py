@@ -248,6 +248,9 @@ def test_recursive_content_discovery_tries_wordlist_under_detected_directory(tmp
             assert scanner.recursive_dirs_found >= 1
             assert scanner.candidate_count == 4
             assert scanner.path_limit_reached is False
+            # /admin/users itself looks like another HTML directory, but only one
+            # recursive round was configured, so remaining depth is reported as partial.
+            assert scanner.recursion_depth_limit_reached is True
         finally:
             await runner.cleanup()
 
