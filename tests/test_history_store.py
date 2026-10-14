@@ -69,7 +69,11 @@ def test_page_limited_scan_does_not_infer_removed_pages_endpoints_or_parameters(
         "page_limit_reached": True,
     })
     diff = partial["history_diff"]
-    assert partial["status"] == "partial"
+    scan_status = next(
+        row["status"] for row in store.recent_scans("https://capped.example/")
+        if row["scan_id"] == partial["scan_id"]
+    )
+    assert scan_status == "partial"
     assert diff["comparison_status"].startswith("partial")
     assert diff["removed_urls"] == []
     assert diff["removed_endpoints"] == []
