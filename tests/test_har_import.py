@@ -117,3 +117,42 @@ def test_har_import_rejects_invalid_target_and_oversized_file(tmp_path):
         load_har_file(str(path), "javascript:alert(1)")
     with pytest.raises(ValueError, match="larger"):
         load_har_file(str(path), "https://example.test/", max_file_bytes=1)
+
+
+def test_merge_har_into_report_combines_methods_parameters_and_cookie_metadata(tmp_path):
+    from recon.har_import import merge_har_into_report
+
+    entries = [{
+        "request": {
+            "method": "POST",
+            "url": "https://example.test/api/profile?view=compact",
+            "headers": [{"name": "Content-Type", "value": "application/json"}],
+            "postData": {"mimeType": "application/json", "text": '{"profileId":"private"}'},
+            "cookies": [{"name": "sid", "value": "private-cookie", "path": "/"}],
+        },
+        "response": {
+            "status": 202,
+            "headers": [{"name": "Content-Type", "value": "application/json"}],
+            "content": {"mimeType": "application/json", "text": '{"secret":"private-response"}'},
+            "cookies": [{"name": "session", "value": "private-response-cookie", "path": "/"}],
+        },
+    }]
+    path = _write_har(tmp_path, entries)
+    imported = load_har_file(str(path), "https://example.test/")
+    merged = merge_har_into_report(
+        {"target": "https://example.test/", "pages": [],
+         "endpoint_inventory": [], "parameters": [], "network_observations": [],
+         "cookie_map": []},
+        imported["network_observations"], imported["cookie_map"],
+        [imported["summary"]],
+    )
+
+    endpoint = next(item for item in merged["endpoint_inventory"] if item["endpoint"].endswith("/api/profile"))
+    assert endpoint["methods"] == ["POST"]
+    assert endpoint["statuses"] == [202]
+    assert set(endpoint["parameters"]) == {"view", "profileId"}
+    assert {item["name"] for item in merged["parameters"]} >= {"view", "profileId"}
+    assert {item["name"] for item in merged["cookie_map"]} == {"sid", "session"}
+    assert merged["har_import_summary"]["entries_imported"] == 1
+    for secret in ("private", "private-cookie", "private-response", "private-response-cookie"):
+        assert secret not in repr(merged)
