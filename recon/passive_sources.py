@@ -4,8 +4,9 @@ from urllib.parse import urlparse
 import requests
 
 USER_AGENT = "Recon-GUI/3.0 (passive research; authorized use)"
-MAX_SUBDOMAINS = 500
-MAX_HISTORICAL_URLS = 300
+# crt.sh results are parsed completely. Wayback's request is larger than the old
+# 300-URL query; reaching this ceiling is explicitly marked as partial.
+MAX_HISTORICAL_URLS = 10000
 
 
 def collect_passive(target: str, timeout: int = 12, on_log=None) -> dict:
@@ -31,10 +32,6 @@ def collect_passive(target: str, timeout: int = 12, on_log=None) -> dict:
                     name = name.strip().lower().lstrip("*.").rstrip(".")
                     if name == root or name.endswith("." + root):
                         subdomains.add(name)
-                    if len(subdomains) >= MAX_SUBDOMAINS:
-                        break
-                if len(subdomains) >= MAX_SUBDOMAINS:
-                    break
             log(f"[Passive] Certificate Transparency returned {len(subdomains)} hostnames.")
         else:
             errors.append(f"crt.sh HTTP {response.status_code}")
@@ -58,7 +55,13 @@ def collect_passive(target: str, timeout: int = 12, on_log=None) -> dict:
                     historical_urls.add(value)
                 if len(historical_urls) >= MAX_HISTORICAL_URLS:
                     break
-            log(f"[Passive] Wayback returned {len(historical_urls)} historical URLs.")
+            if len(historical_urls) >= MAX_HISTORICAL_URLS:
+                log(
+                    f"[Passive] Wayback reached the {MAX_HISTORICAL_URLS}-URL request ceiling; "
+                    "results may be partial."
+                )
+            else:
+                log(f"[Passive] Wayback returned {len(historical_urls)} historical URLs.")
         else:
             errors.append(f"Wayback CDX HTTP {response.status_code}")
     except (requests.RequestException, ValueError) as exc:
@@ -69,7 +72,7 @@ def collect_passive(target: str, timeout: int = 12, on_log=None) -> dict:
         "passive_subdomains": sorted(subdomains), "historical_urls": sorted(historical_urls),
         "passive_sources": [
             {"name": "crt.sh", "status": "partial" if any(e.startswith("crt.sh") for e in errors) else "queried", "count": len(subdomains)},
-            {"name": "Wayback CDX", "status": "partial" if any(e.startswith("Wayback") for e in errors) else "queried", "count": len(historical_urls)},
+            {"name": "Wayback CDX", "status": "partial" if any(e.startswith("Wayback") for e in errors) or len(historical_urls) >= MAX_HISTORICAL_URLS else "queried", "count": len(historical_urls)},
         ],
         "passive_errors": errors,
     }
