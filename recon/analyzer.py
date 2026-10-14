@@ -22,15 +22,18 @@ class ReconReport:
 
 
 class ReconAnalyzer:
-    def __init__(self, base_domain: str, request_headers: dict | None = None, on_log=None):
+    def __init__(self, base_domain: str, request_headers: dict | None = None, on_log=None, cookie_jar=None):
         parsed_host = urlparse(base_domain).hostname
         host = (parsed_host or base_domain).lower()
         self.base_host = host
         self.base_url = base_domain if "://" in base_domain else "https://" + base_domain
         self.subdomain_finder = SubdomainFinder(host)
         self.report = ReconReport()
-        self.js_collector = JSCollector(base_domain, on_log=on_log, request_headers=request_headers)
+        self.js_collector = JSCollector(
+            base_domain, on_log=on_log, request_headers=request_headers, cookie_jar=cookie_jar
+        )
         self.request_headers = dict(request_headers or {})
+        self.cookie_jar = cookie_jar
         self.wordlist_hits: list = []
         self.favicon_hash: str = ""
         self.matcher_applied: bool = False
@@ -43,8 +46,12 @@ class ReconAnalyzer:
         # Reported endpoint paths remove query strings and their potentially sensitive values.
         self.endpoint_observations: list[dict] = []
         self._observation_keys: set[tuple] = set()
+        self.network_observations: dict[tuple, dict] = {}
 
-    def _record_endpoint(self, endpoint: str, source: str, location: str):
+    def _record_endpoint(
+        self, endpoint: str, source: str, location: str, method=None,
+        query_parameters=None, body_parameters=None,
+    ):
         endpoint = str(endpoint or "").strip()
         if not endpoint:
             return
@@ -56,16 +63,60 @@ class ReconAnalyzer:
         # and route candidates should all resolve to the target hostname.
         if parsed.scheme.lower() not in ("http", "https") or (parsed.hostname or "").lower() != self.base_host:
             return
-        key = (endpoint, source, location)
+        method = str(method or "").strip().upper()
+        key = (endpoint, source, location, method)
         if key in self._observation_keys:
             return
         self._observation_keys.add(key)
         self.endpoint_observations.append({
             "endpoint": endpoint, "source": source, "location": location,
+            "method": method,
+            "query_parameters": sorted({str(name) for name in (query_parameters or []) if str(name)}),
+            "body_parameters": sorted({str(name) for name in (body_parameters or []) if str(name)}),
         })
         safe_endpoint = _normalize_endpoint(endpoint)
         if safe_endpoint:
             self.report.endpoints.add(safe_endpoint)
+
+    def record_network_observation(self, record: dict):
+        """Store request metadata only; URLs are already sanitized and bodies are never retained."""
+        raw_url = str(record.get("url") or "").strip()
+        if not raw_url:
+            return
+        parsed = urlparse(raw_url)
+        if parsed.scheme.lower() not in ("http", "https") or (parsed.hostname or "").lower() != self.base_host:
+            return
+        method = str(record.get("method") or "GET").upper()
+        source = str(record.get("source") or "browser-network")
+        location = str(record.get("page") or "")
+        query_names = sorted({str(name) for name in (record.get("query_parameters") or []) if str(name)})
+        body_names = sorted({str(name) for name in (record.get("body_parameters") or []) if str(name)})
+        key = (raw_url, method, location, source)
+        current = self.network_observations.get(key)
+        safe_record = {
+            "url": _normalize_endpoint(raw_url),
+            "method": method,
+            "source": source,
+            "page": _normalize_endpoint(location) if location else "",
+            "resource_type": str(record.get("resource_type") or ""),
+            "query_parameters": query_names,
+            "body_parameters": body_names,
+            "status": record.get("status"),
+            "content_type": str(record.get("content_type") or ""),
+        }
+        if current:
+            if safe_record["status"] is not None:
+                current["status"] = safe_record["status"]
+            if safe_record["content_type"]:
+                current["content_type"] = safe_record["content_type"]
+            current["query_parameters"] = sorted(set(current["query_parameters"]) | set(query_names))
+            current["body_parameters"] = sorted(set(current["body_parameters"]) | set(body_names))
+        else:
+            self.network_observations[key] = safe_record
+        self._record_endpoint(
+            raw_url, source, location or self.base_url, method,
+            query_parameters=query_names, body_parameters=body_names,
+        )
 
     def analyze_page(self, url: str, html: str, headers: dict = None, discovered_links=None):
         html = html or ""
@@ -86,6 +137,12 @@ class ReconAnalyzer:
         self.report.subdomains.update(self.subdomain_finder.find(html))
         for endpoint in JSEndpointExtractor.extract(html):
             self._record_endpoint(endpoint, "html-or-inline-js", url)
+        for request in JSEndpointExtractor.extract_request_observations(html):
+            self._record_endpoint(
+                request.get("endpoint", ""), request.get("source", "javascript-static"), url,
+                method=request.get("method"),
+                body_parameters=request.get("body_parameters", []),
+            )
         self.js_collector.collect_from_html(url, html)
 
         for route in JSEndpointExtractor.extract_routes(html):
@@ -120,6 +177,12 @@ class ReconAnalyzer:
         for js_url, js_content in self.js_collector.js_contents.items():
             for endpoint in JSEndpointExtractor.extract(js_content):
                 self._record_endpoint(endpoint, "javascript", js_url)
+            for request in JSEndpointExtractor.extract_request_observations(js_content):
+                self._record_endpoint(
+                    request.get("endpoint", ""), request.get("source", "javascript-static"), js_url,
+                    method=request.get("method"),
+                    body_parameters=request.get("body_parameters", []),
+                )
             for route in JSEndpointExtractor.extract_routes(js_content):
                 self._record_endpoint(urljoin(js_url, route), "javascript-route", js_url)
             self.report.emails.update(EmailExtractor.extract(js_content))
@@ -140,6 +203,7 @@ class ReconAnalyzer:
             self.page_urls, forms, self.endpoint_observations,
             discovered_routes=self.js_collector.route_urls,
             candidate_urls=self.discovered_links,
+            network_observations=list(self.network_observations.values()),
         )
         # Never expose parameter values extracted from endpoint/query strings.
         safe_routes = sorted({_normalize_endpoint(route) for route in self.js_collector.route_urls if _normalize_endpoint(route)})
@@ -151,6 +215,10 @@ class ReconAnalyzer:
             "endpoints": safe_endpoints,
             "endpoint_inventory": endpoint_inventory,
             "endpoint_observations_count": len(self.endpoint_observations),
+            "network_observations": sorted(
+                self.network_observations.values(),
+                key=lambda item: (item.get("url", ""), item.get("method", ""), item.get("source", "")),
+            ),
             "discovered_link_count": len(self.discovered_links),
             "parameters": parameters,
             "parameter_count": len(parameters),
