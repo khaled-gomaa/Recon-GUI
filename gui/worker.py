@@ -236,6 +236,7 @@ class CrawlWorker(QThread):
                     analyzer.analyze_page(
                         result.url, result.html, headers=result.headers,
                         discovered_links=getattr(result, "links", []),
+                        discovered_assets=getattr(result, "asset_references", []),
                     )
                     analyzed_urls.add(result.url)
 
@@ -273,6 +274,11 @@ class CrawlWorker(QThread):
                         continue
                     parsed = engine.parser.parse(html, url)
                     result.links = parsed.get("links", [])
+                    merged_assets = {
+                        (item.get("url", ""), item.get("kind", "")): item
+                        for item in list(getattr(result, "asset_references", [])) + list(parsed.get("assets", []))
+                    }
+                    result.asset_references = list(merged_assets.values())
                     result.html = html
                     result.title = parsed.get("title", result.title)
                     result.word_count = len((parsed.get("text") or "").split())
@@ -539,6 +545,14 @@ class CrawlWorker(QThread):
                 "javascript_files_discovered": len(analyzer.js_collector.js_urls),
                 "javascript_files_attempted": len(analyzer.js_collector._analyzed_js_urls),
                 "javascript_files_truncated": len(truncated_js_files),
+                "asset_references": len(report.get("asset_inventory", [])),
+                "external_asset_references": sum(
+                    1 for item in report.get("asset_inventory", []) if not item.get("in_scope", False)
+                ),
+                "asset_references_without_page_or_js_fetch": sum(
+                    1 for item in report.get("asset_inventory", [])
+                    if not item.get("fetched_by_page_crawler") and not item.get("fetched_by_js_collector")
+                ),
                 "response_bodies_truncated": len(body_truncated_pages) + len(truncated_wordlist_urls),
                 "content_limit_reached": report["content_limit_reached"],
                 "imported_seed_candidates": len(self.imported_seed_urls),
