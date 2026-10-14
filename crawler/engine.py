@@ -89,6 +89,7 @@ class CrawlResult:
         self.links = list(links or [])
         # Kept in memory for analysis; deliberately omitted from to_dict().
         self.headers = {}
+        self.cookie_events = []
         self.depth = 0
         self.error = ""
 
@@ -107,6 +108,7 @@ class CrawlResult:
             "favicon_hash": self.favicon_hash,
             "depth": self.depth,
             "error": self.error,
+            "cookie_events": list(self.cookie_events),
         }
 
 
@@ -122,6 +124,7 @@ class CrawlEngine:
         should_stop=None,
         request_headers=None,
         respect_robots=True,
+        cookie_jar=None,
     ):
         normalized = _normalize_http_url(start_url)
         if not normalized:
@@ -141,6 +144,7 @@ class CrawlEngine:
             and "\r" not in str(value) and "\n" not in str(value)
         }
         self.respect_robots = bool(respect_robots)
+        self.cookie_jar = cookie_jar
         self.crawl_delay_seconds = 0.0
         self.robots_url = ""
         self._robots_loaded = False
@@ -378,10 +382,13 @@ class CrawlEngine:
             self.visited.add(normalized)
             queue.put_nowait((normalized, depth))
 
-        async with aiohttp.ClientSession(
-            connector=connector, timeout=timeout, headers=headers,
-            raise_for_status=False,
-        ) as session:
+        session_options = {
+            "connector": connector, "timeout": timeout, "headers": headers,
+            "raise_for_status": False,
+        }
+        if self.cookie_jar is not None:
+            session_options["cookie_jar"] = self.cookie_jar
+        async with aiohttp.ClientSession(**session_options) as session:
             if self.respect_robots and not self._robots_loaded:
                 await self._load_robots(session)
 
@@ -454,6 +461,7 @@ class CrawlEngine:
         content_type = ""
         html = ""
         response_headers = {}
+        cookie_events = []
 
         try:
             for _ in range(6):
@@ -463,6 +471,15 @@ class CrawlEngine:
                     final_status = response.status
                     content_type = response.headers.get("Content-Type", "")
                     response_headers = dict(response.headers)
+                    for cookie_name, morsel in response.cookies.items():
+                        cookie_events.append({
+                            "name": cookie_name,
+                            "domain": morsel.get("domain", ""),
+                            "path": morsel.get("path", ""),
+                            "secure": bool(morsel.get("secure", "")),
+                            "httponly": bool(morsel.get("httponly", "")),
+                            "samesite": morsel.get("samesite", ""),
+                        })
                     if final_status in REDIRECT_CODES:
                         location = response.headers.get("Location", "")
                         if not location:
@@ -509,6 +526,7 @@ class CrawlEngine:
                 links=parsed.get("links", []) if html else [],
             )
             result.headers = response_headers
+            result.cookie_events = cookie_events
             result.depth = depth
             result.error = ""
             return result, parsed["links"] if html else []
@@ -519,6 +537,7 @@ class CrawlEngine:
                 content_type=content_type,
             )
             result.headers = response_headers
+            result.cookie_events = cookie_events
             result.depth = depth
             result.error = f"{type(exc).__name__}: {exc}"
             return result, []
