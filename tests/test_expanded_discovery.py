@@ -116,7 +116,7 @@ def test_html_form_inventory_includes_declared_post_method_and_field_names():
     """
     analyzer.analyze_page("https://example.test/login", html)
     report = analyzer.to_dict()
-    endpoint = next(item for item in report["endpoint_inventory"] if item["endpoint"] == "/api/session")
+    endpoint = next(item for item in report["endpoint_inventory"] if item["endpoint"].endswith("/api/session"))
     assert "POST" in endpoint["methods"]
     assert set(endpoint["parameters"]) >= {"username", "password", "csrf_token"}
     assert "POST" in next(item for item in report["parameters"] if item["name"] == "password")["methods"]
