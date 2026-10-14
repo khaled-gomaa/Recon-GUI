@@ -29,7 +29,7 @@ class CrawlWorker(QThread):
         wordlist_path=None, matcher: MatcherFilter = None,
         render_javascript=False, passive_discovery=False, request_headers=None,
         crawl_historical_urls=False, wordlist_extensions=None,
-        use_subfinder=True, manual_browser_session=False,
+        use_subfinder=True, manual_browser_session=False, manual_browser_duration=180,
     ):
         super().__init__()
         self.url = url
@@ -44,6 +44,7 @@ class CrawlWorker(QThread):
         self.wordlist_extensions = list(wordlist_extensions) if wordlist_extensions is not None else None
         self.use_subfinder = bool(use_subfinder)
         self.manual_browser_session = bool(manual_browser_session)
+        self.manual_browser_duration = max(30, min(int(manual_browser_duration), 600))
         self.request_headers = {
             str(key): str(value) for key, value in (request_headers or {}).items()
             if str(key).lower() in {"authorization", "cookie", "accept-language"}
@@ -118,7 +119,7 @@ class CrawlWorker(QThread):
                         self.url, cookie_jar=session_cookie_jar,
                         should_stop=self._stopping, on_log=self.log_message.emit,
                         on_network_event=analyzer.record_network_observation,
-                        duration_seconds=90,
+                        duration_seconds=self.manual_browser_duration,
                     ))
                     self.log_message.emit(
                         f"[Manual Browser] Captured {len(manual_browser_results.get('network_observations', []))} request records "
@@ -240,6 +241,8 @@ class CrawlWorker(QThread):
                         should_stop=self._stopping, on_log=self.log_message.emit,
                         on_network_event=analyzer.record_network_observation,
                         max_pages=self.max_pages,
+                        storage_state=manual_browser_results.get("_storage_state"),
+                        cookie_jar=session_cookie_jar,
                     ))
                 except RuntimeError as exc:
                     rendered = {}
