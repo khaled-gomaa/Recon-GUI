@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-TOOL_NAMES = ("gau", "nuclei", "ffuf")
+TOOL_NAMES = ("gau", "nuclei", "ffuf", "subfinder")
 MAX_OUTPUT_LINES = 5000
 
 
@@ -26,6 +26,9 @@ def build_command(tool: str, target: str, wordlist_path: str | None = None) -> l
     host = parsed.hostname.encode("idna").decode("ascii").lower()
     if tool == "gau":
         return ["gau", "--subs", host]
+    if tool == "subfinder":
+        # Passive hostname discovery only; this does not probe discovered hosts.
+        return ["subfinder", "-silent", "-d", host]
     if tool == "nuclei":
         return [
             "nuclei", "-u", target, "-jsonl", "-silent",
