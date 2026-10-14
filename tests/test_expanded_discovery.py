@@ -327,3 +327,43 @@ def test_explicit_directory_wordlist_entry_does_not_get_file_extensions(tmp_path
         "https://example.test/", str(path), extensions=["", ".php", ".html"],
     )
     assert scanner._build_targets("admin/") == ["https://example.test/admin/"]
+
+
+def test_asset_inventory_strips_query_values_and_marks_external_references():
+    analyzer = ReconAnalyzer("https://example.test/")
+    analyzer.analyze_page(
+        "https://example.test/home?session=page-secret",
+        "<html><body></body></html>",
+        discovered_assets=[
+            {
+                "url": "https://example.test/assets/app.js?v=build-secret",
+                "kind": "javascript",
+                "extension": ".js",
+            },
+            {
+                "url": "https://example.test/assets/app.js?v=another-secret",
+                "kind": "javascript",
+                "extension": ".js",
+            },
+            {
+                "url": "https://cdn.example-cdn.test/images/logo.svg?token=external-secret",
+                "kind": "image",
+                "extension": ".svg",
+            },
+        ],
+    )
+    report = analyzer.to_dict()
+    assets = report["asset_inventory"]
+    same_host = next(item for item in assets if item["url"] == "https://example.test/assets/app.js")
+    external = next(item for item in assets if "cdn.example-cdn.test" in item["url"])
+
+    assert same_host["reference_count"] == 1
+    assert same_host["query_parameter_names"] == ["v"]
+    assert same_host["in_scope"] is True
+    assert same_host["fetched_by_page_crawler"] is False
+    assert external["in_scope"] is False
+    serialized = repr(assets)
+    assert "build-secret" not in serialized
+    assert "another-secret" not in serialized
+    assert "external-secret" not in serialized
+    assert "page-secret" not in serialized
