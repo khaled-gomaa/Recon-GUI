@@ -89,11 +89,15 @@ async def probe_asset_references(
         raw_url = str(item.get("request_url") or item.get("url") or "").strip()
         if not raw_url:
             continue
-        parsed = urlsplit(raw_url)
-        if parsed.username or parsed.password or _origin(raw_url) != target_origin:
+        try:
+            parsed = urlsplit(raw_url)
+            if parsed.username or parsed.password or _origin(raw_url) != target_origin:
+                skipped_out_of_origin += 1
+                continue
+            safe_url = _safe_url(raw_url)
+        except (TypeError, ValueError, UnicodeError):
             skipped_out_of_origin += 1
             continue
-        safe_url = _safe_url(raw_url)
         if safe_url in seen:
             continue
         seen.add(safe_url)
