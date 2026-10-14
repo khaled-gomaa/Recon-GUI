@@ -70,7 +70,10 @@ class JSEndpointExtractor:
             method_match = re.search(r"""\bmethod\s*:\s*(['"])(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\1""", config, re.I)
             has_body = bool(re.search(r"""\bbody\s*:""", config, re.I))
             method = method_match.group(2) if method_match else ("POST" if has_body else "GET")
-            body_match = re.search(r"""\bbody\s*:\s*(?:JSON\.stringify\s*\()?\s*(\{[\s\S]{0,600}?\})""", config, re.I)
+            body_match = re.search(
+                r"""\bbody\s*:\s*(?:JSON\.stringify\s*\()?\s*(\{[\s\S]{0,600})""",
+                config, re.I,
+            )
             add(match.group(2), method, "javascript-fetch", body_match.group(1) if body_match else "")
 
         # axios.get/post/put/patch/delete/head/options("url", ...)
@@ -88,13 +91,13 @@ class JSEndpointExtractor:
             add(match.group(4), match.group(2), "javascript-xhr")
 
         # jQuery $.ajax({ url: "/path", method/type: "POST", data: {...} })
-        for match in re.finditer(r"""\$\.ajax\s*\(\s*\{([\s\S]{0,1200}?)\}\s*\)""", text, re.I):
+        for match in re.finditer(r"""\$\.ajax\s*\(\s*\{([\s\S]{0,1200})\}\s*\)""", text, re.I):
             config = match.group(1)
             url_match = re.search(r"""\burl\s*:\s*(['"])([^'"]+)\1""", config, re.I)
             if not url_match:
                 continue
             method_match = re.search(r"""\b(?:method|type)\s*:\s*(['"])(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\1""", config, re.I)
-            data_match = re.search(r"""\bdata\s*:\s*(\{[\s\S]{0,600}?\})""", config, re.I)
+            data_match = re.search(r"""\bdata\s*:\s*(\{[\s\S]{0,600})""", config, re.I)
             add(
                 url_match.group(2), method_match.group(2) if method_match else "GET",
                 "javascript-ajax", data_match.group(1) if data_match else "",
