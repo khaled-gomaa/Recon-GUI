@@ -251,7 +251,7 @@ class WordlistScanner:
         leaf = relative.rsplit("/", 1)[-1]
         # Keep explicit filenames and dotfiles exact rather than appending nonsensical
         # variants such as robots.txt.php or .env.html.
-        if leaf.startswith(".") or ("." in leaf and not leaf.endswith(".")):
+        if relative.endswith("/") or leaf.startswith(".") or ("." in leaf and not leaf.endswith(".")):
             candidates = [relative]
         else:
             candidates = [relative + ext for ext in self.extensions]
