@@ -189,6 +189,43 @@ class HistoryStore:
         return {"added": added, "removed": removed, "changed": changed}
 
     @staticmethod
+    def _asset_map(report: dict) -> dict:
+        """Map normalized asset identity to stable, non-secret metadata."""
+        result = {}
+        for item in report.get("asset_inventory", []) or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "")
+            kind = str(item.get("kind") or "resource")
+            if not url:
+                continue
+            key = f"{url} [{kind}]"
+            result[key] = {
+                "extension": str(item.get("extension") or ""),
+                "in_scope": bool(item.get("in_scope", False)),
+                "query_parameter_names": sorted(item.get("query_parameter_names", []) or []),
+                "referrers": sorted(item.get("referrers", []) or []),
+                "probe_checked": bool(item.get("probe_checked", False)),
+                "probe_status": item.get("probe_status"),
+                "probe_result": str(item.get("probe_result") or ""),
+                "probe_content_type": str(item.get("probe_content_type") or ""),
+                "probe_content_length": item.get("probe_content_length"),
+            }
+        return result
+
+    @classmethod
+    def _asset_diff(cls, current: dict, previous: dict, complete: bool):
+        current_map = cls._asset_map(current)
+        previous_map = cls._asset_map(previous)
+        added = sorted(current_map.keys() - previous_map.keys())
+        removed = sorted(previous_map.keys() - current_map.keys()) if complete else []
+        changed = sorted(
+            key for key in current_map.keys() & previous_map.keys()
+            if current_map[key] != previous_map[key]
+        )
+        return {"added": added, "removed": removed, "changed": changed}
+
+    @staticmethod
     def _finding_keys(report: dict) -> set[str]:
         keys = set()
         for key in ("sensitive_findings", "related_findings"):
@@ -249,6 +286,7 @@ class HistoryStore:
                 diff["previous_scan_id"] = int(prior["id"])
                 endpoint_diff = self._entity_diff(report, previous, "endpoint_inventory", "endpoint", complete)
                 parameter_diff = self._entity_diff(report, previous, "parameters", "name", complete)
+                asset_diff = self._asset_diff(report, previous, complete)
                 diff.update({
                     "added_endpoints": endpoint_diff["added"],
                     "removed_endpoints": endpoint_diff["removed"],
@@ -262,6 +300,12 @@ class HistoryStore:
                     "added_parameter_count": len(parameter_diff["added"]),
                     "removed_parameter_count": len(parameter_diff["removed"]),
                     "changed_parameter_count": len(parameter_diff["changed"]),
+                    "added_assets": asset_diff["added"],
+                    "removed_assets": asset_diff["removed"],
+                    "changed_assets": asset_diff["changed"],
+                    "added_asset_count": len(asset_diff["added"]),
+                    "removed_asset_count": len(asset_diff["removed"]),
+                    "changed_asset_count": len(asset_diff["changed"]),
                 })
                 current_findings = self._finding_keys(report)
                 previous_findings = self._finding_keys(previous)
@@ -273,6 +317,7 @@ class HistoryStore:
                 diff["comparison_status"] = "first scan; baseline created"
                 endpoint_diff = self._entity_diff(report, {}, "endpoint_inventory", "endpoint", complete)
                 parameter_diff = self._entity_diff(report, {}, "parameters", "name", complete)
+                asset_diff = self._asset_diff(report, {}, complete)
                 diff.update({
                     "added_endpoints": endpoint_diff["added"], "removed_endpoints": [],
                     "changed_endpoints": [], "added_parameters": parameter_diff["added"],
@@ -281,6 +326,9 @@ class HistoryStore:
                     "removed_endpoint_count": 0, "changed_endpoint_count": 0,
                     "added_parameter_count": len(parameter_diff["added"]),
                     "removed_parameter_count": 0, "changed_parameter_count": 0,
+                    "added_assets": asset_diff["added"], "removed_assets": [], "changed_assets": [],
+                    "added_asset_count": len(asset_diff["added"]),
+                    "removed_asset_count": 0, "changed_asset_count": 0,
                 })
             report["history_diff"] = diff
             report["previous_scan_id"] = diff.get("previous_scan_id")
