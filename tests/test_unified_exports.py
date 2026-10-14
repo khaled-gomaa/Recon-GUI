@@ -66,3 +66,42 @@ def test_exports_include_selected_subdomain_verification_without_credentials():
     assert "remain unchecked" in txt
     assert "subdomain_verification" in csv
     assert "api.example.test" in csv
+
+
+def test_exports_show_content_truncation_and_coverage_notes():
+    report = {
+        "target": "https://example.test/",
+        "pages": [{
+            "url": "https://example.test/large",
+            "status": 200,
+            "title": "Large",
+            "word_count": 10,
+            "content_length": 128,
+            "body_truncated": True,
+        }],
+        "filtered_pages": [],
+        "content_limit_reached": True,
+        "body_truncated_pages": ["https://example.test/large"],
+        "truncated_js_files": ["https://example.test/app.js"],
+        "truncated_wordlist_urls": [],
+        "content_limit_notes": ["1 JS file truncated at the 2 MiB per-file cap."],
+        "coverage_summary": {
+            "pages_crawled": 20,
+            "page_cap": 200,
+            "max_depth": 3,
+            "javascript_files_discovered": 10,
+            "javascript_files_attempted": 10,
+            "javascript_files_truncated": 1,
+            "response_bodies_truncated": 1,
+            "content_limit_reached": True,
+        },
+    }
+    txt = render_text_report(report)
+    csv = render_csv_report(report)
+    assert "Partial (page/depth/wordlist/content cap)" in txt
+    assert "BODY TRUNCATED" in txt
+    assert "CRAWL COVERAGE / TRUNCATION LIMITS" in txt
+    assert "app.js" in txt
+    assert "content_limit_reached" in csv
+    assert "coverage_warning" in csv
+    assert "body_truncated=True" in csv
