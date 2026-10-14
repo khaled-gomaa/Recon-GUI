@@ -2,9 +2,11 @@
 import asyncio
 import hashlib
 import threading
+from http.cookies import SimpleCookie
 from datetime import datetime, timezone
 
 import aiohttp
+from yarl import URL
 from PySide6.QtCore import QThread, Signal
 
 from crawler.engine import CrawlEngine
@@ -25,7 +27,8 @@ class CrawlWorker(QThread):
         self, url, max_depth, max_pages, concurrency=10,
         wordlist_path=None, matcher: MatcherFilter = None,
         render_javascript=False, passive_discovery=False, request_headers=None,
-        crawl_historical_urls=False,
+        crawl_historical_urls=False, subfinder_enabled=True,
+        wordlist_extensions=None, wordlist_max_words=0, wordlist_max_candidates=0,
     ):
         super().__init__()
         self.url = url
@@ -37,6 +40,10 @@ class CrawlWorker(QThread):
         self.render_javascript = bool(render_javascript)
         self.passive_discovery = bool(passive_discovery)
         self.crawl_historical_urls = bool(crawl_historical_urls)
+        self.subfinder_enabled = bool(subfinder_enabled)
+        self.wordlist_extensions = list(wordlist_extensions or [])
+        self.wordlist_max_words = max(0, int(wordlist_max_words))
+        self.wordlist_max_candidates = max(0, int(wordlist_max_candidates))
         self.request_headers = {
             str(key): str(value) for key, value in (request_headers or {}).items()
             if str(key).lower() in {"authorization", "cookie", "accept-language"}
@@ -58,7 +65,26 @@ class CrawlWorker(QThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            analyzer = ReconAnalyzer(self.url, request_headers=self.request_headers, on_log=self.log_message.emit)
+            # One in-memory cookie jar is shared across HTTP crawl passes, JS, and path checks.
+            cookie_jar = aiohttp.CookieJar()
+            raw_cookie = next(
+                (value for key, value in self.request_headers.items() if key.lower() == "cookie"), ""
+            )
+            if raw_cookie:
+                try:
+                    parsed_cookie = SimpleCookie()
+                    parsed_cookie.load(raw_cookie)
+                    cookie_jar.update_cookies(
+                        {morsel.key: morsel.value for morsel in parsed_cookie.values()},
+                        response_url=URL(self.url),
+                    )
+                except (ValueError, TypeError):
+                    self.log_message.emit("[Session] Could not parse the supplied Cookie header.")
+
+            analyzer = ReconAnalyzer(
+                self.url, request_headers=self.request_headers,
+                on_log=self.log_message.emit, cookie_jar=cookie_jar,
+            )
             engine = CrawlEngine(
                 start_url=self.url,
                 max_depth=self.max_depth,
@@ -69,6 +95,7 @@ class CrawlWorker(QThread):
                 should_stop=self._stopping,
                 request_headers=self.request_headers,
                 respect_robots=True,
+                cookie_jar=cookie_jar,
             )
             passive_results = {
                 "passive_subdomains": [], "historical_urls": [],
@@ -80,8 +107,12 @@ class CrawlWorker(QThread):
                 )
                 try:
                     from recon.passive_sources import collect_passive
-                    passive_results = collect_passive(self.url, on_log=self.log_message.emit)
+                    passive_results = collect_passive(
+                        self.url, on_log=self.log_message.emit,
+                        include_subfinder=self.subfinder_enabled,
+                    )
                     analyzer.report.subdomains.update(passive_results.get("passive_subdomains", []))
+                    analyzer.historical_url_candidates.update(passive_results.get("historical_urls", []))
                 except Exception as exc:
                     self.log_message.emit(f"[Passive] {type(exc).__name__}: {exc}")
                     passive_results["passive_errors"].append(f"{type(exc).__name__}: {exc}")
@@ -123,6 +154,8 @@ class CrawlWorker(QThread):
             _analyze_new_results()
 
             rendered_pages = 0
+            browser_network_observations = []
+            browser_cookie_observations = []
             if self.render_javascript and not self._stopping() and not engine.rate_limit_stopped:
                 from recon.browser_renderer import render_pages
                 candidates = [
@@ -137,6 +170,9 @@ class CrawlWorker(QThread):
                     rendered = loop.run_until_complete(render_pages(
                         candidates, headers=self.request_headers,
                         should_stop=self._stopping, on_log=self.log_message.emit,
+                        network_observations=browser_network_observations,
+                        cookie_observations=browser_cookie_observations,
+                        cookie_jar=cookie_jar,
                     ))
                 except RuntimeError as exc:
                     rendered = {}
@@ -165,6 +201,7 @@ class CrawlWorker(QThread):
                     analyzed_urls.discard(url)
                     route_seeds.update(parsed.get("links", []))
                     rendered_pages += 1
+                analyzer.request_observations.extend(browser_network_observations)
                 _analyze_new_results()
                 if route_seeds and not self._stopping():
                     self.log_message.emit(
@@ -220,6 +257,7 @@ class CrawlWorker(QThread):
                     )
 
             wordlist_results = []
+            wordlist_scan = {}
             wordlist_rate_limited_stop = False
             if self.wordlist_path and not self._stopping() and not engine.rate_limit_stopped:
                 from recon.wordlist_scanner import WordlistScanner
@@ -227,6 +265,10 @@ class CrawlWorker(QThread):
                 scanner = WordlistScanner(
                     base_url=self.url,
                     wordlist_path=self.wordlist_path,
+                    extensions=self.wordlist_extensions or None,
+                    max_words=self.wordlist_max_words,
+                    max_candidates=self.wordlist_max_candidates,
+                    cookie_jar=cookie_jar,
                     concurrency=1 if engine.crawl_delay_seconds > 0 else self.concurrency,
                     on_hit=lambda url, status, size: self.log_message.emit(
                         f"[HIT {status}] {url} ({size} bytes)"
@@ -239,6 +281,7 @@ class CrawlWorker(QThread):
                 )
                 analyzer.wordlist_hits = loop.run_until_complete(scanner.scan())
                 wordlist_results = scanner.responses
+                wordlist_scan = scanner.scan_metadata
                 wordlist_rate_limited_stop = scanner.rate_limit_stopped
                 if scanner.rate_limit_stopped:
                     self.log_message.emit("[Content Discovery] Stopped safely because rate limiting did not permit a compliant resume.")
@@ -270,6 +313,13 @@ class CrawlWorker(QThread):
             report["target"] = self.url
             report["pages"] = [result.to_dict() for result in all_results]
             report["wordlist_results"] = wordlist_results
+            report["wordlist_scan"] = wordlist_scan
+            report["cookie_observations"] = list({
+                (item.get("name"), item.get("domain"), item.get("path"), item.get("source", "http-response")): item
+                for page in report.get("pages", [])
+                for item in page.get("cookie_observations", [])
+            }.values())
+            report["cookie_observations"].extend(browser_cookie_observations)
             report["wordlist_rate_limited_stop"] = wordlist_rate_limited_stop
             report["crawler_rate_limited_stop"] = engine.rate_limit_stopped
             report["filtered_pages"] = [result.to_dict() for result in filtered]
