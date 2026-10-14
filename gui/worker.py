@@ -630,8 +630,11 @@ class CrawlWorker(QThread):
                 "imported_seed_urls_crawled": report.get("imported_seed_urls_crawled", 0),
                 "imported_seed_limit_reached": bool(self.seed_import_summary.get("limit_reached")),
                 "asset_probe_candidates": asset_probe_data.get("summary", {}).get("unique_same_origin_candidates", 0),
+                "asset_probe_selected": asset_probe_data.get("summary", {}).get("selected_candidates", 0),
                 "asset_probe_requests_completed": asset_probe_data.get("summary", {}).get("requests_completed", 0),
                 "asset_probe_limit_reached": asset_probe_data.get("summary", {}).get("limit_reached", False),
+                "asset_probe_rate_limited": asset_probe_data.get("summary", {}).get("rate_limited", False),
+                "asset_probe_rate_limited_stop": asset_probe_data.get("summary", {}).get("rate_limited_stop", False),
                 "asset_probe_partial": asset_probe_data.get("summary", {}).get("partial", False),
             }
             try:
