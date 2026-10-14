@@ -19,6 +19,8 @@ from gui.report_export import render_text_report, render_csv_report
 from recon.history_store import HistoryStore
 from recon.external_tools import available_tools
 from gui.tool_worker import ExternalToolWorker
+from gui.scope_worker import ScopeVerifyWorker
+from recon.scope_verifier import normalize_in_scope_hosts
 
 
 class MainWindow(QMainWindow):
@@ -29,6 +31,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1050, 700)
         self.worker = None
         self.tool_worker = None
+        self.scope_worker = None
+        self.scope_verification_by_host = {}
         self.recon_report = {}
         self.active_matcher = MatcherFilter()
         self.live_results = []
@@ -448,6 +452,46 @@ class MainWindow(QMainWindow):
         self.cookie_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.cookie_table, "Cookie Map")
 
+        # Passive discoveries are inert until the operator selects and verifies them.
+        scope_page = QWidget()
+        scope_layout = QVBoxLayout(scope_page)
+        scope_layout.setContentsMargins(8, 8, 8, 8)
+        scope_help = QLabel(
+            "Subdomains are discovery candidates, not automatic crawl targets. Select only hosts "
+            "covered by your authorization, then run DNS + one unauthenticated HTTP HEAD check. "
+            "Redirects are not followed and session cookies/tokens are not sent. Select one host "
+            "and use it as the next scan target when ready."
+        )
+        scope_help.setWordWrap(True)
+        scope_help.setObjectName("mutedText")
+        scope_layout.addWidget(scope_help)
+        scope_actions = QHBoxLayout()
+        self.verify_subdomains_btn = QPushButton("Verify selected (DNS + HTTP HEAD)")
+        self.verify_subdomains_btn.setObjectName("primaryButton")
+        self.verify_subdomains_btn.setEnabled(False)
+        self.verify_subdomains_btn.clicked.connect(self._verify_selected_subdomains)
+        self.use_subdomain_btn = QPushButton("Use selected host as target")
+        self.use_subdomain_btn.setObjectName("secondaryButton")
+        self.use_subdomain_btn.setEnabled(False)
+        self.use_subdomain_btn.clicked.connect(self._use_selected_subdomain)
+        scope_actions.addWidget(self.verify_subdomains_btn)
+        scope_actions.addWidget(self.use_subdomain_btn)
+        scope_actions.addStretch(1)
+        scope_layout.addLayout(scope_actions)
+        self.subdomain_table = QTableWidget(0, 7)
+        self.subdomain_table.setHorizontalHeaderLabels([
+            "Select", "Hostname", "Discovery source", "DNS", "Resolved IPs", "HTTP HEAD", "Probed URL",
+        ])
+        self.subdomain_table.setColumnWidth(0, 58)
+        self.subdomain_table.setColumnWidth(2, 155)
+        self.subdomain_table.setColumnWidth(3, 105)
+        self.subdomain_table.setColumnWidth(4, 220)
+        self.subdomain_table.setColumnWidth(5, 130)
+        self.subdomain_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.subdomain_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.tabs.addTab(scope_page, "Subdomains")
+        scope_layout.addWidget(self.subdomain_table, 1)
+
         self.similarity_view = QTextEdit()
         self.similarity_view.setReadOnly(True)
         self.tabs.addTab(self.similarity_view, "Similar pages")
@@ -674,7 +718,7 @@ class MainWindow(QMainWindow):
         return [
             getattr(self, name, None) for name in (
                 "table", "endpoint_table", "parameter_table", "findings_table",
-                "discovery_table", "network_table", "cookie_table", "history_table",
+                "discovery_table", "network_table", "cookie_table", "subdomain_table", "history_table",
             )
         ]
 
@@ -762,6 +806,144 @@ class MainWindow(QMainWindow):
                     item.setForeground(QBrush(QColor(foreground)))
                     item.setBackground(QBrush(QColor(background)))
             self._filter_table_row(self.findings_table, row, self.results_search.text().strip().casefold())
+
+    def _checked_subdomain_hosts(self):
+        hosts = []
+        for row in range(self.subdomain_table.rowCount()):
+            checkbox = self.subdomain_table.item(row, 0)
+            hostname = self.subdomain_table.item(row, 1)
+            if checkbox and hostname and checkbox.checkState() == Qt.CheckState.Checked:
+                hosts.append(hostname.text().strip())
+        return list(dict.fromkeys(host for host in hosts if host))
+
+    def _populate_subdomain_table(self, report: dict):
+        """List discovered hosts with source labels, but never activate them automatically."""
+        self.subdomain_table.setRowCount(0)
+        self.scope_verification_by_host = {}
+        sources_by_host = {}
+        for host in report.get("passive_subdomains", []) or []:
+            sources_by_host.setdefault(str(host).lower().rstrip("."), set()).add("Passive indexes")
+        for host in report.get("subfinder_subdomains", []) or []:
+            sources_by_host.setdefault(str(host).lower().rstrip("."), set()).add("Subfinder")
+        for host in report.get("subdomains", []) or []:
+            sources_by_host.setdefault(str(host).lower().rstrip("."), set()).add("Crawled content")
+        for hostname, sources in sorted(sources_by_host.items()):
+            if not hostname or any(char.isspace() for char in hostname):
+                continue
+            row = self.subdomain_table.rowCount()
+            self.subdomain_table.insertRow(row)
+            check_item = QTableWidgetItem()
+            check_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            check_item.setCheckState(Qt.CheckState.Unchecked)
+            self.subdomain_table.setItem(row, 0, check_item)
+            values = (hostname, ", ".join(sorted(sources)), "Not checked", "--", "Not checked", "--")
+            for offset, value in enumerate(values, start=1):
+                self.subdomain_table.setItem(row, offset, QTableWidgetItem(str(value)))
+            self._filter_table_row(self.subdomain_table, row, self.results_search.text().strip().casefold())
+        count = self.subdomain_table.rowCount()
+        self.verify_subdomains_btn.setEnabled(count > 0)
+        self.use_subdomain_btn.setEnabled(count > 0)
+        self.tabs.setTabText(self.tabs.indexOf(self.subdomain_table.parentWidget()), f"Subdomains ({count})")
+
+    def _verify_selected_subdomains(self):
+        if self.scope_worker and self.scope_worker.isRunning():
+            QMessageBox.information(self, "Verification running", "Wait for the current verification to finish.")
+            return
+        selected = self._checked_subdomain_hosts()
+        if not selected:
+            QMessageBox.information(self, "Select hosts", "Check one or more hosts in the Subdomains table first.")
+            return
+        target = str(self.recon_report.get("target") or self.url_input.text()).strip()
+        try:
+            eligible = normalize_in_scope_hosts(target, selected)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid target", str(exc))
+            return
+        eligible_set = set(eligible)
+        for hostname in selected:
+            if hostname not in eligible_set:
+                row = self._subdomain_row_for_host(hostname)
+                if row >= 0:
+                    self.subdomain_table.item(row, 3).setText("Not tested")
+                    self.subdomain_table.item(row, 5).setText("Outside inferred root")
+        if not eligible:
+            QMessageBox.warning(
+                self, "No eligible hosts",
+                "None of the selected hosts belongs to the inferred root domain. They were not probed.",
+            )
+            return
+        self.verify_subdomains_btn.setEnabled(False)
+        self.status_label.setText("VERIFYING SCOPE...")
+        self.scope_worker = ScopeVerifyWorker(target, eligible)
+        self.scope_worker.log_message.connect(self._append_log)
+        self.scope_worker.completed.connect(self._on_scope_verification_complete)
+        self.scope_worker.failed.connect(self._on_scope_verification_error)
+        self.scope_worker.start()
+
+    def _subdomain_row_for_host(self, hostname: str) -> int:
+        for row in range(self.subdomain_table.rowCount()):
+            item = self.subdomain_table.item(row, 1)
+            if item and item.text().casefold() == str(hostname).casefold():
+                return row
+        return -1
+
+    def _on_scope_verification_complete(self, result: dict):
+        for record in result.get("results", []) or []:
+            hostname = record.get("host", "")
+            row = self._subdomain_row_for_host(hostname)
+            self.scope_verification_by_host[hostname] = record
+            if row < 0:
+                continue
+            self.subdomain_table.item(row, 3).setText(
+                "Resolved" if record.get("dns_status") == "resolved" else record.get("dns_status", "unknown")
+            )
+            self.subdomain_table.item(row, 4).setText(", ".join(record.get("ip_addresses", []) or []) or "--")
+            status = record.get("http_status")
+            if status is None:
+                http_text = record.get("http_result", "not checked")
+            else:
+                http_text = f"{status} ({record.get('http_result', 'responded')})"
+            self.subdomain_table.item(row, 5).setText(http_text)
+            self.subdomain_table.item(row, 6).setText(record.get("http_url", "") or "--")
+            if record.get("error"):
+                self.subdomain_table.item(row, 5).setToolTip("Connection detail: " + record["error"])
+        note = (
+            f"Scope verification finished: {result.get('verified_count', 0)} host(s) checked; "
+            f"{result.get('skipped_count', 0)} skipped."
+        )
+        if result.get("truncated"):
+            note += " The verification cap was reached; selected hosts not listed in results remain unchecked."
+        self._append_log("[Scope] " + note)
+        self.status_label.setText("READY")
+        self.verify_subdomains_btn.setEnabled(self.subdomain_table.rowCount() > 0)
+        self._filter_result_tables(self.results_search.text())
+
+    def _on_scope_verification_error(self, message: str):
+        self._append_log("[Scope] Verification failed: " + message)
+        self.status_label.setText("READY")
+        self.verify_subdomains_btn.setEnabled(self.subdomain_table.rowCount() > 0)
+        QMessageBox.warning(self, "Verification failed", message)
+
+    def _use_selected_subdomain(self):
+        selected = self._checked_subdomain_hosts()
+        if len(selected) != 1:
+            QMessageBox.information(
+                self, "Select one host",
+                "Check exactly one hostname to make it the next scan target. No request is sent by this action.",
+            )
+            return
+        hostname = selected[0]
+        verification = self.scope_verification_by_host.get(hostname, {})
+        probed_url = str(verification.get("http_url") or "")
+        scheme = "http" if probed_url.startswith("http://") else "https"
+        self.url_input.setText(f"{scheme}://{hostname}/")
+        self.url_input.setFocus()
+        self._append_log(
+            f"[Scope] Target set to {hostname}. Start a new scan only if that host is in your authorized scope."
+        )
+        self._refresh_history_for_target()
 
     def _populate_network_cookie_tables(self, report: dict):
         """Show safe request metadata and cookie names/attributes; never expose values."""
@@ -1260,6 +1442,7 @@ class MainWindow(QMainWindow):
         self._rebuild_content_discovery_table(report.get("wordlist_results", []))
         self._populate_endpoint_parameter_findings(report)
         self._populate_network_cookie_tables(report)
+        self._populate_subdomain_table(report)
         self._render_recon(report)
         self._render_similarity(report.get("similarity", {}))
         self.export_btn.setEnabled(True)
@@ -1278,6 +1461,10 @@ class MainWindow(QMainWindow):
         self.tabs.setTabText(
             self.tabs.indexOf(self.cookie_table),
             f"Cookie Map ({len(report.get('cookie_map', []))})",
+        )
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.subdomain_table.parentWidget()),
+            f"Subdomains ({self.subdomain_table.rowCount()})",
         )
         self.tabs.setTabText(
             self.tabs.indexOf(self.parameter_table),
