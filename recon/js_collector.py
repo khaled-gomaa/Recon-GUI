@@ -16,12 +16,13 @@ MAX_JS_FILES = 200
 
 
 class JSCollector:
-    def __init__(self, base_url: str, on_log=None, request_headers=None):
+    def __init__(self, base_url: str, on_log=None, request_headers=None, cookie_jar=None):
         self.base_url = base_url
         self.base_host = (urlparse(base_url).hostname or "").lower()
         self.base_origin = self._origin(base_url)
         self.on_log = on_log or (lambda msg: None)
         self.request_headers = dict(request_headers or {})
+        self.cookie_jar = cookie_jar
         self.rate_limit_stopped = False
         self.js_urls: set = set()
         self.js_contents: dict = {}
@@ -78,7 +79,10 @@ class JSCollector:
             concurrency = 1
         timeout = aiohttp.ClientTimeout(total=15, connect=8)
         connector = aiohttp.TCPConnector(limit=concurrency, ssl=True)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        session_options = {"connector": connector}
+        if self.cookie_jar is not None:
+            session_options["cookie_jar"] = self.cookie_jar
+        async with aiohttp.ClientSession(**session_options) as session:
             while (
                 self.js_urls - self._analyzed_js_urls
                 and len(self._analyzed_js_urls) < MAX_JS_FILES
