@@ -1598,11 +1598,12 @@ class MainWindow(QMainWindow):
         depth_limited = report.get("depth_limit_reached", False)
         wordlist_limited = report.get("wordlist_candidate_limit_reached", False)
         content_limited = report.get("content_limit_reached", False)
+        recursion_depth_limited = report.get("wordlist_recursion_depth_limit_reached", False)
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
         elif crawler_limited or discovery_limited:
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
-        elif page_limited or depth_limited or wordlist_limited or content_limited:
+        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited:
             reasons = []
             if page_limited:
                 reasons.append("PAGE")
@@ -1612,6 +1613,8 @@ class MainWindow(QMainWindow):
                 reasons.append("WORDLIST")
             if content_limited:
                 reasons.append("CONTENT")
+            if recursion_depth_limited:
+                reasons.append("RECURSION")
             self.status_label.setText("PARTIAL  ·  " + "/".join(reasons) + " LIMIT")
         else:
             self.status_label.setText(f"COMPLETE  ·  {total} pages")
@@ -1806,6 +1809,7 @@ class MainWindow(QMainWindow):
             or coverage.get("depth_limit_reached")
             or coverage.get("wordlist_word_limit_reached")
             or coverage.get("wordlist_path_limit_reached")
+            or coverage.get("wordlist_recursion_depth_limit_reached")
             or content_limited
         ):
             overall = "PARTIAL — ONE OR MORE COVERAGE LIMITS REACHED"
@@ -1851,6 +1855,7 @@ class MainWindow(QMainWindow):
         lines.append(f"Recursive depth cap: {report.get('wordlist_recursion_depth', 1)}")
         lines.append(f"Recursive directory candidates: {report.get('wordlist_recursive_dirs_found', 0)}")
         lines.append(f"Recursive rounds completed: {report.get('wordlist_recursion_rounds', 0)}")
+        lines.append(f"Recursive depth cap reached: {bool(report.get('wordlist_recursion_depth_limit_reached'))}")
         lines.append("Method policy: Content Discovery sends GET only; POST/other methods appear only when observed or inferred from page/JavaScript/HAR evidence.")
         lines.append("")
 
