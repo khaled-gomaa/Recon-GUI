@@ -173,3 +173,30 @@ def test_subdomain_finder_handles_public_suffixes_without_a_fixed_list():
     finder = SubdomainFinder("www.example.co.uk")
     found = finder.find("api.example.co.uk api.other.co.uk")
     assert found == {"api.example.co.uk"}
+
+
+def test_subfinder_uses_registrable_root_when_target_is_a_subdomain(monkeypatch):
+    captured = {}
+
+    class Completed:
+        returncode = 0
+        stdout = b"api.example.com\nexample.com\nnot-example.com\n"
+        stderr = b""
+
+    monkeypatch.setattr("recon.subfinder.shutil.which", lambda _name: "/usr/bin/subfinder")
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return Completed()
+
+    monkeypatch.setattr("recon.subfinder.subprocess.run", fake_run)
+    result = discover_subdomains("https://www.example.com/")
+    assert captured["command"][-2:] == ["-d", "example.com"]
+    assert result["subfinder_subdomains"] == ["api.example.com", "example.com"]
+
+
+def test_subfinder_rejects_public_suffix_as_target_root():
+    import pytest
+
+    with pytest.raises(ValueError, match="registrable DNS domain"):
+        discover_subdomains("https://co.uk/")
