@@ -200,10 +200,10 @@ class WordlistScanner:
                     self.word_limit_reached = True
                     self._log(
                         f"[Wordlist] Explicit word limit reached ({self.max_words}); "
-                        "remaining entries were not processed. Raise the limit or set it to 0 for all words."
+                        "remaining entries were not loaded or checked. Raise the limit or set it to 0 for all words."
                     )
                     break
-                if any(part == ".." for part in word.replace("\\\\", "/").split("/")):
+                if any(part == ".." for part in word.replace("\\", "/").split("/")):
                     continue
                 if seen is not None:
                     seen.add(word)
