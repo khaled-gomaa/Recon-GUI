@@ -96,3 +96,31 @@ def test_pinned_scope_resolver_returns_only_validated_addresses():
         await resolver.close()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=3))
+
+
+def test_public_suffix_target_is_rejected_for_scope_verification():
+    import pytest
+
+    # A public suffix itself is not a registrable organization boundary.
+    with pytest.raises(ValueError, match="registrable DNS domain"):
+        normalize_in_scope_hosts("https://co.uk/", ["api.example.co.uk", "unrelated.co.uk"])
+
+
+def test_private_hosting_suffix_keeps_tenants_separate():
+    hosts = normalize_in_scope_hosts(
+        "https://myblog.blogspot.com/",
+        [
+            "api.myblog.blogspot.com",
+            "dev.api.myblog.blogspot.com",
+            "anotherblog.blogspot.com",
+            "api.blogspot.com",
+        ],
+    )
+    assert hosts == ["api.myblog.blogspot.com", "dev.api.myblog.blogspot.com"]
+
+
+def test_ip_address_is_not_a_subdomain_verification_scope():
+    import pytest
+
+    with pytest.raises(ValueError, match="registrable DNS domain"):
+        normalize_in_scope_hosts("https://192.0.2.10/", ["api.192.0.2.10"])
