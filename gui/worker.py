@@ -402,6 +402,20 @@ class CrawlWorker(QThread):
             report["wordlist_candidate_limit_reached"] = (
                 scanner.candidate_limit_reached if self.wordlist_path and "scanner" in locals() else False
             )
+            report["wordlist_max_words"] = (
+                scanner.max_words if self.wordlist_path and "scanner" in locals() else self.wordlist_max_words
+            )
+            report["wordlist_max_candidates"] = (
+                scanner.max_candidates if self.wordlist_path and "scanner" in locals() else self.wordlist_max_candidates
+            )
+            report["wordlist_limit_summary"] = {
+                "words_loaded": report["wordlist_words_loaded"],
+                "unique_candidates_generated": report["wordlist_candidates"],
+                "max_words": report["wordlist_max_words"],
+                "max_candidates": report["wordlist_max_candidates"],
+                "word_limit_reached": report["wordlist_word_limit_reached"],
+                "path_limit_reached": report["wordlist_path_limit_reached"],
+            }
             # The cookie map stores names and attributes only, never cookie values.
             cookie_map = []
             for result in all_results:
@@ -468,6 +482,10 @@ class CrawlWorker(QThread):
                 "depth_limit_reached": engine.depth_limit_reached,
                 "wordlist_words_loaded": report.get("wordlist_words_loaded", 0),
                 "wordlist_candidates": report.get("wordlist_candidates", 0),
+                "wordlist_max_words": report.get("wordlist_max_words", 0),
+                "wordlist_max_candidates": report.get("wordlist_max_candidates", 0),
+                "wordlist_word_limit_reached": report.get("wordlist_word_limit_reached", False),
+                "wordlist_path_limit_reached": report.get("wordlist_path_limit_reached", False),
                 "wordlist_limit_reached": report.get("wordlist_candidate_limit_reached", False),
                 "javascript_files_discovered": len(analyzer.js_collector.js_urls),
                 "javascript_files_attempted": len(analyzer.js_collector._analyzed_js_urls),
