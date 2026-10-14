@@ -93,7 +93,8 @@ def build_endpoint_inventory(observations, discovered_routes=None, page_urls=Non
 
 
 def build_parameter_inventory(
-    page_urls, forms, endpoint_observations, discovered_routes=None, candidate_urls=None
+    page_urls, forms, endpoint_observations, discovered_routes=None, candidate_urls=None,
+    network_observations=None,
 ):
     """Group names only; values from query strings and form inputs are never retained."""
     grouped = defaultdict(lambda: {"sources": set(), "locations": set(), "methods": set(), "occurrences": 0})
@@ -142,6 +143,15 @@ def build_parameter_inventory(
     for candidate in candidate_urls or []:
         for name in _names_from_url(str(candidate)):
             add(name, "discovered-link-query", str(candidate))
+
+    for observation in network_observations or []:
+        location = str(observation.get("page") or observation.get("url") or "")
+        method = str(observation.get("method") or "").upper()
+        source = str(observation.get("source") or "browser-network")
+        for name in observation.get("query_parameters", []) or []:
+            add(name, source + "-query", location, method)
+        for name in observation.get("body_parameters", []) or []:
+            add(name, source + "-body", location, method)
 
     result = []
     for name, item in grouped.items():
