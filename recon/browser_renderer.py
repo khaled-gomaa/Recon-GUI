@@ -278,6 +278,11 @@ async def capture_manual_session(
                         "content_type": "",
                     }
                     observations[key] = record
+                    response_key = (
+                        safe_url(request.url), str(request.method or "GET").upper(),
+                        str(request.resource_type or ""),
+                    )
+                    pending_by_key.setdefault(response_key, []).append(record)
                     notify(record)
 
                 async def on_response(response):
@@ -287,8 +292,28 @@ async def capture_manual_session(
                     key = id(request)
                     record = observations.get(key)
                     if record is None:
+                        response_key = (
+                            safe_url(request.url), str(request.method or "GET").upper(),
+                            str(request.resource_type or ""),
+                        )
+                        record = next(
+                            (candidate for candidate in pending_by_key.get(response_key, [])
+                             if candidate.get("status") is None),
+                            None,
+                        )
+                    if record is None:
                         on_request(request)
                         record = observations.get(key)
+                        if record is None:
+                            response_key = (
+                                safe_url(request.url), str(request.method or "GET").upper(),
+                                str(request.resource_type or ""),
+                            )
+                            record = next(
+                                (candidate for candidate in pending_by_key.get(response_key, [])
+                                 if candidate.get("status") is None),
+                                None,
+                            )
                     if record is None:
                         return
                     record["status"] = int(response.status)
@@ -299,6 +324,7 @@ async def capture_manual_session(
                         pass
                     notify(record)
 
+                pending_by_key = {}
                 page.on("request", on_request)
                 page.on("response", lambda response: __import__("asyncio").create_task(on_response(response)))
                 try:
