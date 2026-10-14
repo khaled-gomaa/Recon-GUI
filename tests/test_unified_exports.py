@@ -105,3 +105,37 @@ def test_exports_show_content_truncation_and_coverage_notes():
     assert "content_limit_reached" in csv
     assert "coverage_warning" in csv
     assert "body_truncated=True" in csv
+
+
+def test_exports_label_har_only_import_and_include_import_warnings():
+    report = {
+        "target": "https://example.test/",
+        "pages": [],
+        "filtered_pages": [],
+        "network_observations": [{
+            "url": "https://example.test/api/profile",
+            "method": "POST", "status": 202,
+            "source": "burp-har-import", "page": "https://example.test/settings",
+            "query_parameters": ["view"], "body_parameters": ["profileId"],
+            "resource_type": "xhr", "content_type": "application/json",
+        }],
+        "cookie_map": [{
+            "url": "https://example.test/api/profile", "name": "sid",
+            "domain": "example.test", "path": "/", "secure": True,
+            "httponly": True, "samesite": "Lax", "source": "burp-har-response",
+        }],
+        "har_import_summary": {
+            "files_imported": 1, "entries_seen": 12000, "entries_imported": 10000,
+            "unique_requests": 1, "truncated": True,
+            "warnings": ["HAR contained 12000 entries; only the first 10000 were processed."],
+        },
+    }
+    txt = render_text_report(report)
+    csv = render_csv_report(report)
+    assert "HAR metadata imported (no active scan run)" in txt
+    assert "HAR IMPORT SUMMARY" in txt
+    assert "Entries seen/imported: 12000/10000" in txt
+    assert "first 10000 were processed" in txt
+    assert "har_import_summary" in csv
+    assert "profileId" in csv
+    assert "sid" in csv
