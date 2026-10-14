@@ -162,7 +162,7 @@ async def verify_subdomains(
                     # Pin the subsequent request to the exact validated addresses to avoid
                     # a second DNS resolution changing the destination (DNS rebinding).
                     resolver.pin(host, ips)
-                except (OSError, asyncio.TimeoutError, socket.gaierror) as exc:
+                except (OSError, asyncio.TimeoutError, socket.gaierror, ValueError) as exc:
                     record["dns_status"] = "failed"
                     record["http_result"] = "not-tested"
                     record["error"] = type(exc).__name__
