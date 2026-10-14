@@ -154,6 +154,10 @@ class CrawlEngine:
         self.results: list = []
         self._schedule_lock = asyncio.Lock()
         self.rate_limit_stopped = False
+        self.page_limit_reached = False
+        self.depth_limit_reached = False
+        self._page_limit_logged = False
+        self._depth_limit_logged = False
         self._rate_limit_pauses = 0
         self._resume_event = None
         self._rate_limit_lock = None
@@ -377,7 +381,16 @@ class CrawlEngine:
             normalized = _normalize_http_url(raw_url)
             if not normalized or not self._in_scope(normalized):
                 continue
-            if normalized in self.visited or len(self.visited) >= self.max_pages:
+            if normalized in self.visited:
+                continue
+            if len(self.visited) >= self.max_pages:
+                self.page_limit_reached = True
+                if not self._page_limit_logged:
+                    self._log(
+                        f"[LIMIT] Max pages ({self.max_pages}) reached while adding seeds; "
+                        "some candidate URLs were not crawled."
+                    )
+                    self._page_limit_logged = True
                 continue
             self.visited.add(normalized)
             queue.put_nowait((normalized, depth))
@@ -425,7 +438,23 @@ class CrawlEngine:
                             await self._handle_429(result.headers, url)
                             continue
 
-                        if result.status != 200 or depth >= self.max_depth or self.should_stop() or self.rate_limit_stopped:
+                        if result.status != 200 or self.should_stop() or self.rate_limit_stopped:
+                            continue
+                        if depth >= self.max_depth:
+                            has_unvisited_in_scope_links = any(
+                                (candidate := _normalize_http_url(link))
+                                and self._in_scope(candidate)
+                                and candidate not in self.visited
+                                for link in links
+                            )
+                            if has_unvisited_in_scope_links:
+                                self.depth_limit_reached = True
+                                if not self._depth_limit_logged:
+                                    self._log(
+                                        f"[LIMIT] Max depth ({self.max_depth}) reached with additional "
+                                        "same-host links still undiscovered by crawling."
+                                    )
+                                    self._depth_limit_logged = True
                             continue
                         for link in links:
                             normalized_link = _normalize_http_url(link)
@@ -433,7 +462,16 @@ class CrawlEngine:
                                 continue
                             async with self._schedule_lock:
                                 # visited contains both queued and in-flight URLs, so the cap is reserved atomically.
-                                if normalized_link in self.visited or len(self.visited) >= self.max_pages:
+                                if normalized_link in self.visited:
+                                    continue
+                                if len(self.visited) >= self.max_pages:
+                                    self.page_limit_reached = True
+                                    if not self._page_limit_logged:
+                                        self._log(
+                                            f"[LIMIT] Max pages ({self.max_pages}) reached; further "
+                                            "same-host links were discovered but not queued."
+                                        )
+                                        self._page_limit_logged = True
                                     continue
                                 self.visited.add(normalized_link)
                                 queue.put_nowait((normalized_link, depth + 1))
@@ -452,6 +490,10 @@ class CrawlEngine:
         if self.rate_limit_stopped:
             self._log("[Crawl] Stopped early because a safe Retry-After resume was not available.")
         self._log(f"Crawl finished: {len(self.results)} page responses recorded.")
+        if self.page_limit_reached:
+            self._log("[Crawl] Result is partial because the configured page limit was reached.")
+        if self.depth_limit_reached:
+            self._log("[Crawl] Result is partial because the configured depth limit left same-host links unvisited.")
         return self.results
 
     async def _crawl_one(self, session, url, depth):
