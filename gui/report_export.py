@@ -23,6 +23,7 @@ def render_text_report(report: dict) -> str:
         f"Status: {status}",
         f"Pages crawled: {len(report.get('pages', []))}",
         f"Pages after filters: {len(report.get('filtered_pages', []))}",
+        f"Asset references found (not necessarily fetched): {len(report.get('asset_inventory', []))}",
         f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}",
         f"Content Discovery candidates generated: {report.get('wordlist_candidates', 0)}",
         f"Explicit wordlist limit reached: {report.get('wordlist_candidate_limit_reached', False)}",
@@ -70,6 +71,26 @@ def render_text_report(report: dict) -> str:
             lines.append(f"    Redirect chain: {chain}")
         if page.get("error"):
             lines.append(f"    Error: {page['error']}")
+
+    _section(lines, "Asset References (URLs from page markup; not proof that the resource exists)")
+    for item in report.get("asset_inventory", []) or []:
+        if not item.get("in_scope", False):
+            evidence = "external reference; not fetched"
+        elif item.get("fetched_by_page_crawler"):
+            evidence = "requested by page crawler"
+        elif item.get("fetched_by_js_collector"):
+            evidence = "downloaded by JavaScript collector"
+        else:
+            evidence = "reference only; not fetched"
+        lines.append(
+            f"[{item.get('kind', 'resource')}] {item.get('url', '')} | "
+            f"extension={item.get('extension', '') or '(none)'} | "
+            f"referrers={item.get('reference_count', 0)} | {evidence}"
+        )
+        if item.get("query_parameter_names"):
+            lines.append("    Query parameter names: " + ", ".join(item.get("query_parameter_names", [])))
+    if not report.get("asset_inventory"):
+        lines.append("(no static asset references found in captured page markup)")
 
     _section(lines, "Filtered Pages")
     for page in report.get("filtered_pages", []):
@@ -419,6 +440,25 @@ def render_csv_report(report: dict) -> str:
                 page.get("body_truncated", False),
             ),
         ])
+    for item in report.get("asset_inventory", []) or []:
+        if not item.get("in_scope", False):
+            fetch_evidence = "external reference; not fetched"
+        elif item.get("fetched_by_page_crawler"):
+            fetch_evidence = "requested by page crawler"
+        elif item.get("fetched_by_js_collector"):
+            fetch_evidence = "downloaded by JavaScript collector"
+        else:
+            fetch_evidence = "reference only; not fetched"
+        writer.writerow([
+            "asset_reference", item.get("url", ""), "", "",
+            "external" if not item.get("in_scope", False) else "",
+            "kind={}; extension={}; referrers={}; fetch_evidence={}; query_parameter_names={}".format(
+                item.get("kind", "resource"), item.get("extension", ""),
+                item.get("reference_count", 0), fetch_evidence,
+                ",".join(item.get("query_parameter_names", []) or []),
+            ),
+        ])
+
     for item in report.get("wordlist_results", []) or []:
         writer.writerow([
             "content_discovery", item.get("url", ""), item.get("status", ""),
