@@ -18,6 +18,8 @@ def render_text_report(report: dict) -> str:
         f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}",
         f"Content Discovery candidates generated: {report.get('wordlist_candidates', 0)}",
         f"Explicit wordlist limit reached: {report.get('wordlist_candidate_limit_reached', False)}",
+        f"Wordlist word cap: {report.get('wordlist_max_words', 0) or 'unlimited'}; reached: {report.get('wordlist_word_limit_reached', False)}",
+        f"Generated path cap: {report.get('wordlist_max_candidates', 0) or 'unlimited'}; reached: {report.get('wordlist_path_limit_reached', False)}",
         f"Content/body truncation cap reached: {report.get('content_limit_reached', False)}",
         f"Manual browser session elapsed/window: {report.get('manual_browser_seconds', 0)}/{report.get('manual_browser_window_seconds', 0)} seconds",
         f"Filter: {report.get('matcher_description', '(no filters)')}",
@@ -102,6 +104,16 @@ def render_text_report(report: dict) -> str:
             lines.append(f"{label}: {coverage.get(key, 0)}")
         lines.append(f"Page limit reached: {coverage.get('page_limit_reached', False)}")
         lines.append(f"Depth limit reached: {coverage.get('depth_limit_reached', False)}")
+        lines.append(
+            f"Wordlist words: {coverage.get('wordlist_words_loaded', 0)} / "
+            f"cap {coverage.get('wordlist_max_words', 0) or 'unlimited'}; "
+            f"word cap reached: {coverage.get('wordlist_word_limit_reached', False)}"
+        )
+        lines.append(
+            f"Generated paths: {coverage.get('wordlist_candidates', 0)} / "
+            f"cap {coverage.get('wordlist_max_candidates', 0) or 'unlimited'}; "
+            f"path cap reached: {coverage.get('wordlist_path_limit_reached', False)}"
+        )
         lines.append(f"Wordlist limit reached: {coverage.get('wordlist_limit_reached', False)}")
         lines.append(f"Content limit reached: {coverage.get('content_limit_reached', False)}")
     for note in report.get("content_limit_notes", []) or []:
