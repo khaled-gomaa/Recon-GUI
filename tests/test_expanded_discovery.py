@@ -200,3 +200,118 @@ def test_subfinder_rejects_public_suffix_as_target_root():
 
     with pytest.raises(ValueError, match="registrable DNS domain"):
         discover_subdomains("https://co.uk/")
+
+
+def test_recursive_content_discovery_tries_wordlist_under_detected_directory(tmp_path):
+    async def scenario():
+        requested = []
+
+        async def handler(request):
+            requested.append(request.path)
+            if "this-path-should-not-exist-recon-baseline" in request.path:
+                return web.Response(status=404, text="missing")
+            if request.path == "/admin":
+                return web.Response(
+                    status=200,
+                    text="<html><title>Admin</title>" + ("admin panel content " * 40) + "</html>",
+                    content_type="text/html",
+                )
+            if request.path == "/admin/users":
+                return web.Response(
+                    status=200,
+                    text="<html><title>Users</title>" + ("users section " * 40) + "</html>",
+                    content_type="text/html",
+                )
+            return web.Response(status=404, text="missing")
+
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            path = tmp_path / "paths.txt"
+            path.write_text("admin\nusers\n", encoding="utf-8")
+
+            scanner = WordlistScanner(
+                f"http://127.0.0.1:{port}/", str(path),
+                extensions=[""], concurrency=1, delay_ms=0,
+                recursive=True, recursion_depth=1,
+            )
+            await asyncio.wait_for(scanner.scan(), timeout=5)
+
+            assert "/admin" in requested
+            assert "/admin/users" in requested
+            assert scanner.recursion_rounds == 1
+            assert scanner.recursive_dirs_found >= 1
+            assert scanner.candidate_count == 4
+            assert scanner.path_limit_reached is False
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=8))
+
+
+def test_recursive_content_discovery_respects_one_global_path_cap(tmp_path):
+    async def scenario():
+        requested = []
+
+        async def handler(request):
+            requested.append(request.path)
+            if "this-path-should-not-exist-recon-baseline" in request.path:
+                return web.Response(status=404, text="missing")
+            if request.path == "/admin":
+                return web.Response(
+                    status=200,
+                    text="<html>" + ("admin area " * 40) + "</html>",
+                    content_type="text/html",
+                )
+            return web.Response(status=404, text="missing")
+
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            path = tmp_path / "paths.txt"
+            path.write_text("admin\nusers\nextra\n", encoding="utf-8")
+
+            scanner = WordlistScanner(
+                f"http://127.0.0.1:{port}/", str(path),
+                extensions=[""], concurrency=1, delay_ms=0,
+                recursive=True, recursion_depth=2, max_candidates=3,
+            )
+            await asyncio.wait_for(scanner.scan(), timeout=5)
+
+            assert scanner.candidate_count == 3
+            assert scanner.path_limit_reached is True
+            assert len(set(requested) - {
+                "/this-path-should-not-exist-recon-baseline-74c31"
+            }) <= 3
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=8))
+
+
+def test_recursive_directory_classifier_rejects_external_redirects_and_files():
+    scanner = WordlistScanner(
+        "https://example.test/", "unused.txt", extensions=[""], recursive=True
+    )
+    assert scanner._recursive_directory_prefix({
+        "url": "https://example.test/redirect",
+        "final_url": "https://example.test/redirect",
+        "location": "https://outside.invalid/path/",
+        "status": 302, "content_type": "", "potential_hit": True,
+    }) == ""
+    assert scanner._recursive_directory_prefix({
+        "url": "https://example.test/app.js",
+        "final_url": "https://example.test/app.js",
+        "location": "", "status": 200, "content_type": "text/html",
+        "potential_hit": True,
+    }) == ""
