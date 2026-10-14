@@ -230,7 +230,7 @@ class CrawlWorker(QThread):
                     item.url for item in engine.results
                     if item.status == 200 and item.html
                     and ("html" in (item.content_type or "").lower() or not item.content_type)
-                ][:30]
+                ]
                 self.log_message.emit(
                     f"[Browser] Optional JavaScript rendering enabled for {len(candidates)} pages."
                 )
@@ -239,6 +239,7 @@ class CrawlWorker(QThread):
                         candidates, headers=self.request_headers,
                         should_stop=self._stopping, on_log=self.log_message.emit,
                         on_network_event=analyzer.record_network_observation,
+                        max_pages=self.max_pages,
                     ))
                 except RuntimeError as exc:
                     rendered = {}
@@ -291,12 +292,18 @@ class CrawlWorker(QThread):
                     self.log_message.emit(f"[Favicon] Error: {exc}")
 
             if not self._stopping() and not engine.rate_limit_stopped:
-                # Two bounded passes let routes found in external JS enter the page table,
-                # while page limits and exact-host scope remain enforced by CrawlEngine.
-                for discovery_round in range(2):
+                # Iterate until the JS queue and route queue stop producing new crawl pages.
+                # The crawler's configured page cap, stop event, exact-host scope and 429
+                # gate remain the hard boundaries; no fixed two-round truncation.
+                discovery_round = 0
+                while (
+                    not self._stopping()
+                    and not engine.rate_limit_stopped
+                    and not analyzer.js_collector.rate_limit_stopped
+                ):
+                    discovery_round += 1
                     self.log_message.emit(
-                        f"[JS] Downloading/analyzing same-host JavaScript "
-                        f"(route pass {discovery_round + 1}/2)..."
+                        f"[JS] Downloading/analyzing same-host JavaScript (discovery round {discovery_round})..."
                     )
                     analyzer.finalize_js(loop, should_stop=self._stopping, delay_seconds=engine.crawl_delay_seconds)
                     if self._stopping() or analyzer.js_collector.rate_limit_stopped or not analyzer.js_collector.route_urls:
@@ -313,13 +320,6 @@ class CrawlWorker(QThread):
                     _analyze_new_results()
                     if len(engine.results) == before_count:
                         break
-
-                # Analyze any JS assets discovered on the final extra batch without
-                # adding an unbounded third route crawl.
-                if not self._stopping() and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped:
-                    analyzer.finalize_js(
-                        loop, should_stop=self._stopping, delay_seconds=engine.crawl_delay_seconds
-                    )
 
             wordlist_results = []
             wordlist_rate_limited_stop = False
