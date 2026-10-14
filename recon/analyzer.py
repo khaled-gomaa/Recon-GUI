@@ -11,6 +11,14 @@ from recon.js_collector import JSCollector
 from recon.parameter_intelligence import (
     build_endpoint_inventory, build_parameter_inventory, _normalize_endpoint,
 )
+from urllib.parse import parse_qsl, urlsplit
+
+
+def _names_from_observation(value):
+    try:
+        return [name for name, _ in parse_qsl(urlsplit(str(value or "")).query, keep_blank_values=True) if name]
+    except ValueError:
+        return []
 
 
 @dataclass
@@ -22,14 +30,16 @@ class ReconReport:
 
 
 class ReconAnalyzer:
-    def __init__(self, base_domain: str, request_headers: dict | None = None, on_log=None):
+    def __init__(self, base_domain: str, request_headers: dict | None = None, on_log=None, cookie_jar=None):
         parsed_host = urlparse(base_domain).hostname
         host = (parsed_host or base_domain).lower()
         self.base_host = host
         self.base_url = base_domain if "://" in base_domain else "https://" + base_domain
         self.subdomain_finder = SubdomainFinder(host)
         self.report = ReconReport()
-        self.js_collector = JSCollector(base_domain, on_log=on_log, request_headers=request_headers)
+        self.js_collector = JSCollector(
+            base_domain, on_log=on_log, request_headers=request_headers, cookie_jar=cookie_jar
+        )
         self.request_headers = dict(request_headers or {})
         self.wordlist_hits: list = []
         self.favicon_hash: str = ""
@@ -43,6 +53,8 @@ class ReconAnalyzer:
         # Reported endpoint paths remove query strings and their potentially sensitive values.
         self.endpoint_observations: list[dict] = []
         self._observation_keys: set[tuple] = set()
+        self.request_observations: list[dict] = []
+        self.historical_url_candidates: set[str] = set()
 
     def _record_endpoint(self, endpoint: str, source: str, location: str):
         endpoint = str(endpoint or "").strip()
@@ -135,11 +147,15 @@ class ReconAnalyzer:
             self.endpoint_observations,
             discovered_routes=self.js_collector.route_urls,
             page_urls=self.page_urls,
+            forms=forms,
+            request_observations=self.request_observations,
         )
         parameters = build_parameter_inventory(
             self.page_urls, forms, self.endpoint_observations,
             discovered_routes=self.js_collector.route_urls,
             candidate_urls=self.discovered_links,
+            request_observations=self.request_observations,
+            historical_urls=self.historical_url_candidates,
         )
         # Never expose parameter values extracted from endpoint/query strings.
         safe_routes = sorted({_normalize_endpoint(route) for route in self.js_collector.route_urls if _normalize_endpoint(route)})
@@ -152,6 +168,15 @@ class ReconAnalyzer:
             "endpoint_inventory": endpoint_inventory,
             "endpoint_observations_count": len(self.endpoint_observations),
             "discovered_link_count": len(self.discovered_links),
+            "network_observations": [
+                {
+                    **{key: value for key, value in item.items() if key != "url"},
+                    "url": _normalize_endpoint(str(item.get("url") or "")),
+                    "query_parameter_names": sorted(set(_names_from_observation(item.get("url")))),
+                    "parameter_names": sorted(set(str(name) for name in item.get("parameter_names", []) if str(name).strip())),
+                }
+                for item in self.request_observations
+            ],
             "parameters": parameters,
             "parameter_count": len(parameters),
             "header_audits": [
