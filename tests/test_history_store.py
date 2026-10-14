@@ -53,6 +53,29 @@ def test_scan_history_persists_reports_and_compares_previous_pages(tmp_path):
     assert saved["history_diff"]["changed_count"] == 1
 
 
+def test_page_limited_scan_does_not_infer_removed_pages_endpoints_or_parameters(tmp_path):
+    store = HistoryStore(tmp_path / "history.sqlite3")
+    store.save_report({
+        "target": "https://capped.example/",
+        "pages": [_page("https://capped.example/a"), _page("https://capped.example/b")],
+        "endpoint_inventory": [{"endpoint": "/api/a", "sources": ["javascript"]}],
+        "parameters": [{"name": "tenant", "sources": ["query"]}],
+    })
+    partial = store.save_report({
+        "target": "https://capped.example/",
+        "pages": [_page("https://capped.example/a")],
+        "endpoint_inventory": [],
+        "parameters": [],
+        "page_limit_reached": True,
+    })
+    diff = partial["history_diff"]
+    assert partial["status"] == "partial"
+    assert diff["comparison_status"].startswith("partial")
+    assert diff["removed_urls"] == []
+    assert diff["removed_endpoints"] == []
+    assert diff["removed_parameters"] == []
+
+
 def test_partial_scan_does_not_infer_removed_pages_endpoints_or_parameters(tmp_path):
     store = HistoryStore(tmp_path / "history.sqlite3")
     store.save_report({
