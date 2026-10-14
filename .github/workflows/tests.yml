@@ -21,7 +21,7 @@ jobs:
           cache: pip
       - name: Install test dependencies
         timeout-minutes: 3
-        run: python -m pip install --disable-pip-version-check aiohttp beautifulsoup4 lxml pytest pytest-timeout requests mmh3
+        run: python -m pip install --disable-pip-version-check aiohttp beautifulsoup4 lxml pytest pytest-timeout requests mmh3 tldextract
       - name: Check Python syntax
         timeout-minutes: 1
         run: python -m compileall -q crawler recon gui main.py
