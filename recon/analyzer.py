@@ -240,6 +240,10 @@ class ReconAnalyzer:
                 for audit in self.report.header_audits
             ],
             "js_files": sorted(self.js_collector.js_urls),
+            "truncated_js_files": sorted({
+                _normalize_endpoint(url) for url in self.js_collector.truncated_js_files
+                if _normalize_endpoint(url)
+            }),
             "source_maps": sorted(self.js_collector.source_maps),
             "discovered_routes": safe_routes,
             "inline_script_count": len(self.js_collector.inline_scripts),
