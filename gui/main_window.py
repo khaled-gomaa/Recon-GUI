@@ -200,6 +200,39 @@ class MainWindow(QMainWindow):
         cap_hint.setObjectName("mutedText")
         grid.addWidget(cap_hint, 4, 4, 1, 4)
 
+        self.recursive_content_check = QCheckBox("Recursive directory discovery")
+        self.recursive_content_check.setChecked(False)
+        self.recursive_content_check.setEnabled(False)
+        self.recursive_content_check.setToolTip(
+            "Optional dirsearch-style recursion: when a path looks like an HTML directory, "
+            "reuse the same wordlist beneath it. Recursion is bounded by depth and the same global path cap."
+        )
+        recursion_depth_label = QLabel("Recursion depth")
+        recursion_depth_label.setObjectName("fieldLabel")
+        self.recursion_depth_spin = QSpinBox()
+        self.recursion_depth_spin.setRange(1, 5)
+        self.recursion_depth_spin.setValue(2)
+        self.recursion_depth_spin.setEnabled(False)
+        self.recursion_depth_spin.setToolTip(
+            "Maximum extra directory-discovery rounds (1–5). The same path cap applies across all rounds."
+        )
+        self.recursion_depth_spin.setMinimumHeight(29)
+        self.recursion_depth_spin.setMaximumHeight(33)
+        recursion_hint = QLabel("Off by default; GET only; obeys the same rate limits.")
+        recursion_hint.setObjectName("mutedText")
+        grid.addWidget(self.recursive_content_check, 5, 0, 1, 2)
+        grid.addWidget(recursion_depth_label, 5, 2)
+        grid.addWidget(self.recursion_depth_spin, 5, 3)
+        grid.addWidget(recursion_hint, 5, 4, 1, 4)
+        self.content_discovery_check.toggled.connect(self.recursive_content_check.setEnabled)
+        self.content_discovery_check.toggled.connect(
+            lambda enabled: self.recursive_content_check.setChecked(False) if not enabled else None
+        )
+        self.recursive_content_check.toggled.connect(self.recursion_depth_spin.setEnabled)
+        self.recursive_content_check.toggled.connect(
+            lambda enabled: self.content_discovery_check.setChecked(True) if enabled else None
+        )
+
         for column, stretch in ((1, 2), (3, 1), (5, 1), (6, 1), (7, 0)):
             grid.setColumnStretch(column, stretch)
         root.addWidget(settings)
@@ -1309,6 +1342,8 @@ class MainWindow(QMainWindow):
             manual_browser_duration=self.manual_browser_duration_spin.value(),
             wordlist_max_words=self.word_cap_spin.value(),
             wordlist_max_candidates=self.candidate_cap_spin.value(),
+            recursive_content_discovery=self.recursive_content_check.isChecked(),
+            content_recursion_depth=self.recursion_depth_spin.value(),
         )
         self.worker.log_message.connect(self._append_log)
         self.worker.page_crawled.connect(self._on_page_crawled)
@@ -1812,6 +1847,10 @@ class MainWindow(QMainWindow):
         lines.append(f"Word cap reached: {bool(report.get('wordlist_word_limit_reached'))}")
         lines.append(f"Path cap reached: {bool(report.get('wordlist_path_limit_reached'))}")
         lines.append(f"Wordlist stopped by HTTP 429: {wordlist_limited}")
+        lines.append(f"Recursive directory discovery enabled: {bool(report.get('wordlist_recursive_enabled'))}")
+        lines.append(f"Recursive depth cap: {report.get('wordlist_recursion_depth', 1)}")
+        lines.append(f"Recursive directory candidates: {report.get('wordlist_recursive_dirs_found', 0)}")
+        lines.append(f"Recursive rounds completed: {report.get('wordlist_recursion_rounds', 0)}")
         lines.append("Method policy: Content Discovery sends GET only; POST/other methods appear only when observed or inferred from page/JavaScript/HAR evidence.")
         lines.append("")
 
