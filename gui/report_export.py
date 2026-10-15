@@ -13,7 +13,7 @@ def render_text_report(report: dict) -> str:
     status = (
         "HAR metadata imported (no active scan run)" if import_only else
         "Stopped by user" if report.get("stopped_by_user") else
-        "Partial (rate limited)" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") or (report.get("asset_probe_summary", {}) or {}).get("rate_limited_stop") else
+        "Partial (rate limited)" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") or report.get("css_rate_limited_stop") or (report.get("asset_probe_summary", {}) or {}).get("rate_limited_stop") else
         "Partial (page/depth/wordlist/content cap)" if report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") or (report.get("seed_import_summary", {}) or {}).get("limit_reached") or (report.get("asset_probe_summary", {}) or {}).get("partial") else
         "Completed"
     )
@@ -40,6 +40,10 @@ def render_text_report(report: dict) -> str:
         "Crawler rate limit: " + (
             "stopped safely" if report.get("crawler_rate_limited_stop")
             else "not triggered / resumed after Retry-After"
+        ),
+        "CSS discovery rate limit: " + (
+            "stopped safely; subsequent active phases skipped" if report.get("css_rate_limited_stop")
+            else "not triggered / phase completed or was skipped"
         ),
         "Content Discovery rate limit: " + (
             "stopped safely" if report.get("wordlist_rate_limited_stop")
@@ -90,7 +94,23 @@ def render_text_report(report: dict) -> str:
         ):
             lines.append(f"{label}: {probe_summary.get(key, False if 'reached' in label.lower() or 'limited' in label.lower() or 'coverage' in label.lower() else 0)}")
 
-    _section(lines, "Asset References (URLs from page markup; not proof that the resource exists)")
+    css_summary = report.get("css_discovery_summary", {}) or {}
+    _section(lines, "CSS / Nested Asset Discovery")
+    lines.append(f"Status: {css_summary.get('status', 'not run')}")
+    lines.append(
+        f"Stylesheets discovered / attempted / fetched: "
+        f"{css_summary.get('css_files_discovered', 0)} / "
+        f"{css_summary.get('css_files_attempted', 0)} / "
+        f"{css_summary.get('css_files_fetched', 0)}"
+    )
+    lines.append(f"Rate-limited stop: {bool(report.get('css_rate_limited_stop'))}")
+    lines.append(f"Truncated stylesheets: {len(css_summary.get('css_files_truncated', []) or [])}")
+    for item in css_summary.get("css_file_errors", []) or []:
+        lines.append(f"CSS warning: {item.get('status', '')} {item.get('url', '')} {item.get('error', '')}".strip())
+    for url in css_summary.get("css_files_truncated", []) or []:
+        lines.append(f"TRUNCATED CSS: {url}")
+
+    _section(lines, "Asset References (URLs from page markup or CSS; not proof that the resource exists)")
     for item in report.get("asset_inventory", []) or []:
         if not item.get("in_scope", False):
             evidence = "external reference; not fetched"
@@ -98,6 +118,8 @@ def render_text_report(report: dict) -> str:
             evidence = "requested by page crawler"
         elif item.get("fetched_by_js_collector"):
             evidence = "downloaded by JavaScript collector"
+        elif item.get("fetched_by_css_collector"):
+            evidence = "downloaded by CSS collector"
         else:
             evidence = "reference only; not fetched"
         if item.get("probe_checked"):
