@@ -332,3 +332,33 @@ def test_transport_errors_make_history_partial_and_suppress_removal_diffs(tmp_pa
     assert partial["history_diff"]["removed_urls"] == []
     assert partial["history_diff"]["removed_endpoints"] == []
     assert partial["history_diff"]["removed_parameters"] == []
+
+
+def test_javascript_fetch_failures_make_scan_partial(tmp_path):
+    store = HistoryStore(tmp_path / "history.sqlite3")
+    store.save_report({
+        "target": "https://js-errors.example/",
+        "pages": [_page("https://js-errors.example/")],
+        "endpoint_inventory": [{"endpoint": "/api/old", "sources": ["javascript"]}],
+        "parameters": [{"name": "id", "sources": ["query"]}],
+    })
+    partial = store.save_report({
+        "target": "https://js-errors.example/",
+        "pages": [_page("https://js-errors.example/")],
+        "endpoint_inventory": [],
+        "parameters": [],
+        "js_fetch_error_count": 1,
+        "js_fetch_errors": [{
+            "url": "https://js-errors.example/app.js",
+            "status": 404,
+            "error_type": "HTTP 404; response not analyzed",
+        }],
+    })
+    status = next(
+        row["status"] for row in store.recent_scans("https://js-errors.example/")
+        if row["scan_id"] == partial["scan_id"]
+    )
+    assert status == "partial"
+    assert partial["history_diff"]["comparison_status"].startswith("partial")
+    assert partial["history_diff"]["removed_urls"] == []
+    assert partial["history_diff"]["removed_endpoints"] == []
