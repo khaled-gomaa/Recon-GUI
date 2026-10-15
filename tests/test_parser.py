@@ -133,3 +133,50 @@ def test_parser_extracts_static_assets_and_download_references_separately():
     assert urls["https://cdn.example-cdn.test/public/remote.svg"] == "image"
     # Static resources remain separate from page-navigation candidates.
     assert "https://example.test/assets/app.js" not in parsed["links"]
+
+
+def test_parser_discovers_social_metadata_and_jsonld_routes():
+    html = """
+    <html><head>
+      <meta property="og:url" content="/products/widget">
+      <meta name="twitter:url" content="https://example.com/articles/launch">
+      <meta property="og:image" content="/images/preview.png">
+      <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {"@type": "WebPage", "@id": "https://example.com/catalog?page=2", "url": "/catalog"},
+          {"@type": "Product", "url": "https://example.com/products/sku-1",
+           "image": "https://example.com/images/product.jpg",
+           "sameAs": ["https://other.example/social-profile"]}
+        ]
+      }
+      </script>
+    </head><body><p>metadata-only routes</p></body></html>
+    """
+    result = PageParser("https://example.com/").parse(
+        html, "https://example.com/no-links"
+    )
+    links = set(result["links"])
+    assert "https://example.com/products/widget" in links
+    assert "https://example.com/articles/launch" in links
+    assert "https://example.com/catalog" in links
+    assert "https://example.com/catalog?page=2" in links
+    assert "https://example.com/products/sku-1" in links
+    # Assets remain in the asset inventory and do not become page-navigation routes.
+    assert "https://example.com/images/preview.png" not in links
+    assert "https://example.com/images/product.jpg" not in links
+
+
+def test_jsonld_route_extraction_is_bounded_and_ignores_non_url_fields():
+    document = {
+        "@graph": [
+            {"@type": "Thing", "name": "This is a title", "url": "/one"},
+            {"@type": "Thing", "description": "/not-a-route", "@id": "/two"},
+            {"@type": "Thing", "image": "/image.png"},
+        ]
+    }
+    assert PageParser._jsonld_url_candidates(document) == ["/one", "/two"]
+    assert PageParser._jsonld_url_candidates({"url": ["", "/one", "/two"]}) == [
+        "/one", "/two"
+    ]
