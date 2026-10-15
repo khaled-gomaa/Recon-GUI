@@ -227,6 +227,7 @@ def render_text_report(report: dict) -> str:
         ("JavaScript Files", "js_files"),
         ("Source Maps", "source_maps"),
         ("Truncated JavaScript Files", "truncated_js_files"),
+        ("Discovered JavaScript Not Attempted", "unattempted_js_files"),
     ):
         _section(lines, title)
         values = report.get(key, [])
