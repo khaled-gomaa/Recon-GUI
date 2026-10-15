@@ -9,7 +9,7 @@ import asyncio
 import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
 import aiohttp
 
@@ -42,6 +42,13 @@ def _origin(url: str):
 def _safe_url(url: str) -> str:
     parsed = urlsplit(url or "")
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", "", ""))
+
+
+def _query_parameter_names(url: str) -> list[str]:
+    try:
+        return sorted({name for name, _value in parse_qsl(urlsplit(url).query, keep_blank_values=True) if name})
+    except ValueError:
+        return []
 
 
 def _extension(url: str) -> str:
@@ -138,6 +145,7 @@ class CSSCollector:
             "extension": _extension(absolute),
             "referrer": _safe_url(referrer),
             "source": "css-import" if imported else "css-source-map" if source_map else "css-url",
+            "query_parameter_names": _query_parameter_names(absolute),
             "in_scope": _origin(absolute) == self.target_origin,
         }
         self.assets[(safe, kind)] = record
@@ -190,6 +198,7 @@ class CSSCollector:
                 "extension": _extension(absolute),
                 "referrer": _safe_url(css_url),
                 "source": "css-import" if imported else "css-source-map" if source_map else "css-url",
+                "query_parameter_names": _query_parameter_names(absolute),
                 "in_scope": _origin(absolute) == _origin(css_url),
             })
         return records
@@ -245,10 +254,11 @@ class CSSCollector:
                             if wait is None or wait > MAX_RETRY_AFTER_SECONDS or self.retry_after_pauses >= MAX_RATE_LIMIT_PAUSES:
                                 self.rate_limit_stopped = True
                                 self.errors.append({"url": _safe_url(url), "error": "rate-limited-stop"})
-                                self._log(f"[CSS] {url} returned HTTP 429; stopping CSS discovery rather than bypassing the limit.")
+                                self._log(f"[CSS] {_safe_url(url)} returned HTTP 429; stopping CSS discovery rather than bypassing the limit.")
                                 break
                             self.retry_after_pauses += 1
-                            self._log(f"[CSS] HTTP 429; waiting {wait:.1f}s per Retry-After ({self.retry_after_pauses}/{MAX_RATE_LIMIT_PAUSES}).")
+                            self.attempted_urls.discard(url)  # retry after honoring the server's requested wait
+                            self._log(f"[CSS] HTTP 429; waiting {wait:.1f}s per Retry-After ({self.retry_after_pauses}/{MAX_RATE_LIMIT_PAUSES}): {_safe_url(url)}")
                             await asyncio.sleep(wait)
                             continue
                         if response.status != 200:
@@ -266,7 +276,7 @@ class CSSCollector:
                         css = body.decode(response.charset or "utf-8", errors="replace")
                 except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError, ValueError) as exc:
                     self.errors.append({"url": _safe_url(url), "error": type(exc).__name__})
-                    self._log(f"[CSS] Could not read {url}: {type(exc).__name__}")
+                    self._log(f"[CSS] Could not read {_safe_url(url)}: {type(exc).__name__}")
                     continue
 
                 self.fetched_contents[url] = css
@@ -275,7 +285,7 @@ class CSSCollector:
                     self.assets[(item["url"], item["kind"])] = item
                     if item["kind"] == "stylesheet" and item["in_scope"]:
                         self.css_urls.add(item["request_url"])
-                self._log(f"[CSS] Analyzed {url}; found {len(discovered)} references.")
+                self._log(f"[CSS] Analyzed {_safe_url(url)}; found {len(discovered)} references.")
 
         return self.to_dict()
 
