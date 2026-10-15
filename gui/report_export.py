@@ -258,9 +258,14 @@ def render_text_report(report: dict) -> str:
     if not endpoint_inventory:
         lines.append("(none found)")
     for item in endpoint_inventory:
+        evidence = "; ".join(
+            f"{entry.get('method', '')}: {', '.join(entry.get('evidence', []) or [])} "
+            f"[{', '.join(entry.get('sources', []) or [])}]"
+            for entry in (item.get("method_evidence", []) or [])
+        ) or "no method evidence"
         lines.append(
             f"{item.get('endpoint', '')} | methods={', '.join(item.get('methods', []))} | "
-            f"sources={', '.join(item.get('sources', []))} | "
+            f"method_evidence={evidence} | sources={', '.join(item.get('sources', []))} | "
             f"parameters={', '.join(item.get('parameters', []))} | "
             f"locations={item.get('location_count', 0)}"
         )
@@ -595,6 +600,7 @@ def render_csv_report(report: dict) -> str:
             "endpoint", item.get("endpoint", ""), "", "", "",
             json.dumps({
                 "methods": item.get("methods", []),
+                "method_evidence": item.get("method_evidence", []),
                 "sources": item.get("sources", []),
                 "parameters": item.get("parameters", []),
                 "locations": item.get("locations", []),
