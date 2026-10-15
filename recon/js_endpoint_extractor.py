@@ -1,6 +1,6 @@
 """Extract API endpoints and likely client-side routes from JavaScript."""
 import re
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit, urldefrag
 
 ENDPOINT_PATTERNS = [
     re.compile(r"""["'](/api/[a-zA-Z0-9_\-/{}.:]+)["']"""),
@@ -20,9 +20,76 @@ STATIC_SUFFIXES = (
     ".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg",
     ".ico", ".webp", ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3",
 )
+JS_ASSET_SUFFIXES = (
+    ".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    ".webp", ".avif", ".bmp", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp4",
+    ".webm", ".mov", ".mp3", ".wav", ".ogg", ".m4a", ".pdf", ".doc", ".docx",
+    ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".json", ".xml", ".txt", ".yaml",
+    ".yml", ".webmanifest", ".wasm", ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz",
+    ".sql", ".db", ".sqlite", ".bak", ".old", ".orig", ".backup", ".conf", ".config",
+    ".ini", ".env", ".log",
+)
+QUOTED_LITERAL_RE = re.compile(r"""(?P<quote>['\"])(?P<value>[^'\"\\r\\n]{1,700})(?P=quote)""")
+SOURCE_MAP_RE = re.compile(r"""sourceMappingURL\\s*=\\s*['\"]?([^\\s*'\"<>]+)""", re.I)
 
 
 class JSEndpointExtractor:
+    @staticmethod
+    def extract_asset_references(content: str, base_url: str) -> list:
+        """Find quoted static asset/file URLs in HTML or JavaScript without fetching them.
+
+        Query values stay in memory for the HTTP request phase only; the analyzer strips them
+        from stored asset URLs and persists only parameter names.
+        """
+        text = str(content or "")
+        candidates = [match.group("value").strip() for match in QUOTED_LITERAL_RE.finditer(text)]
+        candidates.extend(match.group(1).strip() for match in SOURCE_MAP_RE.finditer(text))
+        found = {}
+        for value in candidates:
+            if not value or value.lower().startswith(("javascript:", "data:", "blob:", "mailto:", "tel:", "#")):
+                continue
+            try:
+                absolute = urljoin(base_url, value)
+                absolute, _fragment = urldefrag(absolute)
+                parsed = urlparse(absolute)
+                if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+                    continue
+                if parsed.username or parsed.password:
+                    continue
+                _ = parsed.port
+                if not parsed.path.lower().endswith(JS_ASSET_SUFFIXES):
+                    continue
+                extension = next(
+                    (suffix for suffix in sorted(JS_ASSET_SUFFIXES, key=len, reverse=True)
+                     if parsed.path.lower().endswith(suffix)),
+                    "",
+                )
+                if extension in {".js", ".mjs"}:
+                    kind = "javascript"
+                elif extension == ".css":
+                    kind = "stylesheet"
+                elif extension == ".map":
+                    kind = "source-map"
+                elif extension in {".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif", ".bmp"}:
+                    kind = "image"
+                elif extension in {".woff", ".woff2", ".ttf", ".otf", ".eot"}:
+                    kind = "font"
+                elif extension in {".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg", ".m4a"}:
+                    kind = "media"
+                elif extension in {".json", ".xml", ".txt", ".yaml", ".yml", ".webmanifest", ".wasm", ".csv"}:
+                    kind = "data"
+                else:
+                    kind = "download"
+                safe_url = urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", "", ""))
+                key = (safe_url, kind)
+                found.setdefault(key, {
+                    "url": absolute, "kind": kind, "extension": extension,
+                    "source": "javascript-static-reference",
+                })
+            except (TypeError, ValueError, UnicodeError):
+                continue
+        return [found[key] for key in sorted(found, key=lambda value: (value[0].casefold(), value[1]))]
+
     @staticmethod
     def extract(js_content: str) -> set:
         endpoints = set()
