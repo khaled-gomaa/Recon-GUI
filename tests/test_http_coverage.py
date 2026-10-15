@@ -71,4 +71,5 @@ def test_text_and_csv_exports_disclose_incomplete_http_coverage():
     assert "HTTP 503" in txt
     assert "request_failure" in csv
     assert "http_server_error" in csv
-    assert '"partial"' in csv
+    assert "coverage_summary" in csv
+    assert ",partial," in csv
