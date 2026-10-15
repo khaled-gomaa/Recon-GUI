@@ -257,6 +257,8 @@ class HistoryStore:
                 or (report.get("css_discovery_summary", {}) or {}).get("css_limit_reached")
                 or (report.get("seed_import_summary", {}) or {}).get("limit_reached")
                 or (report.get("asset_probe_summary", {}) or {}).get("partial")
+                or report.get("transport_error_count")
+                or report.get("server_error_response_count")
             ) else
             "completed"
         )
