@@ -14,6 +14,7 @@ def render_text_report(report: dict) -> str:
         report.get("crawler_rate_limited_stop")
         or report.get("wordlist_rate_limited_stop")
         or report.get("css_rate_limited_stop")
+        or report.get("js_rate_limited_stop")
         or (report.get("asset_probe_summary", {}) or {}).get("rate_limited_stop")
     )
     has_coverage_cap = bool(
@@ -27,13 +28,15 @@ def render_text_report(report: dict) -> str:
         or (report.get("asset_probe_summary", {}) or {}).get("partial")
     )
     has_http_errors = bool(
-        report.get("transport_error_count") or report.get("server_error_response_count")
+        report.get("transport_error_count")
+        or report.get("server_error_response_count")
+        or report.get("js_fetch_error_count")
     )
     status = (
         "HAR metadata imported (no active scan run)" if import_only else
         "Stopped by user" if report.get("stopped_by_user") else
         "Partial (rate limited)" if has_rate_limit else
-        "Partial (request/server errors)" if has_http_errors else
+        "Partial (request/server errors or incomplete JavaScript)" if has_http_errors else
         "Partial (page/depth/wordlist/content cap)" if has_coverage_cap else
         "Completed (no known caps or request errors)"
     )
@@ -47,6 +50,8 @@ def render_text_report(report: dict) -> str:
         f"Asset HEAD checks: {(report.get('asset_probe_summary', {}) or {}).get('requests_completed', 0)}; failed={(report.get('asset_probe_summary', {}) or {}).get('request_failures', 0)}; enabled={(report.get('asset_probe_summary', {}) or {}).get('enabled', False)}; partial={(report.get('asset_probe_summary', {}) or {}).get('partial', False)}",
         f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}",
         f"Content Discovery candidates generated: {report.get('wordlist_candidates', 0)}",
+        f"JavaScript fetch failures: {report.get('js_fetch_error_count', 0)}",
+        f"JavaScript rate-limited stop: {report.get('js_rate_limited_stop', False)}",
         f"HTTP status counts: {report.get('http_status_counts', {})}",
         f"Transport/request errors: {report.get('transport_error_count', 0)}",
         f"HTTP 5xx responses: {report.get('server_error_response_count', 0)}",
@@ -234,6 +239,7 @@ def render_text_report(report: dict) -> str:
             ("Maximum depth", "max_depth"), ("JS files discovered", "javascript_files_discovered"),
             ("JS files attempted", "javascript_files_attempted"),
             ("JS files truncated", "javascript_files_truncated"),
+            ("JS files failed/inaccessible", "javascript_files_failed"),
             ("Response bodies truncated", "response_bodies_truncated"),
         ):
             lines.append(f"{label}: {coverage.get(key, 0)}")
@@ -593,6 +599,11 @@ def render_csv_report(report: dict) -> str:
             "request_failure", item.get("url", ""), "", item.get("phase", ""),
             "error", item.get("error_type", "No HTTP response"),
         ])
+    for item in report.get("js_fetch_errors", []) or []:
+        writer.writerow([
+            "javascript_fetch_failure", item.get("url", ""), item.get("status", ""),
+            "javascript", "partial", item.get("error_type", "not analyzed"),
+        ])
     for item in report.get("server_error_responses", []) or []:
         writer.writerow([
             "http_server_error", item.get("url", ""), item.get("status", ""),
@@ -609,6 +620,7 @@ def render_csv_report(report: dict) -> str:
             "coverage_summary", "", "", "",
             "partial" if (
                 report.get("transport_error_count") or report.get("server_error_response_count")
+                or report.get("js_fetch_error_count") or report.get("js_rate_limited_stop")
                 or report.get("content_limit_reached") or report.get("page_limit_reached")
                 or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached")
             ) else "no-limit-reported",
