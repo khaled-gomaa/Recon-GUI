@@ -408,3 +408,23 @@ def test_analyzer_records_inline_script_file_sources_and_query_names_only():
     assert icon["query_parameter_names"] == ["build"]
     assert config["query_parameter_names"] == ["token"]
     assert "secret-token-value" not in repr(assets)
+
+
+def test_static_javascript_infers_methods_from_template_literal_urls():
+    code = """
+    fetch(`/api/users/${user.id}?page=${page}`, {
+      method: "POST", body: JSON.stringify({query: q, limit: 20})
+    });
+    axios.put(`/api/items/${itemId}`, {name: label});
+    const xhr = new XMLHttpRequest();
+    xhr.open("PATCH", `/api/items/${itemId}/status`);
+    """
+    found = JSEndpointExtractor.extract_request_observations(code)
+    by_url_method = {(item["endpoint"], item["method"]): item for item in found}
+
+    fetch = by_url_method[("/api/users/{id}?page={page}", "POST")]
+    assert fetch["source"] == "javascript-fetch-template"
+    assert "query" in fetch["body_parameters"]
+    assert "limit" in fetch["body_parameters"]
+    assert ("/api/items/{itemId}", "PUT") in by_url_method
+    assert ("/api/items/{itemId}/status", "PATCH") in by_url_method
