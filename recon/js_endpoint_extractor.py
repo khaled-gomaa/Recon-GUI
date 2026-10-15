@@ -29,8 +29,8 @@ JS_ASSET_SUFFIXES = (
     ".sql", ".db", ".sqlite", ".bak", ".old", ".orig", ".backup", ".conf", ".config",
     ".ini", ".env", ".log",
 )
-QUOTED_LITERAL_RE = re.compile(r"""(?P<quote>['\"])(?P<value>[^'\"\\r\\n]{1,700})(?P=quote)""")
-SOURCE_MAP_RE = re.compile(r"""sourceMappingURL\\s*=\\s*['\"]?([^\\s*'\"<>]+)""", re.I)
+QUOTED_LITERAL_RE = re.compile(r"""(?P<quote>['"])(?P<value>[^'"\r\n]{1,700})(?P=quote)""")
+SOURCE_MAP_RE = re.compile(r"""sourceMappingURL\s*=\s*['"]?([^\s*'"<>]+)""", re.I)
 
 
 class JSEndpointExtractor:
