@@ -683,3 +683,289 @@ def render_csv_report(report: dict) -> str:
             "missing=" + ", ".join(audit.get("missing", []) or []),
         ])
     return output.getvalue()
+
+
+def _export_value(value) -> str:
+    """Convert report values to readable text without expanding request bodies or secrets."""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(_export_value(item) for item in value)
+    return str(value)
+
+
+def _endpoint_method_evidence(item: dict) -> str:
+    records = item.get("method_evidence", []) or []
+    if not records:
+        methods = item.get("methods", []) or []
+        return "; ".join(f"{method}: evidence unavailable" for method in methods) or "No method evidence"
+    return "; ".join(
+        f"{record.get('method', 'UNKNOWN')}: {', '.join(record.get('evidence', []) or [])}"
+        f" [{', '.join(record.get('sources', []) or [])}]"
+        for record in records
+    )
+
+
+def _report_sections(report: dict):
+    """Create stable tables shared by Markdown and standalone HTML exports."""
+    report = report or {}
+    pages = report.get("pages", []) or []
+    endpoints = report.get("endpoint_inventory", []) or []
+    parameters = report.get("parameters", []) or []
+    network = report.get("network_observations", []) or []
+    cookies = report.get("cookie_map", []) or []
+    assets = report.get("asset_inventory", []) or []
+    discovery = report.get("wordlist_results", []) or []
+    coverage = report.get("coverage_summary", {}) or {}
+    text_report = render_text_report(report)
+    status = next(
+        (line.split("Status:", 1)[1].strip() for line in text_report.splitlines() if line.startswith("Status:")),
+        "See coverage summary",
+    )
+
+    overview = [
+        ("Target", report.get("target", "")),
+        ("Status", status),
+        ("Started at", report.get("started_at", "")),
+        ("Pages crawled", len(pages)),
+        ("Endpoint count", len(endpoints)),
+        ("Parameter-name count", len(parameters)),
+        ("Network request records", len(network)),
+        ("Cookie metadata records", len(cookies)),
+        ("Asset references", len(assets)),
+        ("Content Discovery responses", len(discovery)),
+    ]
+    sections = [("Scan Overview", ["Field", "Value"], overview)]
+    if coverage:
+        sections.append((
+            "Coverage and Limits", ["Metric", "Value"],
+            [(key, value) for key, value in sorted(coverage.items())],
+        ))
+
+    sections.append((
+        "Pages", ["URL", "Status", "Title", "Content type", "Words", "Bytes", "Depth", "Body truncated"],
+        [(
+            item.get("url", ""), item.get("status", ""), item.get("title", ""),
+            item.get("content_type", ""), item.get("word_count", 0),
+            item.get("content_length", 0), item.get("depth", 0), item.get("body_truncated", False),
+        ) for item in pages],
+    ))
+    sections.append((
+        "Endpoint Inventory", ["Endpoint", "Methods", "Method evidence", "Sources", "Parameter names", "Locations"],
+        [(
+            item.get("endpoint", ""), item.get("methods", []), _endpoint_method_evidence(item),
+            item.get("sources", []), item.get("parameters", []), item.get("locations", []),
+        ) for item in endpoints],
+    ))
+    sections.append((
+        "Parameter Inventory", ["Name", "Classification", "Methods", "Sources", "Occurrences", "Locations"],
+        [(
+            item.get("name", ""), item.get("classification", ""), item.get("methods", []),
+            item.get("sources", []), item.get("occurrences", 0), item.get("locations", []),
+        ) for item in parameters],
+    ))
+    sections.append((
+        "Network Requests (metadata only)",
+        ["URL (query values removed)", "Method", "Status", "Resource type", "Query names", "Body names", "Source", "Initiating page"],
+        [(
+            item.get("url", ""), item.get("method", ""), item.get("status", ""),
+            item.get("resource_type", ""), item.get("query_parameters", []),
+            item.get("body_parameters", []), item.get("source", ""), item.get("page", ""),
+        ) for item in network],
+    ))
+    sections.append((
+        "Cookie Map (names and attributes only)",
+        ["URL", "Cookie name", "Domain", "Path", "Secure", "HttpOnly", "SameSite", "Source"],
+        [(
+            item.get("url", ""), item.get("name", ""), item.get("domain", ""), item.get("path", "/"),
+            item.get("secure", False), item.get("httponly", item.get("httpOnly", False)),
+            item.get("samesite", item.get("sameSite", "")), item.get("source", ""),
+        ) for item in cookies],
+    ))
+    sections.append((
+        "Asset References",
+        ["URL (query values removed)", "Kind", "Extension", "Sources", "Referrers", "In scope", "Fetched evidence", "HEAD status", "HEAD result"],
+        [(
+            item.get("url", ""), item.get("kind", ""), item.get("extension", ""), item.get("sources", []),
+            item.get("referrers", []), item.get("in_scope", False),
+            (
+                "page crawler" if item.get("fetched_by_page_crawler") else
+                "JS collector" if item.get("fetched_by_js_collector") else
+                "CSS collector" if item.get("fetched_by_css_collector") else "reference only"
+            ),
+            item.get("probe_status", "") if item.get("probe_checked") else "not checked",
+            item.get("probe_result", ""),
+        ) for item in assets],
+    ))
+    sections.append((
+        "Content Discovery (GET only)",
+        ["URL", "Status", "Bytes", "Words", "Content type", "Potential hit", "Wildcard match", "Response truncated"],
+        [(
+            item.get("url", ""), item.get("status", ""), item.get("size", ""),
+            item.get("word_count", ""), item.get("content_type", ""),
+            item.get("potential_hit", False), item.get("baseline_match", False),
+            item.get("response_truncated", False),
+        ) for item in discovery],
+    ))
+    forms = report.get("forms", []) or []
+    sections.append((
+        "HTML Forms (not submitted)", ["Page", "Method", "Action", "Field names", "Possible CSRF field"],
+        [(
+            item.get("page", ""), item.get("method", "GET"), item.get("action", ""),
+            [field.get("name", "") for field in item.get("fields", []) or []],
+            item.get("csrf_field_present", False),
+        ) for item in forms],
+    ))
+    findings = report.get("related_findings", []) or []
+    sections.append((
+        "Correlated Review Findings",
+        ["Severity", "Title", "Category", "Confidence", "Evidence", "Recommendation"],
+        [(
+            item.get("severity", "info"), item.get("title", ""), item.get("category", ""),
+            item.get("confidence", ""), item.get("evidence", []), item.get("recommendation", ""),
+        ) for item in findings],
+    ))
+    subdomains = sorted(set(report.get("subdomains", []) or []) | set(report.get("passive_subdomains", []) or []))
+    sections.append(("Discovered Subdomains", ["Hostname"], [(value,) for value in subdomains]))
+    sections.append(("Historical URL Candidates", ["URL"], [(value,) for value in report.get("historical_urls", []) or []]))
+    passive_sources = report.get("passive_sources", []) or []
+    sections.append((
+        "Passive Source Status", ["Source", "Status", "Count"],
+        [(item.get("name", ""), item.get("status", ""), item.get("count", 0)) for item in passive_sources],
+    ))
+    verification = report.get("subdomain_verification", {}) or {}
+    if verification:
+        sections.append((
+            "Selected Subdomain Verification", ["Hostname", "DNS status", "HTTP status", "Result", "Error"],
+            [(
+                item.get("host", ""), item.get("dns_status", ""), item.get("http_status", ""),
+                item.get("http_result", ""), item.get("error", ""),
+            ) for item in verification.get("results", []) or []],
+        ))
+    notes = list(report.get("content_limit_notes", []) or [])
+    notes.extend(report.get("passive_errors", []) or [])
+    notes.extend(report.get("css_discovery_errors", []) or [])
+    seed_summary = report.get("seed_import_summary", {}) or {}
+    if seed_summary:
+        notes.extend(seed_summary.get("warnings", []) or [])
+    har_summary = report.get("har_import_summary", {}) or {}
+    if har_summary:
+        notes.extend(har_summary.get("warnings", []) or [])
+    sections.append(("Coverage and Import Warnings", ["Warning / Note"], [(str(note),) for note in notes]))
+
+    history = report.get("history_diff", {}) or {}
+    history_rows = []
+    for key, label in (
+        ("added_urls", "Added page"), ("removed_urls", "Removed page"), ("changed_urls", "Changed page"),
+        ("added_endpoints", "Added endpoint"), ("removed_endpoints", "Removed endpoint"), ("changed_endpoints", "Changed endpoint"),
+        ("added_parameters", "Added parameter"), ("removed_parameters", "Removed parameter"), ("changed_parameters", "Changed parameter"),
+        ("added_assets", "Added asset"), ("removed_assets", "Removed asset"), ("changed_assets", "Changed asset"),
+    ):
+        history_rows.extend((label, item) for item in history.get(key, []) or [])
+    sections.append(("History Changes", ["Change type", "Item"], history_rows))
+    return sections
+
+
+def render_markdown_report(report: dict) -> str:
+    """Render a standalone Markdown report containing the unified recon inventories."""
+    import html
+
+    report = report or {}
+    text_report = render_text_report(report)
+    status = next(
+        (line.split("Status:", 1)[1].strip() for line in text_report.splitlines() if line.startswith("Status:")),
+        "See coverage summary",
+    )
+
+    def cell(value):
+        text = _export_value(value).replace("\r", " ").replace("\n", " ")
+        text = html.escape(text, quote=False)
+        return text.replace("|", r"\|")
+
+    lines = [
+        "# Recon-GUI Reconnaissance Report",
+        "",
+        f"- Target: {cell(report.get('target', '(not recorded)'))}",
+        f"- Status: {cell(status)}",
+        f"- Started at: {cell(report.get('started_at', '(not recorded)'))}",
+        "",
+        "> The coverage summary documents configured limits and known gaps. An unreported gap does not prove 100% coverage.",
+        "",
+    ]
+    for title, headers, rows in _report_sections(report):
+        lines.extend(("", f"## {title}", ""))
+        if not rows:
+            lines.extend(["(none found)", ""])
+            continue
+        lines.append("| " + " | ".join(cell(header) for header in headers) + " |")
+        lines.append("| " + " | ".join("---" for _ in headers) + " |")
+        for row in rows:
+            values = list(row)
+            if len(values) < len(headers):
+                values.extend([""] * (len(headers) - len(values)))
+            lines.append("| " + " | ".join(cell(value) for value in values[:len(headers)]) + " |")
+        lines.append("")
+    lines.extend(("", "## Data handling", "",
+                  "Request and response bodies, query values, and cookie/token values are not intentionally included in the request and cookie inventories. Review exported URLs and findings before sharing.",
+                  ""))
+    return "\n".join(lines)
+
+
+def render_html_report(report: dict) -> str:
+    """Render a self-contained HTML report; every dynamic value is HTML-escaped."""
+    import html
+
+    report = report or {}
+    text_report = render_text_report(report)
+    status = next(
+        (line.split("Status:", 1)[1].strip() for line in text_report.splitlines() if line.startswith("Status:")),
+        "See coverage summary",
+    )
+
+    def escape(value):
+        return html.escape(_export_value(value), quote=True)
+
+    sections_html = []
+    for title, headers, rows in _report_sections(report):
+        head = "".join(f"<th scope=\"col\">{escape(header)}</th>" for header in headers)
+        if rows:
+            body_rows = []
+            for row in rows:
+                values = list(row)
+                if len(values) < len(headers):
+                    values.extend([""] * (len(headers) - len(values)))
+                cells = "".join(f"<td>{escape(value)}</td>" for value in values[:len(headers)])
+                body_rows.append(f"<tr>{cells}</tr>")
+            body = "".join(body_rows)
+        else:
+            body = f"<tr><td colspan=\"{len(headers)}\" class=\"empty\">(none found)</td></tr>"
+        sections_html.append(
+            f"<section><h2>{escape(title)}</h2><div class=\"table-wrap\"><table>"
+            f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div></section>"
+        )
+    title = "Recon-GUI Reconnaissance Report"
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        f"<title>{escape(title)}</title><style>"
+        ":root{color-scheme:light;--ink:#172b4d;--muted:#52627a;--line:#d8e0eb;--paper:#f4f7fb;--white:#fff;}"
+        "*{box-sizing:border-box}body{margin:0;background:var(--paper);color:#1e293b;font:14px/1.5 Segoe UI,Arial,sans-serif}"
+        "header{background:var(--ink);color:#fff;padding:28px max(20px,calc((100vw - 1400px)/2))}"
+        "header h1{margin:0 0 8px;font-size:25px}header p{margin:4px 0;color:#d6e2f3;overflow-wrap:anywhere}"
+        "main{max-width:1400px;margin:auto;padding:20px}section{margin:20px 0;background:var(--white);border:1px solid var(--line);border-radius:10px;overflow:hidden}"
+        "h2{font-size:18px;margin:0;padding:14px 16px;color:var(--ink);border-bottom:1px solid var(--line)}"
+        ".table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:12px}th,td{padding:9px 11px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere;min-width:90px;max-width:520px}"
+        "th{position:sticky;top:0;background:#edf2f8;color:var(--ink)}tr:last-child td{border-bottom:0}.empty{color:var(--muted);font-style:italic}"
+        "footer{max-width:1400px;margin:auto;padding:0 20px 28px;color:var(--muted);font-size:12px}.pill{display:inline-block;border:1px solid #c9d5e5;border-radius:20px;padding:2px 9px;background:#fff;color:var(--ink)}"
+        "@media print{body{background:#fff}section{break-inside:avoid}header{background:#fff;color:#111;border-bottom:2px solid #333;padding:16px}header p{color:#333}main{padding:0}section{border-color:#888}h2{color:#111}}"
+        "</style></head><body>"
+        f"<header><h1>{escape(title)}</h1><p>Target: {escape(report.get('target', '(not recorded)'))}</p>"
+        f"<p>Status: <span class=\"pill\">{escape(status)}</span></p>"
+        f"<p>Started: {escape(report.get('started_at', '(not recorded)'))}</p></header>"
+        f"<main>{''.join(sections_html)}</main>"
+        "<footer>Coverage limits are shown explicitly; a clean report does not prove full coverage. "
+        "Review URLs and findings before sharing. Request bodies and cookie/token values are not intentionally included in the inventories.</footer>"
+        "</body></html>"
+    )
