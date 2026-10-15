@@ -44,3 +44,38 @@ def test_endpoint_inventory_merges_sources_and_strips_query_values():
     assert item["parameters"] == ["id"]
     assert "123" not in repr(inventory)
     assert "456" not in repr(inventory)
+
+
+def test_endpoint_inventory_distinguishes_runtime_observation_from_static_method_inference():
+    inventory = build_endpoint_inventory([
+        {
+            "endpoint": "https://example.com/api/users?tenant=private",
+            "source": "javascript-fetch",
+            "location": "https://example.com/app.js",
+            "method": "POST",
+            "body_parameters": ["userId"],
+        },
+        {
+            "endpoint": "https://example.com/api/users?tenant=another-private-value",
+            "source": "manual-browser",
+            "location": "https://example.com/settings",
+            "method": "GET",
+            "query_parameters": ["tenant"],
+        },
+        {
+            "endpoint": "https://example.com/api/users",
+            "source": "burp-har-import",
+            "location": "https://example.com/profile",
+            "method": "PATCH",
+        },
+    ])
+    assert len(inventory) == 1
+    record = inventory[0]
+    assert record["methods"] == ["GET", "PATCH", "POST"]
+    by_method = {item["method"]: item for item in record["method_evidence"]}
+    assert by_method["GET"]["evidence"] == ["runtime-observed"]
+    assert by_method["PATCH"]["evidence"] == ["runtime-observed"]
+    assert by_method["POST"]["evidence"] == ["static-js-inference"]
+    assert by_method["POST"]["sources"] == ["javascript-fetch"]
+    serialized = repr(record)
+    assert "private" not in serialized
