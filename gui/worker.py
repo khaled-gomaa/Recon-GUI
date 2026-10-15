@@ -407,6 +407,7 @@ class CrawlWorker(QThread):
                                 "url": item.get("request_url") or item.get("url", ""),
                                 "kind": item.get("kind", "css-resource"),
                                 "extension": item.get("extension", ""),
+                                "source": item.get("source", "css-reference"),
                             },
                         )
                     if css_collector.css_urls:
