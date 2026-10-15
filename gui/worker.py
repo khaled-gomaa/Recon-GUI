@@ -686,8 +686,19 @@ class CrawlWorker(QThread):
                 body_truncated_pages or truncated_js_files or truncated_wordlist_urls or truncated_css_urls
             )
             report["content_limit_notes"] = content_limit_notes
+            from recon.http_coverage import summarize_http_outcomes
+            http_outcomes = summarize_http_outcomes(
+                report.get("pages", []),
+                wordlist_results,
+                asset_probe_data.get("results", []),
+            )
+            report.update(http_outcomes)
             report["coverage_summary"] = {
                 "pages_crawled": len(all_results),
+                "http_status_counts": report.get("http_status_counts", {}),
+                "transport_error_count": report.get("transport_error_count", 0),
+                "server_error_response_count": report.get("server_error_response_count", 0),
+                "restricted_response_count": report.get("restricted_response_count", 0),
                 "page_cap": self.max_pages,
                 "max_depth": self.max_depth,
                 "page_limit_reached": engine.page_limit_reached,
