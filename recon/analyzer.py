@@ -49,6 +49,8 @@ class ReconAnalyzer:
         self.network_observations: dict[tuple, dict] = {}
         self.asset_observations: dict[tuple, dict] = {}
         self._asset_observation_keys: set[tuple] = set()
+        self.css_files_fetched: set[str] = set()
+        self.css_files_truncated: set[str] = set()
 
     def _record_endpoint(
         self, endpoint: str, source: str, location: str, method=None,
@@ -289,6 +291,7 @@ class ReconAnalyzer:
                     "fetched_by_js_collector": item["url"] in {
                         _normalize_endpoint(js_url) for js_url in self.js_collector.js_contents
                     },
+                    "fetched_by_css_collector": item["url"] in self.css_files_fetched,
                 }
                 for _key, item in sorted(
                     self.asset_observations.items(), key=lambda pair: (pair[0][0].casefold(), pair[0][1])
