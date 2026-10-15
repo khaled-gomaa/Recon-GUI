@@ -258,8 +258,11 @@ def test_content_discovery_keeps_failed_request_as_an_explicit_result(tmp_path, 
     monkeypatch.setattr(aiohttp.ClientSession, "get", selective_failure)
 
     async def scenario():
+        async def missing(_request):
+            return web.Response(status=404, text="missing")
+
         app = web.Application()
-        app.router.add_get("/{name:.*}", lambda _request: web.Response(status=404, text="missing"))
+        app.router.add_get("/{name:.*}", missing)
         runner = web.AppRunner(app)
         await runner.setup()
         try:
