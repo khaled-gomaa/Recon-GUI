@@ -263,3 +263,38 @@ def test_scan_history_tracks_asset_additions_removals_and_probe_changes(tmp_path
     assert first["history_diff"]["added_asset_count"] == 2
     latest_summary = store.recent_scans("https://asset-history.example/")[0]
     assert latest_summary["added_asset_count"] == 1
+
+
+def test_partial_css_discovery_does_not_infer_removed_history(tmp_path):
+    store = HistoryStore(tmp_path / "history.sqlite3")
+    store.save_report({
+        "target": "https://css-gap.example/",
+        "pages": [
+            _page("https://css-gap.example/a"),
+            _page("https://css-gap.example/b"),
+        ],
+        "endpoint_inventory": [{"endpoint": "/api/old", "sources": ["javascript"]}],
+        "parameters": [{"name": "id", "sources": ["query"]}],
+    })
+    partial = store.save_report({
+        "target": "https://css-gap.example/",
+        "pages": [_page("https://css-gap.example/a")],
+        "endpoint_inventory": [],
+        "parameters": [],
+        "css_discovery_summary": {
+            "status": "partial",
+            "css_files_discovered": 3,
+            "css_files_attempted": 3,
+            "css_files_fetched": 2,
+            "css_file_errors": [{"url": "https://css-gap.example/site.css", "status": 403, "error": "http-error"}],
+        },
+    })
+    status = next(
+        row["status"] for row in store.recent_scans("https://css-gap.example/")
+        if row["scan_id"] == partial["scan_id"]
+    )
+    assert status == "partial"
+    assert partial["history_diff"]["comparison_status"].startswith("partial")
+    assert partial["history_diff"]["removed_urls"] == []
+    assert partial["history_diff"]["removed_endpoints"] == []
+    assert partial["history_diff"]["removed_parameters"] == []
