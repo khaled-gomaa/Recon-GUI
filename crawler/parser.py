@@ -1,4 +1,5 @@
 """Parse HTML and discover ordinary, hidden, and client-side routes."""
+import json
 import re
 from bs4 import BeautifulSoup, Comment
 from urllib.parse import urljoin, urlparse, urldefrag
@@ -13,6 +14,20 @@ STATIC_SUFFIXES = (
     ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
     ".webp", ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3",
 )
+DOWNLOAD_SUFFIXES = (
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".zip",
+    ".7z", ".rar", ".tar", ".gz", ".tgz", ".sql", ".db", ".sqlite", ".bak",
+    ".old", ".orig", ".backup", ".conf", ".config", ".env", ".log", ".wasm",
+)
+SRCSET_RE = re.compile(r"""(?:^|,)\s*([^,\s]+)""")
+CSS_URL_RE = re.compile(r"""url\(\s*['"]?([^'")\s]+)""", re.IGNORECASE)
+JSONLD_URL_KEYS = {
+    "@id", "url", "mainentityofpage", "ispartof", "haspart", "relatedlink",
+    "significantlink", "sameas", "contenturl", "embedurl", "subjectof",
+}
+MAX_JSONLD_SCRIPTS = 100
+MAX_JSONLD_SCRIPT_CHARS = 1_000_000
+MAX_JSONLD_URLS_PER_PAGE = 500
 
 
 class PageParser:
@@ -44,6 +59,7 @@ class PageParser:
             "raw_html": html or "",
             "text": soup.get_text(separator=" ", strip=True),
             "scripts": self._extract_script_srcs(soup, document_base),
+            "assets": self._extract_asset_references(soup, document_base),
             "hidden_routes": sorted(self._resolve_candidates(inline_routes, document_base)),
         }
 
@@ -114,7 +130,10 @@ class PageParser:
         # Canonical/alternate links can reveal public routes; ignore stylesheet links.
         for tag in soup.find_all("link", href=True):
             rel = {str(value).lower() for value in (tag.get("rel") or [])}
-            if rel.intersection({"canonical", "alternate"}):
+            if rel.intersection({
+                "canonical", "alternate", "next", "prev", "first", "last",
+                "up", "contents", "index", "chapter", "section", "related", "search",
+            }):
                 candidate = self._candidate_url(tag["href"], current_url)
                 if candidate:
                     links.add(candidate)
@@ -132,6 +151,36 @@ class PageParser:
                     candidate = self._candidate_url(route, current_url)
                     if candidate:
                         links.add(candidate)
+
+        # Social/meta canonical hints may survive even when a body has no ordinary links.
+        for tag in soup.find_all("meta", attrs={"content": True}):
+            key = str(tag.get("property") or tag.get("name") or tag.get("itemprop") or "").strip().lower()
+            if key not in {"og:url", "twitter:url", "url"}:
+                continue
+            candidate = self._candidate_url(tag.get("content", ""), current_url)
+            if candidate:
+                links.add(candidate)
+
+        # Structured data can expose pages that are not linked in visible navigation.
+        # Only URL-like fields are considered, with strict per-page parsing limits.
+        jsonld_count = 0
+        for script in soup.find_all("script", attrs={"type": re.compile(r"application/ld\+json", re.I)})[:MAX_JSONLD_SCRIPTS]:
+            text = script.string or script.get_text() or ""
+            if not text.strip() or len(text) > MAX_JSONLD_SCRIPT_CHARS:
+                continue
+            try:
+                data = json.loads(text)
+            except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
+                continue
+            for value in self._jsonld_url_candidates(data):
+                candidate = self._candidate_url(value, current_url)
+                if candidate:
+                    links.add(candidate)
+                    jsonld_count += 1
+                    if jsonld_count >= MAX_JSONLD_URLS_PER_PAGE:
+                        break
+            if jsonld_count >= MAX_JSONLD_URLS_PER_PAGE:
+                break
 
         # HTML meta refresh is a navigation just like an anchor.
         for tag in soup.find_all("meta", attrs={"http-equiv": re.compile("^refresh$", re.I)}):
@@ -175,6 +224,159 @@ class PageParser:
                     links.add(candidate)
 
         return sorted(links)
+
+    @staticmethod
+    def _jsonld_url_candidates(document):
+        """Yield URL-like fields from JSON-LD without treating labels/images as pages."""
+        found = set()
+        visited = 0
+
+        def visit(value, depth=0):
+            nonlocal visited
+            if depth > 20 or visited >= MAX_JSONLD_URLS_PER_PAGE * 20:
+                return
+            visited += 1
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    normalized_key = str(key).strip().lower()
+                    if normalized_key in JSONLD_URL_KEYS:
+                        if isinstance(child, str) and child.strip():
+                            found.add(child.strip())
+                        elif isinstance(child, list):
+                            for item in child:
+                                if isinstance(item, str) and item.strip():
+                                    found.add(item.strip())
+                                elif isinstance(item, (dict, list)):
+                                    visit(item, depth + 1)
+                        elif isinstance(child, dict):
+                            visit(child, depth + 1)
+                    if isinstance(child, (dict, list)):
+                        visit(child, depth + 1)
+                    if len(found) >= MAX_JSONLD_URLS_PER_PAGE:
+                        return
+            elif isinstance(value, list):
+                for child in value:
+                    if isinstance(child, (dict, list)):
+                        visit(child, depth + 1)
+                    if len(found) >= MAX_JSONLD_URLS_PER_PAGE:
+                        return
+
+        visit(document)
+        return sorted(found)[:MAX_JSONLD_URLS_PER_PAGE]
+
+    @staticmethod
+    def _resource_candidate_url(value: str, current_url: str):
+        """Resolve an HTTP resource URL without dropping static-file extensions."""
+        value = (value or "").strip()
+        if not value or value.lower().startswith(
+            ("#", "mailto:", "tel:", "javascript:", "data:", "blob:")
+        ):
+            return None
+        try:
+            absolute, _ = urldefrag(urljoin(current_url, value))
+            parsed = urlparse(absolute)
+            if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+                return None
+            _ = parsed.port
+            if parsed.username or parsed.password:
+                return None
+            return absolute
+        except (TypeError, ValueError, UnicodeError):
+            return None
+
+    def _extract_asset_references(self, soup: BeautifulSoup, current_url: str) -> list:
+        """Inventory static resources without queuing them as crawl pages."""
+        assets = {}
+
+        def add(value, hinted_kind="resource"):
+            url = self._resource_candidate_url(value, current_url)
+            if not url:
+                return
+            parsed = urlparse(url)
+            path = parsed.path.lower()
+            # Avoid platform-specific path rules and ignore query strings.
+            leaf = path.rsplit("/", 1)[-1]
+            extension = "." + leaf.rsplit(".", 1)[-1] if "." in leaf else ""
+            kind = hinted_kind
+            if extension in {".js", ".mjs"}:
+                kind = "javascript"
+            elif extension == ".css":
+                kind = "stylesheet"
+            elif extension in {".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif", ".bmp"}:
+                kind = "image"
+            elif extension in {".woff", ".woff2", ".ttf", ".otf", ".eot"}:
+                kind = "font"
+            elif extension in {".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg", ".m4a"}:
+                kind = "media"
+            elif extension in DOWNLOAD_SUFFIXES:
+                kind = "download"
+            key = (url, kind)
+            assets[key] = {"url": url, "kind": kind, "extension": extension}
+
+        attributes = (
+            ("img", "src", "image"), ("img", "data-src", "image"),
+            ("input", "src", "image"), ("video", "src", "media"),
+            ("video", "poster", "image"), ("audio", "src", "media"),
+            ("source", "src", "media"), ("track", "src", "media"),
+            ("script", "src", "javascript"), ("object", "data", "download"),
+            ("embed", "src", "download"), ("image", "href", "image"),
+            ("image", "xlink:href", "image"),
+        )
+        for tag_name, attribute, kind in attributes:
+            for tag in soup.find_all(tag_name, attrs={attribute: True}):
+                add(tag.get(attribute, ""), kind)
+
+        for tag_name in ("img", "source"):
+            for tag in soup.find_all(tag_name, attrs={"srcset": True}):
+                for match in SRCSET_RE.finditer(tag.get("srcset", "")):
+                    add(match.group(1), "image" if tag_name == "img" else "media")
+            for tag in soup.find_all(tag_name, attrs={"data-srcset": True}):
+                for match in SRCSET_RE.finditer(tag.get("data-srcset", "")):
+                    add(match.group(1), "image" if tag_name == "img" else "media")
+
+        for tag in soup.find_all("link", href=True):
+            rel = {str(value).lower() for value in (tag.get("rel") or [])}
+            as_type = str(tag.get("as") or "").lower()
+            if rel.intersection({
+                "stylesheet", "icon", "apple-touch-icon", "manifest", "preload",
+                "prefetch", "modulepreload", "mask-icon",
+            }) or urlparse(tag.get("href", "")).path.lower().endswith(STATIC_SUFFIXES + DOWNLOAD_SUFFIXES):
+                hint = {
+                    "style": "stylesheet", "script": "javascript", "image": "image",
+                    "font": "font", "video": "media", "audio": "media", "document": "download",
+                }.get(as_type, "stylesheet" if "stylesheet" in rel else "resource")
+                add(tag["href"], hint)
+
+        # Social/schema metadata can reference assets that are never present in visible markup.
+        meta_asset_kinds = {
+            "og:image": "image", "og:image:url": "image", "og:image:secure_url": "image",
+            "twitter:image": "image", "twitter:image:src": "image",
+            "msapplication-tileimage": "image", "image": "image",
+            "og:video": "media", "og:video:url": "media", "og:video:secure_url": "media",
+            "og:audio": "media", "og:audio:url": "media", "og:audio:secure_url": "media",
+        }
+        for tag in soup.find_all("meta", attrs={"content": True}):
+            key = str(tag.get("property") or tag.get("name") or tag.get("itemprop") or "").strip().lower()
+            kind = meta_asset_kinds.get(key)
+            if kind:
+                add(tag.get("content", ""), kind)
+
+        # Expose direct download anchors as assets even when their URLs are also crawl seeds.
+        for tag_name in ("a", "area"):
+            for tag in soup.find_all(tag_name, href=True):
+                path = urlparse(tag["href"].strip()).path.lower()
+                if path.endswith(DOWNLOAD_SUFFIXES):
+                    add(tag["href"], "download")
+
+        for tag in soup.find_all(True):
+            style = tag.get("style", "")
+            for match in CSS_URL_RE.finditer(style):
+                add(match.group(1), "css-resource")
+        for style_tag in soup.find_all("style"):
+            for match in CSS_URL_RE.finditer(style_tag.get_text() or ""):
+                add(match.group(1), "css-resource")
+
+        return sorted(assets.values(), key=lambda item: (item["url"].casefold(), item["kind"]))
 
     def _extract_script_srcs(self, soup: BeautifulSoup, current_url: str) -> list:
         scripts = set()

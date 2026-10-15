@@ -101,3 +101,106 @@ def test_sitemap_xml_extracts_loc_urls():
     )
     assert "https://example.com/catalog/one" in result["links"]
     assert "https://example.com/catalog/two" in result["links"]
+
+
+def test_parser_extracts_static_assets_and_download_references_separately():
+    parser = PageParser("https://example.test/")
+    html = """
+    <html><head>
+      <link rel="stylesheet" href="/css/site.css?v=1">
+      <script src="/assets/app.js"></script>
+    </head><body>
+      <img src="/images/logo.png?size=2"
+           srcset="/images/small.webp 1x, /images/large.webp 2x">
+      <video poster="/media/poster.jpg"><source src="/media/demo.mp4"></video>
+      <div style="background-image:url('/fonts/site.woff2')"></div>
+      <a href="/docs/guide.pdf">Download guide</a>
+      <img src="https://cdn.example-cdn.test/public/remote.svg">
+    </body></html>
+    """
+    parsed = parser.parse(html, "https://example.test/home")
+    assets = parsed["assets"]
+    urls = {item["url"]: item["kind"] for item in assets}
+
+    assert urls["https://example.test/css/site.css?v=1"] == "stylesheet"
+    assert urls["https://example.test/assets/app.js"] == "javascript"
+    assert urls["https://example.test/images/logo.png?size=2"] == "image"
+    assert urls["https://example.test/images/small.webp"] == "image"
+    assert urls["https://example.test/images/large.webp"] == "image"
+    assert urls["https://example.test/media/demo.mp4"] == "media"
+    assert urls["https://example.test/fonts/site.woff2"] == "font"
+    assert urls["https://example.test/docs/guide.pdf"] == "download"
+    assert urls["https://cdn.example-cdn.test/public/remote.svg"] == "image"
+    # Static resources remain separate from page-navigation candidates.
+    assert "https://example.test/assets/app.js" not in parsed["links"]
+
+
+def test_parser_discovers_social_metadata_and_jsonld_routes():
+    html = """
+    <html><head>
+      <meta property="og:url" content="/products/widget">
+      <meta name="twitter:url" content="https://example.com/articles/launch">
+      <meta property="og:image" content="/images/preview.png">
+      <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {"@type": "WebPage", "@id": "https://example.com/catalog?page=2", "url": "/catalog"},
+          {"@type": "Product", "url": "https://example.com/products/sku-1",
+           "image": "https://example.com/images/product.jpg",
+           "sameAs": ["https://other.example/social-profile"]}
+        ]
+      }
+      </script>
+    </head><body><p>metadata-only routes</p></body></html>
+    """
+    result = PageParser("https://example.com/").parse(
+        html, "https://example.com/no-links"
+    )
+    links = set(result["links"])
+    assert "https://example.com/products/widget" in links
+    assert "https://example.com/articles/launch" in links
+    assert "https://example.com/catalog" in links
+    assert "https://example.com/catalog?page=2" in links
+    assert "https://example.com/products/sku-1" in links
+    # Assets remain in the asset inventory and do not become page-navigation routes.
+    assert "https://example.com/images/preview.png" not in links
+    assert "https://example.com/images/product.jpg" not in links
+
+
+def test_jsonld_route_extraction_is_bounded_and_ignores_non_url_fields():
+    document = {
+        "@graph": [
+            {"@type": "Thing", "name": "This is a title", "url": "/one"},
+            {"@type": "Thing", "description": "/not-a-route", "@id": "/two"},
+            {"@type": "Thing", "image": "/image.png"},
+        ]
+    }
+    assert PageParser._jsonld_url_candidates(document) == ["/one", "/two"]
+    assert PageParser._jsonld_url_candidates({"url": ["", "/one", "/two"]}) == [
+        "/one", "/two"
+    ]
+
+
+def test_parser_discovers_pagination_relations_and_social_asset_metadata():
+    html = """
+    <html><head>
+      <link rel="prev" href="/catalog?page=1">
+      <link rel="next" href="/catalog?page=3">
+      <link rel="first" href="/catalog">
+      <meta property="og:image" content="/social/preview.webp?size=large">
+      <meta property="og:video:secure_url" content="/media/preview.mp4">
+      <meta name="twitter:image" content="https://cdn.example.test/cards/card.png">
+    </head><body><h1>Catalog</h1></body></html>
+    """
+    result = PageParser("https://example.test/").parse(
+        html, "https://example.test/catalog?page=2"
+    )
+    links = set(result["links"])
+    assert "https://example.test/catalog?page=1" in links
+    assert "https://example.test/catalog?page=3" in links
+    assert "https://example.test/catalog" in links
+    assets = {item["url"]: item["kind"] for item in result["assets"]}
+    assert assets["https://example.test/social/preview.webp?size=large"] == "image"
+    assert assets["https://example.test/media/preview.mp4"] == "media"
+    assert assets["https://cdn.example.test/cards/card.png"] == "image"

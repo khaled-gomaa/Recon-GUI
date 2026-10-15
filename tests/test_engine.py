@@ -101,6 +101,7 @@ def test_crawler_respects_max_pages_with_many_discovered_links():
             assert len(results) <= 4
             assert len(engine.visited) <= 4
             assert len(results) == 4
+            assert engine.page_limit_reached is True
         finally:
             await runner.cleanup()
 
@@ -390,3 +391,106 @@ def test_crawler_stops_queue_when_429_has_no_retry_after():
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+def test_crawler_marks_truncated_html_bodies_explicitly(monkeypatch):
+    async def scenario():
+        async def robots(request):
+            return web.Response(status=404, text="missing")
+
+        async def root(request):
+            return web.Response(
+                text="<html><body>" + ("x" * 512) + "</body></html>",
+                content_type="text/html",
+            )
+
+        app = web.Application()
+        app.router.add_get("/robots.txt", robots)
+        app.router.add_get("/", root)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            monkeypatch.setattr("crawler.engine.MAX_BODY_BYTES", 128)
+            engine = CrawlEngine(
+                f"http://127.0.0.1:{port}/", max_depth=1, max_pages=5, concurrency=1,
+            )
+            results = await engine.crawl()
+            root_result = next(item for item in results if item.url.endswith("/"))
+            assert root_result.body_truncated is True
+            assert root_result.to_dict()["body_truncated"] is True
+            assert len(root_result.html.encode("utf-8")) <= 128
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+def test_crawler_decompresses_gzip_sitemap_within_limits():
+    import gzip
+
+    async def scenario():
+        requested = []
+        sitemap = gzip.compress(
+            (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                '<url><loc>{target}/from-gzip</loc></url>'
+                '</urlset>'
+            ).encode("utf-8")
+        )
+        port_box = {"port": 0}
+
+        async def root(request):
+            requested.append(request.path)
+            return web.Response(
+                text='<a href="/sitemap.xml.gz">sitemap</a>',
+                content_type="text/html",
+            )
+
+        async def gzip_sitemap(request):
+            requested.append(request.path)
+            port = port_box["port"]
+            body = gzip.compress(
+                (
+                    '<?xml version="1.0" encoding="UTF-8"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    f'<url><loc>http://127.0.0.1:{port}/from-gzip</loc></url>'
+                    '</urlset>'
+                ).encode("utf-8")
+            )
+            return web.Response(body=body, content_type="application/gzip")
+
+        async def from_gzip(request):
+            requested.append(request.path)
+            return web.Response(
+                text="<title>gzip target</title>loaded",
+                content_type="text/html",
+            )
+
+        app = web.Application()
+        app.router.add_get("/", root)
+        app.router.add_get("/sitemap.xml.gz", gzip_sitemap)
+        app.router.add_get("/from-gzip", from_gzip)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port_box["port"] = site._server.sockets[0].getsockname()[1]
+            target = f"http://127.0.0.1:{port_box['port']}/"
+            engine = CrawlEngine(target, max_depth=2, max_pages=10, concurrency=1)
+            results = await engine.crawl()
+            urls = {item.url for item in results}
+            assert target + "sitemap.xml.gz" in urls
+            assert target + "from-gzip" in urls
+            assert "/sitemap.xml.gz" in requested
+            assert "/from-gzip" in requested
+            sitemap_result = next(item for item in results if item.url.endswith("/sitemap.xml.gz"))
+            assert sitemap_result.body_truncated is False
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))

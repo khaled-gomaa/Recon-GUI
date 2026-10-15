@@ -3,6 +3,9 @@ import asyncio
 import hashlib
 import threading
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
+
+from yarl import URL
 
 import aiohttp
 from PySide6.QtCore import QThread, Signal
@@ -25,7 +28,12 @@ class CrawlWorker(QThread):
         self, url, max_depth, max_pages, concurrency=10,
         wordlist_path=None, matcher: MatcherFilter = None,
         render_javascript=False, passive_discovery=False, request_headers=None,
-        crawl_historical_urls=False,
+        crawl_historical_urls=False, wordlist_extensions=None,
+        use_subfinder=True, manual_browser_session=False, manual_browser_duration=180,
+        wordlist_max_words=0, wordlist_max_candidates=0,
+        recursive_content_discovery=False, content_recursion_depth=2,
+        imported_seed_urls=None, seed_import_summary=None,
+        probe_assets=False, asset_probe_max=500,
     ):
         super().__init__()
         self.url = url
@@ -37,6 +45,22 @@ class CrawlWorker(QThread):
         self.render_javascript = bool(render_javascript)
         self.passive_discovery = bool(passive_discovery)
         self.crawl_historical_urls = bool(crawl_historical_urls)
+        self.wordlist_extensions = list(wordlist_extensions) if wordlist_extensions is not None else None
+        self.use_subfinder = bool(use_subfinder)
+        self.manual_browser_session = bool(manual_browser_session)
+        self.manual_browser_duration = max(30, min(int(manual_browser_duration), 600))
+        self.wordlist_max_words = max(0, int(wordlist_max_words or 0))
+        self.wordlist_max_candidates = max(0, int(wordlist_max_candidates or 0))
+        self.recursive_content_discovery = bool(recursive_content_discovery)
+        self.content_recursion_depth = max(1, min(int(content_recursion_depth), 5))
+        # Imported seeds are validated by the importer and rechecked by CrawlEngine.
+        self.imported_seed_urls = list(dict.fromkeys(
+            str(value).strip() for value in (imported_seed_urls or [])
+            if str(value).strip()
+        ))[:100_000]
+        self.seed_import_summary = dict(seed_import_summary or {})
+        self.probe_assets = bool(probe_assets)
+        self.asset_probe_max = max(1, min(int(asset_probe_max or 500), 5000))
         self.request_headers = {
             str(key): str(value) for key, value in (request_headers or {}).items()
             if str(key).lower() in {"authorization", "cookie", "accept-language"}
@@ -52,13 +76,37 @@ class CrawlWorker(QThread):
         return self._stop_event.is_set()
 
     def run(self):
+        from urllib.parse import urlparse
+
         loop = None
         started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            analyzer = ReconAnalyzer(self.url, request_headers=self.request_headers, on_log=self.log_message.emit)
+            # One cookie jar is reused between the crawl, JS download, and Content Discovery
+            # sessions. The user-supplied Cookie header is imported into the jar once so
+            # cookie Domain/Path/Secure rules can be handled by the HTTP client.
+            session_cookie_jar = aiohttp.CookieJar(unsafe=True)
+            phase_headers = dict(self.request_headers)
+            raw_cookie_header = ""
+            for header_name in list(phase_headers):
+                if header_name.lower() == "cookie":
+                    raw_cookie_header = phase_headers.pop(header_name)
+                    break
+            if raw_cookie_header:
+                parsed_cookies = SimpleCookie()
+                try:
+                    parsed_cookies.load(raw_cookie_header)
+                    if parsed_cookies:
+                        session_cookie_jar.update_cookies(parsed_cookies, response_url=URL(self.url))
+                        self.log_message.emit("[Session] Imported supplied cookie names into the in-memory session jar.")
+                except Exception as exc:
+                    self.log_message.emit(f"[Session] Supplied Cookie header could not be parsed: {type(exc).__name__}.")
+            analyzer = ReconAnalyzer(
+                self.url, request_headers=phase_headers, on_log=self.log_message.emit,
+                cookie_jar=session_cookie_jar,
+            )
             engine = CrawlEngine(
                 start_url=self.url,
                 max_depth=self.max_depth,
@@ -67,13 +115,34 @@ class CrawlWorker(QThread):
                 on_log=lambda msg: self.log_message.emit(msg),
                 on_page_crawled=lambda result: self.page_crawled.emit(result),
                 should_stop=self._stopping,
-                request_headers=self.request_headers,
+                request_headers=phase_headers,
                 respect_robots=True,
+                cookie_jar=session_cookie_jar,
             )
             passive_results = {
                 "passive_subdomains": [], "historical_urls": [],
                 "passive_sources": [], "passive_errors": [],
+                "subfinder_subdomains": [], "subfinder_status": "not-run", "subfinder_error": "",
             }
+            manual_browser_results = {
+                "network_observations": [], "session_cookies": [], "manual_browser_seconds": 0,
+            }
+            if self.manual_browser_session and not self._stopping():
+                self.log_message.emit("[Manual Browser] Starting an interactive session before crawling.")
+                try:
+                    from recon.browser_renderer import capture_manual_session
+                    manual_browser_results = loop.run_until_complete(capture_manual_session(
+                        self.url, cookie_jar=session_cookie_jar,
+                        should_stop=self._stopping, on_log=self.log_message.emit,
+                        on_network_event=analyzer.record_network_observation,
+                        duration_seconds=self.manual_browser_duration,
+                    ))
+                    self.log_message.emit(
+                        f"[Manual Browser] Captured {len(manual_browser_results.get('network_observations', []))} request records "
+                        f"and {len(manual_browser_results.get('session_cookies', []))} cookie metadata records."
+                    )
+                except RuntimeError as exc:
+                    self.log_message.emit(f"[Manual Browser] {exc} Continuing with HTTP-only session.")
             if self.passive_discovery and not self._stopping():
                 self.log_message.emit(
                     "[Passive] Querying Certificate Transparency and Wayback (no target probing)."
@@ -82,13 +151,62 @@ class CrawlWorker(QThread):
                     from recon.passive_sources import collect_passive
                     passive_results = collect_passive(self.url, on_log=self.log_message.emit)
                     analyzer.report.subdomains.update(passive_results.get("passive_subdomains", []))
+                    # ParamSpider-style passive parameter mining: learn endpoint/query names
+                    # from archived same-host URLs without sending new requests to them.
+                    target_host = (urlparse(self.url).hostname or "").lower()
+                    archived_query_urls = 0
+                    for archived_url in passive_results.get("historical_urls", []):
+                        archived = urlparse(archived_url)
+                        if (
+                            archived.scheme.lower() in ("http", "https")
+                            and (archived.hostname or "").lower() == target_host
+                        ):
+                            analyzer._record_endpoint(
+                                archived_url, "wayback-archive", self.url, method="GET"
+                            )
+                            if archived.query:
+                                archived_query_urls += 1
+                    self.log_message.emit(
+                        f"[Wayback] Indexed {archived_query_urls} same-host historical URLs with query strings "
+                        "for parameter inventory; no archived URLs were actively fetched in this step."
+                    )
                 except Exception as exc:
                     self.log_message.emit(f"[Passive] {type(exc).__name__}: {exc}")
                     passive_results["passive_errors"].append(f"{type(exc).__name__}: {exc}")
 
+            if self.use_subfinder and not self._stopping():
+                self.log_message.emit("[Subfinder] Starting optional passive hostname discovery.")
+                try:
+                    from recon.subfinder import discover_subdomains
+                    result = discover_subdomains(
+                        self.url, should_stop=self._stopping, on_log=self.log_message.emit,
+                    )
+                    passive_results["subfinder_subdomains"] = result.get("subfinder_subdomains", [])
+                    passive_results["subfinder_status"] = result.get("subfinder_status", "unknown")
+                    passive_results["subfinder_error"] = result.get("subfinder_error", "")
+                    merged_hosts = set(passive_results.get("passive_subdomains", []))
+                    merged_hosts.update(passive_results["subfinder_subdomains"])
+                    passive_results["passive_subdomains"] = sorted(merged_hosts)
+                    passive_results["passive_sources"].append({
+                        "name": "Subfinder",
+                        "status": passive_results["subfinder_status"],
+                        "count": len(passive_results["subfinder_subdomains"]),
+                    })
+                    if passive_results["subfinder_error"]:
+                        passive_results["passive_errors"].append(
+                            "Subfinder: " + passive_results["subfinder_error"]
+                        )
+                    analyzer.report.subdomains.update(passive_results["subfinder_subdomains"])
+                except Exception as exc:
+                    passive_results["subfinder_status"] = "error"
+                    passive_results["subfinder_error"] = f"{type(exc).__name__}: {exc}"
+                    passive_results["passive_errors"].append(
+                        "Subfinder: " + passive_results["subfinder_error"]
+                    )
+                    self.log_message.emit(f"[Subfinder] {type(exc).__name__}: {exc}")
+
             historical_seeds = []
             if self.crawl_historical_urls and not self._stopping():
-                from urllib.parse import urlparse
                 target_host = (urlparse(self.url).hostname or "").lower()
                 historical_seeds = sorted({
                     candidate for candidate in passive_results.get("historical_urls", [])
@@ -103,7 +221,12 @@ class CrawlWorker(QThread):
                 else:
                     self.log_message.emit("[History] No same-host historical URLs available to crawl.")
 
-            scan_seeds = [self.url, *historical_seeds]
+            scan_seeds = list(dict.fromkeys([self.url, *historical_seeds, *self.imported_seed_urls]))
+            if self.imported_seed_urls:
+                self.log_message.emit(
+                    f"[Seeds] Added {len(self.imported_seed_urls)} imported same-host URL candidates "
+                    "as depth-0 seeds. Engine scope/page/rate limits still apply."
+                )
             loop.run_until_complete(engine.crawl(seed_urls=scan_seeds, seed_depth=0))
 
             analyzed_urls = set()
@@ -116,6 +239,7 @@ class CrawlWorker(QThread):
                     analyzer.analyze_page(
                         result.url, result.html, headers=result.headers,
                         discovered_links=getattr(result, "links", []),
+                        discovered_assets=getattr(result, "asset_references", []),
                     )
                     analyzed_urls.add(result.url)
 
@@ -129,7 +253,7 @@ class CrawlWorker(QThread):
                     item.url for item in engine.results
                     if item.status == 200 and item.html
                     and ("html" in (item.content_type or "").lower() or not item.content_type)
-                ][:30]
+                ]
                 self.log_message.emit(
                     f"[Browser] Optional JavaScript rendering enabled for {len(candidates)} pages."
                 )
@@ -137,6 +261,10 @@ class CrawlWorker(QThread):
                     rendered = loop.run_until_complete(render_pages(
                         candidates, headers=self.request_headers,
                         should_stop=self._stopping, on_log=self.log_message.emit,
+                        on_network_event=analyzer.record_network_observation,
+                        max_pages=self.max_pages,
+                        storage_state=manual_browser_results.get("_storage_state"),
+                        cookie_jar=session_cookie_jar,
                     ))
                 except RuntimeError as exc:
                     rendered = {}
@@ -149,6 +277,11 @@ class CrawlWorker(QThread):
                         continue
                     parsed = engine.parser.parse(html, url)
                     result.links = parsed.get("links", [])
+                    merged_assets = {
+                        (item.get("url", ""), item.get("kind", "")): item
+                        for item in list(getattr(result, "asset_references", [])) + list(parsed.get("assets", []))
+                    }
+                    result.asset_references = list(merged_assets.values())
                     result.html = html
                     result.title = parsed.get("title", result.title)
                     result.word_count = len((parsed.get("text") or "").split())
@@ -189,12 +322,18 @@ class CrawlWorker(QThread):
                     self.log_message.emit(f"[Favicon] Error: {exc}")
 
             if not self._stopping() and not engine.rate_limit_stopped:
-                # Two bounded passes let routes found in external JS enter the page table,
-                # while page limits and exact-host scope remain enforced by CrawlEngine.
-                for discovery_round in range(2):
+                # Iterate until the JS queue and route queue stop producing new crawl pages.
+                # The crawler's configured page cap, stop event, exact-host scope and 429
+                # gate remain the hard boundaries; no fixed two-round truncation.
+                discovery_round = 0
+                while (
+                    not self._stopping()
+                    and not engine.rate_limit_stopped
+                    and not analyzer.js_collector.rate_limit_stopped
+                ):
+                    discovery_round += 1
                     self.log_message.emit(
-                        f"[JS] Downloading/analyzing same-host JavaScript "
-                        f"(route pass {discovery_round + 1}/2)..."
+                        f"[JS] Downloading/analyzing same-host JavaScript (discovery round {discovery_round})..."
                     )
                     analyzer.finalize_js(loop, should_stop=self._stopping, delay_seconds=engine.crawl_delay_seconds)
                     if self._stopping() or analyzer.js_collector.rate_limit_stopped or not analyzer.js_collector.route_urls:
@@ -212,21 +351,101 @@ class CrawlWorker(QThread):
                     if len(engine.results) == before_count:
                         break
 
-                # Analyze any JS assets discovered on the final extra batch without
-                # adding an unbounded third route crawl.
-                if not self._stopping() and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped:
-                    analyzer.finalize_js(
-                        loop, should_stop=self._stopping, delay_seconds=engine.crawl_delay_seconds
+            # Parse same-origin stylesheet files and recursively discover CSS @import/url()
+            # references before the optional HEAD check. External CSS references are recorded,
+            # never fetched; the shared session cookie jar remains in-memory only.
+            css_collector = None
+            css_discovery_data = {
+                "status": "not-run",
+                "css_files_discovered": 0, "css_files_attempted": 0, "css_files_fetched": 0,
+                "css_files_truncated": [], "css_file_errors": [],
+                "css_limit_reached": False, "css_rate_limited_stop": False, "css_assets": [],
+            }
+            css_rate_limited_stop = False
+            if not self._stopping() and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped:
+                from recon.css_collector import CSSCollector
+                from recon.parameter_intelligence import _normalize_endpoint
+                css_collector = CSSCollector(
+                    self.url, cookie_jar=session_cookie_jar,
+                    request_headers=phase_headers, on_log=self.log_message.emit,
+                )
+                stylesheet_seeds = list(analyzer.asset_observations.values())
+                for observation in analyzer.network_observations.values():
+                    if (
+                        str(observation.get("resource_type") or "").lower() == "stylesheet"
+                        or str(observation.get("url") or "").split("?", 1)[0].lower().endswith(".css")
+                    ):
+                        stylesheet_seeds.append({
+                            "url": observation.get("url", ""),
+                            "kind": "stylesheet",
+                        })
+                try:
+                    css_discovery_data = loop.run_until_complete(
+                        css_collector.collect(
+                            stylesheet_seeds, should_stop=self._stopping,
+                            delay_ms=max(200, int(engine.crawl_delay_seconds * 1000)),
+                        )
                     )
+                    css_rate_limited_stop = css_collector.rate_limit_stopped
+                    css_discovery_data["status"] = (
+                        "rate-limited" if css_rate_limited_stop else
+                        "partial" if css_collector.truncated_files or css_collector.errors or css_collector.limit_reached else
+                        "completed"
+                    )
+                    analyzer.css_files_fetched = {
+                        _normalize_endpoint(url)
+                        for url in css_collector.fetched_contents
+                    }
+                    analyzer.css_files_truncated = {
+                        _normalize_endpoint(url)
+                        for url in css_collector.truncated_files
+                    }
+                    for item in css_collector.assets.values():
+                        analyzer._record_asset_reference(
+                            item.get("referrer") or self.url,
+                            {
+                                "url": item.get("request_url") or item.get("url", ""),
+                                "kind": item.get("kind", "css-resource"),
+                                "extension": item.get("extension", ""),
+                                "source": item.get("source", "css-reference"),
+                                "query_parameter_names": item.get("query_parameter_names", []),
+                            },
+                        )
+                    if css_collector.css_urls:
+                        self.log_message.emit(
+                            f"[CSS] Discovered {len(css_collector.css_urls)} same-origin stylesheet URL(s); "
+                            f"fetched {len(css_collector.fetched_contents)} and extracted "
+                            f"{len(css_collector.assets)} nested asset references."
+                        )
+                except Exception as exc:
+                    css_discovery_data["status"] = "error"
+                    css_discovery_data["css_file_errors"].append(
+                        {"url": "", "error": type(exc).__name__}
+                    )
+                    self.log_message.emit(f"[CSS] Discovery phase failed: {type(exc).__name__}: {exc}")
+                css_discovery_data["css_rate_limited_stop"] = css_rate_limited_stop
+            elif self._stopping():
+                css_discovery_data["status"] = "stopped"
+            elif engine.rate_limit_stopped or analyzer.js_collector.rate_limit_stopped:
+                css_discovery_data["status"] = "skipped-after-rate-limit"
 
             wordlist_results = []
             wordlist_rate_limited_stop = False
-            if self.wordlist_path and not self._stopping() and not engine.rate_limit_stopped:
+            if (
+                self.wordlist_path and not self._stopping()
+                and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped
+                and not css_rate_limited_stop
+            ):
                 from recon.wordlist_scanner import WordlistScanner
                 self.log_message.emit(f"[Wordlist] Checking authorized paths: {self.wordlist_path}")
                 scanner = WordlistScanner(
                     base_url=self.url,
                     wordlist_path=self.wordlist_path,
+                    extensions=self.wordlist_extensions,
+                    max_words=self.wordlist_max_words,
+                    max_candidates=self.wordlist_max_candidates,
+                    recursive=self.recursive_content_discovery,
+                    recursion_depth=self.content_recursion_depth,
                     concurrency=1 if engine.crawl_delay_seconds > 0 else self.concurrency,
                     on_hit=lambda url, status, size: self.log_message.emit(
                         f"[HIT {status}] {url} ({size} bytes)"
@@ -234,7 +453,8 @@ class CrawlWorker(QThread):
                     on_log=lambda message: self.log_message.emit(message),
                     should_stop=self._stopping,
                     on_result=lambda result: self.discovery_result.emit(result),
-                    request_headers=self.request_headers,
+                    request_headers=phase_headers,
+                    cookie_jar=session_cookie_jar,
                     delay_ms=max(200, int(engine.crawl_delay_seconds * 1000)),
                 )
                 analyzer.wordlist_hits = loop.run_until_complete(scanner.scan())
@@ -242,6 +462,60 @@ class CrawlWorker(QThread):
                 wordlist_rate_limited_stop = scanner.rate_limit_stopped
                 if scanner.rate_limit_stopped:
                     self.log_message.emit("[Content Discovery] Stopped safely because rate limiting did not permit a compliant resume.")
+
+            asset_probe_data = {
+                "results": [],
+                "summary": {
+                    "enabled": self.probe_assets, "unique_same_origin_candidates": 0,
+                    "selected_candidates": 0, "requests_completed": 0,
+                    "skipped_out_of_origin": 0, "limit": self.asset_probe_max,
+                    "limit_reached": False, "rate_limited": False,
+                    "rate_limited_stop": False, "stopped_by_user": False,
+                    "unattempted": 0, "partial": False, "method": "HEAD",
+                },
+            }
+            # Optional, same-origin-only HEAD checks validate referenced files without
+            # downloading bodies. Do not start another request phase after an HTTP 429.
+            if (
+                self.probe_assets and not self._stopping()
+                and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped
+                and not css_rate_limited_stop and not wordlist_rate_limited_stop
+            ):
+                from recon.asset_probe import probe_asset_references
+                candidates = [
+                    {
+                        "url": item.get("url", ""),
+                        "request_url": item.get("request_url") or item.get("url", ""),
+                        "kind": item.get("kind", "resource"),
+                        "extension": item.get("extension", ""),
+                    }
+                    for item in analyzer.asset_observations.values()
+                ]
+                self.log_message.emit(
+                    f"[Assets] HEAD-checking referenced resources (limit={self.asset_probe_max}); "
+                    "same-origin only, no response bodies, no redirects."
+                )
+                try:
+                    asset_probe_data = loop.run_until_complete(probe_asset_references(
+                        self.url, candidates, cookie_jar=session_cookie_jar,
+                        request_headers=self.request_headers, should_stop=self._stopping,
+                        on_log=self.log_message.emit, max_assets=self.asset_probe_max,
+                        delay_ms=max(200, int(engine.crawl_delay_seconds * 1000)),
+                    ))
+                except Exception as exc:
+                    self.log_message.emit(f"[Assets] Probe phase failed: {type(exc).__name__}")
+                    asset_probe_data["summary"].update({
+                        "enabled": True, "partial": True,
+                        "error": type(exc).__name__,
+                    })
+            elif self.probe_assets:
+                self.log_message.emit(
+                    "[Assets] HEAD phase skipped because the scan stopped or an earlier phase was rate-limited."
+                )
+                asset_probe_data["summary"].update({
+                    "enabled": True, "partial": True,
+                    "skipped_due_to_previous_stop_or_rate_limit": True,
+                })
 
             all_results = engine.results
             if not self.matcher.is_empty():
@@ -268,15 +542,216 @@ class CrawlWorker(QThread):
                 ) if any(header.lower() == key for header in self.request_headers)
             ]
             report["target"] = self.url
+            report["css_discovery_summary"] = css_discovery_data
+            report["css_rate_limited_stop"] = css_rate_limited_stop
+            report["asset_probe_summary"] = asset_probe_data.get("summary", {})
+            report["asset_probe_results"] = asset_probe_data.get("results", [])
+            probes_by_url = {
+                str(item.get("url") or ""): item
+                for item in report["asset_probe_results"] if item.get("url")
+            }
+            for asset in report.get("asset_inventory", []) or []:
+                probe = probes_by_url.get(str(asset.get("url") or ""))
+                asset["probe_checked"] = bool(probe)
+                asset["probe_method"] = "HEAD" if probe else ""
+                asset["probe_status"] = probe.get("status") if probe else None
+                asset["probe_result"] = probe.get("result", "") if probe else ""
+                asset["probe_content_type"] = probe.get("content_type", "") if probe else ""
+                asset["probe_content_length"] = probe.get("content_length") if probe else None
+                asset["probe_error"] = probe.get("error", "") if probe else ""
+            report["seed_import_summary"] = {
+                key: self.seed_import_summary.get(key)
+                for key in (
+                    "source_file", "source_type", "input_candidates", "accepted_count",
+                    "rejected_or_out_of_scope", "limit", "limit_reached",
+                )
+                if key in self.seed_import_summary
+            }
+            imported_seed_set = set(self.imported_seed_urls)
+            report["imported_seed_urls_crawled"] = len(
+                {result.url for result in all_results} & imported_seed_set
+            )
+            report["manual_browser_session_enabled"] = self.manual_browser_session
+            report["manual_browser_seconds"] = manual_browser_results.get("manual_browser_seconds", 0)
+            report["manual_browser_window_seconds"] = manual_browser_results.get(
+                "manual_browser_window_seconds", self.manual_browser_duration if self.manual_browser_session else 0
+            )
             report["pages"] = [result.to_dict() for result in all_results]
             report["wordlist_results"] = wordlist_results
+            report["wordlist_candidates"] = (
+                scanner.candidate_count if self.wordlist_path and "scanner" in locals() else 0
+            )
+            report["wordlist_words_loaded"] = (
+                scanner.words_loaded if self.wordlist_path and "scanner" in locals() else 0
+            )
+            report["wordlist_word_limit_reached"] = (
+                scanner.word_limit_reached if self.wordlist_path and "scanner" in locals() else False
+            )
+            report["wordlist_path_limit_reached"] = (
+                scanner.path_limit_reached if self.wordlist_path and "scanner" in locals() else False
+            )
+            report["wordlist_candidate_limit_reached"] = (
+                scanner.candidate_limit_reached if self.wordlist_path and "scanner" in locals() else False
+            )
+            report["wordlist_max_words"] = (
+                scanner.max_words if self.wordlist_path and "scanner" in locals() else self.wordlist_max_words
+            )
+            report["wordlist_max_candidates"] = (
+                scanner.max_candidates if self.wordlist_path and "scanner" in locals() else self.wordlist_max_candidates
+            )
+            report["wordlist_recursive_enabled"] = (
+                scanner.recursive if self.wordlist_path and "scanner" in locals() else self.recursive_content_discovery
+            )
+            report["wordlist_recursion_depth"] = (
+                scanner.recursion_depth if self.wordlist_path and "scanner" in locals() else self.content_recursion_depth
+            )
+            report["wordlist_recursive_dirs_found"] = (
+                scanner.recursive_dirs_found if self.wordlist_path and "scanner" in locals() else 0
+            )
+            report["wordlist_recursion_rounds"] = (
+                scanner.recursion_rounds if self.wordlist_path and "scanner" in locals() else 0
+            )
+            report["wordlist_recursion_depth_limit_reached"] = (
+                scanner.recursion_depth_limit_reached if self.wordlist_path and "scanner" in locals() else False
+            )
+            report["wordlist_limit_summary"] = {
+                "words_loaded": report["wordlist_words_loaded"],
+                "unique_candidates_generated": report["wordlist_candidates"],
+                "max_words": report["wordlist_max_words"],
+                "max_candidates": report["wordlist_max_candidates"],
+                "word_limit_reached": report["wordlist_word_limit_reached"],
+                "path_limit_reached": report["wordlist_path_limit_reached"],
+            }
+            # The cookie map stores names and attributes only, never cookie values.
+            cookie_map = []
+            for result in all_results:
+                for event in getattr(result, "cookie_events", []) or []:
+                    cookie_map.append({"url": result.url, "source": "http-response", **event})
+            for result in wordlist_results:
+                for event in result.get("set_cookie_names", []) or []:
+                    cookie_map.append({"url": result.get("url", ""), "source": "content-discovery", **event})
+            cookie_map.extend(manual_browser_results.get("session_cookies", []) or [])
+            unique_cookie_map = {}
+            for event in cookie_map:
+                key = (
+                    event.get("url", ""), event.get("name", ""), event.get("domain", ""),
+                    event.get("path", ""), event.get("source", ""),
+                )
+                unique_cookie_map[key] = event
+            report["cookie_map"] = sorted(
+                unique_cookie_map.values(),
+                key=lambda item: (item.get("url", ""), item.get("name", ""), item.get("source", "")),
+            )
             report["wordlist_rate_limited_stop"] = wordlist_rate_limited_stop
             report["crawler_rate_limited_stop"] = engine.rate_limit_stopped
+            report["page_limit_reached"] = engine.page_limit_reached
+            report["depth_limit_reached"] = engine.depth_limit_reached
             report["filtered_pages"] = [result.to_dict() for result in filtered]
             report["similarity"] = SimilarityDetector().analyze(filtered)
             report["matcher_description"] = self.matcher.describe()
             report["matcher_applied"] = not self.matcher.is_empty()
             report["stopped_by_user"] = self._stopping()
+
+            # Make inspection caps visible instead of presenting truncated evidence as complete.
+            body_truncated_pages = [
+                page.get("url", "") for page in report.get("pages", []) if page.get("body_truncated")
+            ]
+            truncated_js_files = report.get("truncated_js_files", []) or []
+            truncated_css_urls = css_discovery_data.get("css_files_truncated", []) or []
+            truncated_wordlist_urls = [
+                item.get("url", "") for item in wordlist_results if item.get("response_truncated")
+            ]
+            content_limit_notes = []
+            if body_truncated_pages:
+                content_limit_notes.append(
+                    f"{len(body_truncated_pages)} HTML/XML/robots response body/bodies truncated at the crawler body cap."
+                )
+            if truncated_js_files:
+                content_limit_notes.append(
+                    f"{len(truncated_js_files)} JavaScript file(s) truncated at the per-file JS byte cap."
+                )
+            if truncated_wordlist_urls:
+                content_limit_notes.append(
+                    f"{len(truncated_wordlist_urls)} Content Discovery response(s) truncated at the response byte cap."
+                )
+            if truncated_css_urls:
+                content_limit_notes.append(
+                    f"{len(truncated_css_urls)} CSS file(s) truncated at the per-file stylesheet byte cap."
+                )
+            report["body_truncated_pages"] = body_truncated_pages
+            report["truncated_js_files"] = truncated_js_files
+            report["truncated_css_files"] = truncated_css_urls
+            report["truncated_wordlist_urls"] = truncated_wordlist_urls
+            report["content_limit_reached"] = bool(
+                body_truncated_pages or truncated_js_files or truncated_wordlist_urls or truncated_css_urls
+            )
+            report["content_limit_notes"] = content_limit_notes
+            from recon.http_coverage import summarize_http_outcomes
+            http_outcomes = summarize_http_outcomes(
+                report.get("pages", []),
+                wordlist_results,
+                asset_probe_data.get("results", []),
+                report.get("js_fetch_errors", []),
+            )
+            report.update(http_outcomes)
+            report["coverage_summary"] = {
+                "pages_crawled": len(all_results),
+                "http_status_counts": report.get("http_status_counts", {}),
+                "transport_error_count": report.get("transport_error_count", 0),
+                "server_error_response_count": report.get("server_error_response_count", 0),
+                "restricted_response_count": report.get("restricted_response_count", 0),
+                "page_cap": self.max_pages,
+                "max_depth": self.max_depth,
+                "page_limit_reached": engine.page_limit_reached,
+                "depth_limit_reached": engine.depth_limit_reached,
+                "wordlist_words_loaded": report.get("wordlist_words_loaded", 0),
+                "wordlist_candidates": report.get("wordlist_candidates", 0),
+                "wordlist_max_words": report.get("wordlist_max_words", 0),
+                "wordlist_max_candidates": report.get("wordlist_max_candidates", 0),
+                "wordlist_recursive_enabled": report.get("wordlist_recursive_enabled", False),
+                "wordlist_recursion_depth": report.get("wordlist_recursion_depth", 1),
+                "wordlist_recursive_dirs_found": report.get("wordlist_recursive_dirs_found", 0),
+                "wordlist_recursion_rounds": report.get("wordlist_recursion_rounds", 0),
+                "wordlist_recursion_depth_limit_reached": report.get("wordlist_recursion_depth_limit_reached", False),
+                "wordlist_word_limit_reached": report.get("wordlist_word_limit_reached", False),
+                "wordlist_path_limit_reached": report.get("wordlist_path_limit_reached", False),
+                "wordlist_limit_reached": report.get("wordlist_candidate_limit_reached", False),
+                "javascript_files_discovered": len(analyzer.js_collector.js_urls),
+                "javascript_files_attempted": len(analyzer.js_collector._analyzed_js_urls),
+                "javascript_files_failed": len(report.get("js_fetch_errors", [])),
+                "javascript_files_unattempted": len(report.get("unattempted_js_files", [])),
+                "javascript_rate_limited_stop": bool(report.get("js_rate_limited_stop")),
+                "javascript_files_truncated": len(truncated_js_files),
+                "css_files_discovered": css_discovery_data.get("css_files_discovered", 0),
+                "css_files_attempted": css_discovery_data.get("css_files_attempted", 0),
+                "css_files_fetched": css_discovery_data.get("css_files_fetched", 0),
+                "css_files_truncated": len(truncated_css_urls),
+                "css_file_errors": len(css_discovery_data.get("css_file_errors", [])),
+                "css_limit_reached": bool(css_discovery_data.get("css_limit_reached")),
+                "css_rate_limited_stop": css_rate_limited_stop,
+                "asset_references": len(report.get("asset_inventory", [])),
+                "external_asset_references": sum(
+                    1 for item in report.get("asset_inventory", []) if not item.get("in_scope", False)
+                ),
+                "asset_references_without_page_js_or_css_fetch": sum(
+                    1 for item in report.get("asset_inventory", [])
+                    if not item.get("fetched_by_page_crawler")
+                    and not item.get("fetched_by_js_collector")
+                    and not item.get("fetched_by_css_collector")
+                ),
+                "response_bodies_truncated": len(body_truncated_pages) + len(truncated_wordlist_urls) + len(truncated_css_urls),
+                "content_limit_reached": report["content_limit_reached"],
+                "imported_seed_candidates": len(self.imported_seed_urls),
+                "imported_seed_urls_crawled": report.get("imported_seed_urls_crawled", 0),
+                "imported_seed_limit_reached": bool(self.seed_import_summary.get("limit_reached")),
+                "asset_probe_candidates": asset_probe_data.get("summary", {}).get("unique_same_origin_candidates", 0),
+                "asset_probe_selected": asset_probe_data.get("summary", {}).get("selected_candidates", 0),
+                "asset_probe_requests_completed": asset_probe_data.get("summary", {}).get("requests_completed", 0),
+                "asset_probe_limit_reached": asset_probe_data.get("summary", {}).get("limit_reached", False),
+                "asset_probe_rate_limited": asset_probe_data.get("summary", {}).get("rate_limited", False),
+                "asset_probe_rate_limited_stop": asset_probe_data.get("summary", {}).get("rate_limited_stop", False),
+                "asset_probe_partial": asset_probe_data.get("summary", {}).get("partial", False),
+            }
             try:
                 from recon.history_store import HistoryStore
                 report = HistoryStore().save_report(report)

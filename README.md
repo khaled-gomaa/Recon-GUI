@@ -4,30 +4,58 @@ Recon-GUI is a Python desktop application for mapping and documenting web assets
 
 ## Core features
 
-- Bounded same-host crawling with configurable depth, page count, and concurrency.
+- Same-host crawling with configurable depth, page count (up to 5000), and concurrency. When page or depth limits leave additional links unvisited, the scan is explicitly marked partial and history comparisons do not infer removals from incomplete coverage.
+- Import extra crawl seeds from TXT URL lists, Search Console-style CSV exports, XML/gzip sitemaps, JSON URL collections, or common access logs. Imports are deduplicated and restricted to the exact configured hostname; imported seeds are starting points, not authorization checks, and still obey normal crawl limits. This helps discover orphan pages that internal links alone cannot reveal.
+- The JavaScript renderer performs a small, bounded scroll sequence per page to trigger lazy-loaded and infinite-scroll content without clicking controls or submitting forms. This improves SPA coverage but cannot guarantee that every dynamically generated record or route is exposed.
 - Canonical URL handling, redirect-chain tracking, response metadata, page hashes, similarity groups, and soft-404 candidates.
 - Hidden-route discovery from forms, iframes, data attributes, meta refresh, inline scripts/comments, sitemaps, robots.txt, and same-host JavaScript.
-- Optional Playwright rendering to discover routes created by client-side JavaScript.
-- JavaScript collection, endpoint extraction, source-map references, and bounded follow-up route crawling.
-- Unified endpoint inventory with discovery sources and in-scope HTML link routes; parameter inventory groups query, form, JavaScript, and discovered-link parameter names without retaining those parameter values.
+- Static asset reference inventory from images/srcset, scripts, stylesheets, fonts, media, preload/prefetch links, inline CSS URLs, and downloadable files. Asset URLs have query values removed in the inventory; entries explicitly distinguish references from URLs that were actually requested by the page crawler or JavaScript collector. External asset links are recorded as references only and are not probed. Optional **Check same-origin asset links with HEAD** validates referenced paths using response status/headers only; it does not download bodies or follow redirects, is bounded by a configurable per-scan cap, and honors Retry-After or stops safely.
+- Optional Playwright rendering to discover routes created by client-side JavaScript, with same-origin request/response metadata capture.
+- Recursive same-origin CSS discovery: fetches referenced stylesheets, parses `url()`, `@import`, and source-map references, records nested image/font/media/download assets, and reports CSS truncation/errors. External CSS references are inventory-only and are never fetched.
+- Optional headed Manual Browser Session for user-driven login/MFA and browsing. The capture window is configurable (30–600 seconds; 180 seconds by default). Same-origin request methods/statuses, parameter names, and cookie metadata are recorded; cookie/token values and request bodies are not exported. Cookie and localStorage state are handed directly in memory to the subsequent JS-render phase when enabled; browser state is never written to disk/report. sessionStorage is not automatically transferred.
+- JavaScript collection without a fixed file-count cap, endpoint extraction, source-map references, static method inference for common `fetch`, `axios`, XHR, and jQuery calls (including template-literal routes with dynamic path placeholders), and iterative follow-up route crawling until no new pages are added or the configured crawler boundary is reached. Each JS file is still individually capped at 2 MiB and oversized files are reported as truncated. Static method inference is a lead, not proof the request executed.
+- Unified endpoint inventory with methods, discovery sources, request initiator page, resource type, query parameter names, and observed body parameter names. Query strings and body values are never retained in the request inventory.
+- Import button for browser/Burp-exported HAR files. HAR imports are read-only: only requests matching the configured target hostname are merged into the Network Requests, Cookie Map, endpoint, and parameter inventories. URL query values, request/response bodies, and cookie values are discarded; oversized or truncated imports display warnings.
 - Evidence-backed correlated review findings with severity/confidence, supporting evidence, and manual-review recommendations; these are leads, not confirmed vulnerabilities.
 - HTML form inventory (fields, method, action, and possible CSRF field names) without submitting forms.
 - JSON-LD extraction and redacted candidate detection for known token/key patterns and secret-like assignments.
 - Security-header audits, favicon hash, emails, and subdomains.
-- Optional passive lookups through Certificate Transparency (crt.sh) and Wayback CDX; hostname discoveries are not actively probed. Historical URLs are only added as active crawl seeds when the separate “Crawl same-host historical URLs” option is enabled, and still share the configured page/scope/rate limits.
-- Optional Content Discovery using a custom or bundled wordlist, with response history and wildcard/soft-hit classification.
-- Optional in-memory Bearer token, Basic Auth, and Cookie headers for the built-in crawler, JavaScript collection, and Content Discovery.
-- Local SQLite scan history grouped by origin, including newly added, removed, and changed URL, endpoint, and parameter comparisons between scans. Partial/stopped/rate-limited scans do not infer removals.
+- Passive lookups through Certificate Transparency (crt.sh), Wayback CDX (up to 10,000 archived URLs, marked partial when the ceiling is reached), and optional Subfinder (when installed). crt.sh results are parsed without the old 500-host cap. All passive hostname sources are merged; discovered subdomains are reported only and are never automatically crawled. A separate Subdomains tab lets you explicitly select hosts for bounded DNS + one HTTP HEAD check, review resolved IPs/statuses, and set one selected hostname as the next scan target. The verifier pins connections to the validated public DNS answers and blocks HTTP probes when DNS returns private, loopback, link-local, or otherwise non-public IPs. It never follows redirects or sends session credentials. This check does not prove bounty-program authorization. Same-host archived query URLs also feed parameter-name inventory without requiring active requests. Historical URLs enter the crawl only when “Crawl same-host historical URLs” is enabled.
+- Streaming Content Discovery using the complete custom or bundled wordlist by default (no implicit 500-word truncation), a bounded request queue, duplicate-path suppression, expanded built-in extensions and a custom extension list. The GUI exposes optional word and generated-path caps (both default to 0 = unlimited); if either cap is actually reached, the scan/history is marked partial. Optional **Recursive directory discovery** reuses the same wordlist beneath directory-like hits, with a selectable recursion depth from 1–5 and the same global generated-path cap across all rounds. It is off by default; reaching the recursion-depth ceiling with further directory candidates marks the scan/history partial. Each candidate is sent as a GET request only.
+- Shared in-memory HTTP cookie jar between crawl, JavaScript collection, Content Discovery, and optional asset HEAD checks, plus optional imported Cookie header. Session values are not written to reports or scan history.
+- A **Coverage / Gaps** tab explains reached page/depth/wordlist/recursion caps, rate limits, truncated data, failed requests (including JavaScript assets that returned errors), HTTP 5xx responses, rate-limited JavaScript discovery, and restricted 401/403 responses. Request diagnostics strip query strings and omit raw exception messages. A scan is not labelled complete when observed transport errors or server-error responses leave evidence incomplete. Local SQLite scan history grouped by origin compares URL, endpoint, parameter, and asset-reference additions/removals/changes; incomplete, stopped, rate-limited, request-failed, server-error, or capped asset-probe phases do not infer removals.
 - Filterable results and readable TXT, machine-readable JSON, and spreadsheet-friendly CSV reports.
-- Optional external CLI integrations for GAU, Nuclei, and ffuf. They run only when explicitly selected in the External Tools tab. Subfinder and Nmap are intentionally excluded from the core crawler workflow: passive hostname discovery is provided by crt.sh, while port scanning is a different scope of activity.
+- Optional external CLI integrations for GAU, Nuclei, and ffuf in the External Tools tab. Subfinder is a separate passive hostname discovery phase in Scan Options; Nmap remains excluded from the core web crawler because port scanning is a different activity.
 - Honors a valid Crawl-delay in robots.txt. On HTTP 429, the crawler waits only when the response provides a supported Retry-After; otherwise it stops safely rather than bypassing rate limits.
 
-## Quick start (Windows)
+## Quick start (Windows and Linux)
 
-    python -m venv .venv
-    .venv\Scripts\activate
+Recon-GUI runs from source with Python and PySide6 on both Windows and Linux. It does not require a packaged EXE, and this repository no longer builds or distributes platform-specific executable bundles.
+
+### Windows (PowerShell)
+
+    py -3.12 -m venv .venv
+    .\.venv\Scripts\Activate.ps1
+    python -m pip install --upgrade pip
     python -m pip install -r requirements.txt
     python main.py
+
+If PowerShell blocks activation, use Command Prompt instead:
+
+    py -3.12 -m venv .venv
+    .venv\Scripts\activate.bat
+    python -m pip install -r requirements.txt
+    python main.py
+
+### Linux (Ubuntu/Debian/Kali)
+
+    python3.12 -m venv .venv
+    source .venv/bin/activate
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
+    python main.py
+
+Install Python 3.12 and the system's standard Qt/X11 or Wayland libraries first. If the GUI reports a missing Qt platform plugin or XCB library, install the corresponding system libraries provided by your Linux distribution. On a headless machine, a desktop session or remote desktop is needed to show the GUI.
 
 ## Optional JavaScript rendering
 
@@ -36,7 +64,7 @@ Playwright is deliberately not a core dependency. To enable the checkbox in the 
     python -m pip install -r requirements-optional.txt
     playwright install chromium
 
-The renderer is bounded to 30 pages and two concurrent tabs. Cross-host browser requests are blocked. If Playwright or Chromium is not installed, the ordinary HTTP crawler continues and logs a clear message.
+The automated renderer processes crawled HTML pages up to the configured Max pages limit (up to 5000) with two concurrent tabs. It uses a shared browser context across rendered pages so same-origin cookie state can persist; cross-origin requests are blocked. The optional Manual Browser Session opens a visible Chromium window for the configured period, allowing manual login and navigation before the HTTP crawl begins. Captured cookies and localStorage state are passed to the later rendering phase in memory only. Install Playwright and Chromium first.
 
 ## Optional external tools
 
@@ -46,27 +74,30 @@ Install the tools you need separately using their official installation instruct
 - **Nuclei** — template-based security checks, explicitly initiated from the GUI with a conservative rate limit.
 - **ffuf** — wordlist path discovery, explicitly initiated from the GUI with a conservative rate limit and a selected local wordlist.
 
-The GUI's External Tools tab can check which tools are installed. Subfinder and Nmap are intentionally not included: passive hostname discovery is already available through crt.sh, and port scanning is a different activity from the core web crawler. External CLIs have independent rate-limit handling and do not share the built-in crawler's HTTP 429 Retry-After manager; stop active CLI tools and respect the target's retry guidance if rate limiting is observed. Nuclei and ffuf require a confirmation before execution. Their CLI processes have a bounded runtime and output size and can be stopped from the GUI. CLI integrations do not inherit the GUI's session token or cookies; configure them separately only when appropriate for your authorized test.
+The GUI's External Tools tab can check which CLI tools are installed. Subfinder is used separately as an optional passive hostname source and is never used to crawl discovered hosts automatically; Nmap remains outside the core web crawler. External CLIs have independent rate-limit handling and do not share the built-in crawler's HTTP 429 Retry-After manager; stop active CLI tools and respect the target's retry guidance if rate limiting is observed. Nuclei and ffuf require a confirmation before execution. Their CLI processes have a bounded runtime and output size and can be stopped from the GUI. CLI integrations do not inherit the GUI's session token or cookies; configure them separately only when appropriate for your authorized test.
 
 ## Authentication and data handling
 
-- Built-in authentication fields are held in application memory only and are not added to reports or scan-history records.
+- Built-in authentication fields and session cookie values are kept in application memory only and are not added to reports or scan-history records.
+- The Cookie Map records cookie names and safe attributes only. Network Request records include normalized URL paths, methods, response metadata, source, and parameter names, never query/body values or raw request bodies.
+- Manual browser capture is opt-in and user-driven; it does not automatically submit HTML forms or click buttons.
+- External seed imports are subject to a 50 MiB source-file cap, a 100 MiB decompressed-file cap, and a 100,000 URL cap. Reaching the URL cap is shown as partial coverage. Imported URLs may carry query values from logs/exports; review reports before sharing them.
 - Candidate secret findings contain a type, source, severity, and a redacted marker; the matched raw value is never included.
 - Form analysis only inspects markup and does not submit the form or perform login attempts.
-- The history database is local to your user profile. On Windows it is normally stored at %LOCALAPPDATA%\Recon-GUI\history.sqlite3; other systems use ~/.recon-gui/history.sqlite3 unless XDG_DATA_HOME is set.
+- The history database is local to your user profile. On Windows it is normally stored at %LOCALAPPDATA%\Recon-GUI\history.sqlite3; other systems use ~/.recon-gui/history.sqlite3 unless XDG_DATA_HOME is set. Oversized HTML/XML/robots responses, JS files, and Content Discovery response bodies are marked as truncated in the coverage report. A scan with such truncated evidence is flagged partial instead of implying complete coverage.
 - Export files can still contain URLs, email addresses, hostnames, and findings. Review them before sharing.
 
 ## HTTP 429 and request pacing
 
-If the origin returns HTTP 429, Recon-GUI parses Retry-After (seconds or an HTTP date), pauses queued requests for supported waits, and resumes at the configured rate. If no usable retry guidance is provided, the requested wait exceeds the automatic ceiling, or the limit recurs too often, that phase stops safely. The application does not try to evade server-enforced limits. Content Discovery is low-rate by default; when a crawl delay is present, it reduces the path scanner to one worker and applies the delay between requests.
+If the origin returns HTTP 429, Recon-GUI parses Retry-After (seconds or an HTTP date), pauses queued requests for supported waits, and resumes at the configured rate. If no usable retry guidance is provided, the requested wait exceeds the automatic ceiling, or the limit recurs too often, that phase stops safely. The application does not try to evade server-enforced limits. Content Discovery is low-rate by default; when a crawl delay is present, it reduces the path scanner to one worker and applies the delay between requests. Wordlist scanning has no implicit word-count cap, but it still has an explicit response-body read cap (currently 1 MiB per response), timeouts, a bounded concurrency setting, and server-respecting stop behavior. The UI reports configured page limits and rate-limit stops; “all results” cannot be guaranteed when paths are unknown or access is restricted.
 
-## Build a portable Windows app
+## Cross-platform validation
 
-A Windows build workflow is included at Actions → Windows application build. Run it manually, or push a version tag beginning with `v`. Download the `ReconGUI-Windows-...` artifact from the successful workflow, extract the entire folder, and run `ReconGUI.exe`. Keep the companion files and folders next to the executable; this is a portable application folder, not a single-file installer. Optional Playwright and external CLI tools still need their separate installation steps.
+GitHub Actions runs syntax checks and the regression suite on both `ubuntu-latest` and `windows-latest` using Python 3.12. The project is launched with `python main.py` on the machine where you want to use it; no Windows EXE or bundled executable is required. Optional Playwright and external CLI tools still need their separate installation steps.
 
 ## Tests
 
-    python -m pip install pytest pytest-timeout aiohttp beautifulsoup4 lxml requests mmh3
+    python -m pip install pytest pytest-timeout aiohttp beautifulsoup4 lxml requests mmh3 tldextract
     python -m pytest -q
 
 GitHub Actions runs compile checks and the regression suite with per-test and overall deadlines.

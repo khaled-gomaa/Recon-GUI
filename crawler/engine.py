@@ -1,6 +1,8 @@
 """Async crawl engine with bounded workers, strict hostname scope, and TLS verification."""
 import asyncio
+import gzip
 import hashlib
+import io
 import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -10,6 +12,7 @@ import aiohttp
 from crawler.parser import PageParser
 
 MAX_BODY_BYTES = 5 * 1024 * 1024
+MAX_DECOMPRESSED_SITEMAP_BYTES = 20 * 1024 * 1024
 REDIRECT_CODES = {301, 302, 303, 307, 308}
 MAX_RETRY_AFTER_SECONDS = 120
 MAX_RATE_LIMIT_PAUSES = 3
@@ -72,7 +75,7 @@ class CrawlResult:
         content_hash: str = "", text_hash: str = "",
         content_length: int = 0, content_type: str = "",
         favicon_hash: str = "",
-        links=None,
+        links=None, body_truncated: bool = False, asset_references=None,
     ):
         self.url = url
         self.status = status
@@ -87,8 +90,11 @@ class CrawlResult:
         self.content_type = content_type
         self.favicon_hash = favicon_hash
         self.links = list(links or [])
+        self.asset_references = list(asset_references or [])
+        self.body_truncated = bool(body_truncated)
         # Kept in memory for analysis; deliberately omitted from to_dict().
         self.headers = {}
+        self.cookie_events = []
         self.depth = 0
         self.error = ""
 
@@ -101,12 +107,14 @@ class CrawlResult:
             "redirect_chain": self.redirect_chain,
             "word_count": self.word_count,
             "content_length": self.content_length,
+            "body_truncated": self.body_truncated,
             "content_type": self.content_type,
             "content_hash": self.content_hash,
             "text_hash": self.text_hash,
             "favicon_hash": self.favicon_hash,
             "depth": self.depth,
             "error": self.error,
+            "cookie_events": list(self.cookie_events),
         }
 
 
@@ -122,6 +130,7 @@ class CrawlEngine:
         should_stop=None,
         request_headers=None,
         respect_robots=True,
+        cookie_jar=None,
     ):
         normalized = _normalize_http_url(start_url)
         if not normalized:
@@ -141,6 +150,7 @@ class CrawlEngine:
             and "\r" not in str(value) and "\n" not in str(value)
         }
         self.respect_robots = bool(respect_robots)
+        self.cookie_jar = cookie_jar
         self.crawl_delay_seconds = 0.0
         self.robots_url = ""
         self._robots_loaded = False
@@ -150,6 +160,10 @@ class CrawlEngine:
         self.results: list = []
         self._schedule_lock = asyncio.Lock()
         self.rate_limit_stopped = False
+        self.page_limit_reached = False
+        self.depth_limit_reached = False
+        self._page_limit_logged = False
+        self._depth_limit_logged = False
         self._rate_limit_pauses = 0
         self._resume_event = None
         self._rate_limit_lock = None
@@ -373,15 +387,27 @@ class CrawlEngine:
             normalized = _normalize_http_url(raw_url)
             if not normalized or not self._in_scope(normalized):
                 continue
-            if normalized in self.visited or len(self.visited) >= self.max_pages:
+            if normalized in self.visited:
+                continue
+            if len(self.visited) >= self.max_pages:
+                self.page_limit_reached = True
+                if not self._page_limit_logged:
+                    self._log(
+                        f"[LIMIT] Max pages ({self.max_pages}) reached while adding seeds; "
+                        "some candidate URLs were not crawled."
+                    )
+                    self._page_limit_logged = True
                 continue
             self.visited.add(normalized)
             queue.put_nowait((normalized, depth))
 
-        async with aiohttp.ClientSession(
-            connector=connector, timeout=timeout, headers=headers,
-            raise_for_status=False,
-        ) as session:
+        session_options = {
+            "connector": connector, "timeout": timeout, "headers": headers,
+            "raise_for_status": False,
+        }
+        if self.cookie_jar is not None:
+            session_options["cookie_jar"] = self.cookie_jar
+        async with aiohttp.ClientSession(**session_options) as session:
             if self.respect_robots and not self._robots_loaded:
                 await self._load_robots(session)
 
@@ -418,7 +444,23 @@ class CrawlEngine:
                             await self._handle_429(result.headers, url)
                             continue
 
-                        if result.status != 200 or depth >= self.max_depth or self.should_stop() or self.rate_limit_stopped:
+                        if result.status != 200 or self.should_stop() or self.rate_limit_stopped:
+                            continue
+                        if depth >= self.max_depth:
+                            has_unvisited_in_scope_links = any(
+                                (candidate := _normalize_http_url(link))
+                                and self._in_scope(candidate)
+                                and candidate not in self.visited
+                                for link in links
+                            )
+                            if has_unvisited_in_scope_links:
+                                self.depth_limit_reached = True
+                                if not self._depth_limit_logged:
+                                    self._log(
+                                        f"[LIMIT] Max depth ({self.max_depth}) reached with additional "
+                                        "same-host links still undiscovered by crawling."
+                                    )
+                                    self._depth_limit_logged = True
                             continue
                         for link in links:
                             normalized_link = _normalize_http_url(link)
@@ -426,7 +468,16 @@ class CrawlEngine:
                                 continue
                             async with self._schedule_lock:
                                 # visited contains both queued and in-flight URLs, so the cap is reserved atomically.
-                                if normalized_link in self.visited or len(self.visited) >= self.max_pages:
+                                if normalized_link in self.visited:
+                                    continue
+                                if len(self.visited) >= self.max_pages:
+                                    self.page_limit_reached = True
+                                    if not self._page_limit_logged:
+                                        self._log(
+                                            f"[LIMIT] Max pages ({self.max_pages}) reached; further "
+                                            "same-host links were discovered but not queued."
+                                        )
+                                        self._page_limit_logged = True
                                     continue
                                 self.visited.add(normalized_link)
                                 queue.put_nowait((normalized_link, depth + 1))
@@ -445,6 +496,10 @@ class CrawlEngine:
         if self.rate_limit_stopped:
             self._log("[Crawl] Stopped early because a safe Retry-After resume was not available.")
         self._log(f"Crawl finished: {len(self.results)} page responses recorded.")
+        if self.page_limit_reached:
+            self._log("[Crawl] Result is partial because the configured page limit was reached.")
+        if self.depth_limit_reached:
+            self._log("[Crawl] Result is partial because the configured depth limit left same-host links unvisited.")
         return self.results
 
     async def _crawl_one(self, session, url, depth):
@@ -454,6 +509,8 @@ class CrawlEngine:
         content_type = ""
         html = ""
         response_headers = {}
+        cookie_events = []
+        response_body_truncated = False
 
         try:
             for _ in range(6):
@@ -463,6 +520,15 @@ class CrawlEngine:
                     final_status = response.status
                     content_type = response.headers.get("Content-Type", "")
                     response_headers = dict(response.headers)
+                    for cookie_name, morsel in response.cookies.items():
+                        cookie_events.append({
+                            "name": cookie_name,
+                            "domain": morsel.get("domain", ""),
+                            "path": morsel.get("path", ""),
+                            "secure": bool(morsel.get("secure", "")),
+                            "httponly": bool(morsel.get("httponly", "")),
+                            "samesite": morsel.get("samesite", ""),
+                        })
                     if final_status in REDIRECT_CODES:
                         location = response.headers.get("Location", "")
                         if not location:
@@ -482,17 +548,48 @@ class CrawlEngine:
                         continue
                     current_path = urlparse(current_url).path.lower()
                     is_html = "text/html" in content_type.lower() or "application/xhtml+xml" in content_type.lower()
-                    is_xml = "xml" in content_type.lower() or current_path.endswith(".xml")
+                    is_gzipped_sitemap = current_path.endswith(".xml.gz")
+                    is_xml = (
+                        "xml" in content_type.lower()
+                        or current_path.endswith((".xml", ".xml.gz"))
+                    )
                     is_robots = current_path == "/robots.txt" or current_path.endswith("/robots.txt")
                     if is_html or is_xml or is_robots:
                         body = await response.content.read(MAX_BODY_BYTES + 1)
                         if len(body) > MAX_BODY_BYTES:
+                            response_body_truncated = True
                             body = body[:MAX_BODY_BYTES]
                             self._log(f"[LIMIT] Body truncated at {MAX_BODY_BYTES} bytes: {url}")
-                        html = body.decode(response.charset or "utf-8", errors="replace")
+                        if is_gzipped_sitemap:
+                            if response_body_truncated:
+                                self._log(
+                                    f"[LIMIT] Compressed sitemap exceeded {MAX_BODY_BYTES} bytes; "
+                                    f"it was not partially decompressed: {url}"
+                                )
+                                body = b""
+                            else:
+                                try:
+                                    with gzip.GzipFile(fileobj=io.BytesIO(body), mode="rb") as compressed:
+                                        body = compressed.read(MAX_DECOMPRESSED_SITEMAP_BYTES + 1)
+                                    if len(body) > MAX_DECOMPRESSED_SITEMAP_BYTES:
+                                        response_body_truncated = True
+                                        body = body[:MAX_DECOMPRESSED_SITEMAP_BYTES]
+                                        self._log(
+                                            f"[LIMIT] Decompressed sitemap capped at "
+                                            f"{MAX_DECOMPRESSED_SITEMAP_BYTES} bytes: {url}"
+                                        )
+                                except (OSError, EOFError, gzip.BadGzipFile) as exc:
+                                    response_body_truncated = True
+                                    body = b""
+                                    self._log(
+                                        f"[Sitemap] Could not decompress {url}: {type(exc).__name__}"
+                                    )
+                        html = body.decode("utf-8" if is_gzipped_sitemap else (response.charset or "utf-8"), errors="replace")
                     break
 
-            parsed = self.parser.parse(html, current_url) if html else {"title": "", "text": "", "links": []}
+            parsed = self.parser.parse(html, current_url) if html else {
+                "title": "", "text": "", "links": [], "assets": [],
+            }
             page_text = parsed["text"]
             result = CrawlResult(
                 url=url,
@@ -507,8 +604,11 @@ class CrawlEngine:
                 content_length=len(html.encode("utf-8")),
                 content_type=content_type,
                 links=parsed.get("links", []) if html else [],
+                asset_references=parsed.get("assets", []) if html else [],
+                body_truncated=response_body_truncated,
             )
             result.headers = response_headers
+            result.cookie_events = cookie_events
             result.depth = depth
             result.error = ""
             return result, parsed["links"] if html else []
@@ -516,9 +616,10 @@ class CrawlEngine:
             result = CrawlResult(
                 url=url, status=final_status, title="", html="",
                 redirect_chain=redirect_chain, final_url=current_url,
-                content_type=content_type,
+                content_type=content_type, body_truncated=response_body_truncated,
             )
             result.headers = response_headers
+            result.cookie_events = cookie_events
             result.depth = depth
             result.error = f"{type(exc).__name__}: {exc}"
             return result, []
