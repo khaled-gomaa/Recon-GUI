@@ -28,12 +28,34 @@ Recon-GUI is a Python desktop application for mapping and documenting web assets
 - Optional external CLI integrations for GAU, Nuclei, and ffuf in the External Tools tab. Subfinder is a separate passive hostname discovery phase in Scan Options; Nmap remains excluded from the core web crawler because port scanning is a different activity.
 - Honors a valid Crawl-delay in robots.txt. On HTTP 429, the crawler waits only when the response provides a supported Retry-After; otherwise it stops safely rather than bypassing rate limits.
 
-## Quick start (Windows)
+## Quick start (Windows and Linux)
 
-    python -m venv .venv
-    .venv\Scripts\activate
+Recon-GUI runs from source with Python and PySide6 on both Windows and Linux. It does not require a packaged EXE, and this repository no longer builds or distributes platform-specific executable bundles.
+
+### Windows (PowerShell)
+
+    py -3.12 -m venv .venv
+    .\.venv\Scripts\Activate.ps1
+    python -m pip install --upgrade pip
     python -m pip install -r requirements.txt
     python main.py
+
+If PowerShell blocks activation, use Command Prompt instead:
+
+    py -3.12 -m venv .venv
+    .venv\Scripts\activate.bat
+    python -m pip install -r requirements.txt
+    python main.py
+
+### Linux (Ubuntu/Debian/Kali)
+
+    python3.12 -m venv .venv
+    source .venv/bin/activate
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
+    python main.py
+
+Install Python 3.12 and the system's standard Qt/X11 or Wayland libraries first. If the GUI reports a missing Qt platform plugin or XCB library, install the corresponding system libraries provided by your Linux distribution. On a headless machine, a desktop session or remote desktop is needed to show the GUI.
 
 ## Optional JavaScript rendering
 
@@ -69,9 +91,9 @@ The GUI's External Tools tab can check which CLI tools are installed. Subfinder 
 
 If the origin returns HTTP 429, Recon-GUI parses Retry-After (seconds or an HTTP date), pauses queued requests for supported waits, and resumes at the configured rate. If no usable retry guidance is provided, the requested wait exceeds the automatic ceiling, or the limit recurs too often, that phase stops safely. The application does not try to evade server-enforced limits. Content Discovery is low-rate by default; when a crawl delay is present, it reduces the path scanner to one worker and applies the delay between requests. Wordlist scanning has no implicit word-count cap, but it still has an explicit response-body read cap (currently 1 MiB per response), timeouts, a bounded concurrency setting, and server-respecting stop behavior. The UI reports configured page limits and rate-limit stops; “all results” cannot be guaranteed when paths are unknown or access is restricted.
 
-## Build a portable Windows app
+## Cross-platform validation
 
-A Windows build workflow is included at Actions → Windows application build. Run it manually, or push a version tag beginning with `v`. Download the `ReconGUI-Windows-...` artifact from the successful workflow, extract the entire folder, and run `ReconGUI.exe`. Keep the companion files and folders next to the executable; this is a portable application folder, not a single-file installer. Optional Playwright and external CLI tools still need their separate installation steps.
+GitHub Actions runs syntax checks and the regression suite on both `ubuntu-latest` and `windows-latest` using Python 3.12. The project is launched with `python main.py` on the machine where you want to use it; no Windows EXE or bundled executable is required. Optional Playwright and external CLI tools still need their separate installation steps.
 
 ## Tests
 
