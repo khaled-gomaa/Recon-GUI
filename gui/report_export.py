@@ -576,23 +576,40 @@ def render_csv_report(report: dict) -> str:
             "", "potential" if item.get("potential_hit") else "",
             "method={}; source={}; bytes={}; words={}; type={}; final_url={}; "
             "location={}; server={}; last_modified={}; allow={}; content_hash={}; "
-            "response_truncated={}; baseline_match={}; set_cookie_names={}".format(
+            "response_truncated={}; baseline_match={}; error={}; set_cookie_names={}".format(
                 item.get("method", "GET"), item.get("source", "wordlist"),
                 item.get("size", 0), item.get("word_count", 0),
                 item.get("content_type", ""), item.get("final_url", ""),
                 item.get("location", ""), item.get("server", ""),
                 item.get("last_modified", ""), item.get("allow", ""),
                 item.get("content_hash", ""), item.get("response_truncated", False),
-                item.get("baseline_match", False),
+                item.get("baseline_match", False), item.get("error", ""),
                 json.dumps(item.get("set_cookie_names", []), ensure_ascii=False, sort_keys=True),
             ),
         ])
     coverage = report.get("coverage_summary", {}) or {}
+    for item in report.get("failed_requests", []) or []:
+        writer.writerow([
+            "request_failure", item.get("url", ""), "", item.get("phase", ""),
+            "error", item.get("error_type", "No HTTP response"),
+        ])
+    for item in report.get("server_error_responses", []) or []:
+        writer.writerow([
+            "http_server_error", item.get("url", ""), item.get("status", ""),
+            item.get("phase", ""), "partial", "HTTP 5xx response",
+        ])
+    for item in report.get("restricted_responses", []) or []:
+        writer.writerow([
+            "http_restricted", item.get("url", ""), item.get("status", ""),
+            item.get("phase", ""), "review", "HTTP 401/403 response",
+        ])
+
     if coverage:
         writer.writerow([
             "coverage_summary", "", "", "",
             "partial" if (
-                report.get("content_limit_reached") or report.get("page_limit_reached")
+                report.get("transport_error_count") or report.get("server_error_response_count")
+                or report.get("content_limit_reached") or report.get("page_limit_reached")
                 or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached")
             ) else "no-limit-reported",
             json.dumps(coverage, ensure_ascii=False, sort_keys=True),
