@@ -1743,6 +1743,7 @@ class MainWindow(QMainWindow):
         crawler_limited = report.get("crawler_rate_limited_stop", False)
         discovery_limited = report.get("wordlist_rate_limited_stop", False)
         css_limited = report.get("css_rate_limited_stop", False)
+        js_limited = report.get("js_rate_limited_stop", False)
         css_summary = report.get("css_discovery_summary", {}) or {}
         css_coverage_partial = css_summary.get("status") in {"partial", "error"} or bool(css_summary.get("css_limit_reached"))
         page_limited = report.get("page_limit_reached", False)
@@ -1755,16 +1756,19 @@ class MainWindow(QMainWindow):
         asset_probe_limited = bool(asset_probe_summary.get("partial"))
         transport_errors = int(report.get("transport_error_count", 0) or 0)
         server_errors = int(report.get("server_error_response_count", 0) or 0)
+        js_fetch_errors = int(report.get("js_fetch_error_count", 0) or 0)
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
-        elif crawler_limited or discovery_limited or css_limited or asset_probe_summary.get("rate_limited_stop"):
+        elif crawler_limited or discovery_limited or css_limited or js_limited or asset_probe_summary.get("rate_limited_stop"):
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
-        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited or css_coverage_partial or transport_errors or server_errors:
+        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited or css_coverage_partial or transport_errors or server_errors or js_fetch_errors:
             reasons = []
             if transport_errors:
                 reasons.append("REQUEST ERRORS")
             if server_errors:
                 reasons.append("HTTP 5XX")
+            if js_fetch_errors:
+                reasons.append("JS FETCH")
             if page_limited:
                 reasons.append("PAGE")
             if depth_limited:
@@ -1813,7 +1817,7 @@ class MainWindow(QMainWindow):
             self._append_log("[LIMIT] Page limit was reached; undiscovered same-host links remain in the queue/frontier.")
         if depth_limited:
             self._append_log("[LIMIT] Depth limit was reached while additional same-host links remained unvisited.")
-        if crawler_limited or discovery_limited or css_limited:
+        if crawler_limited or discovery_limited or css_limited or js_limited:
             self._append_log(
                 "[429] Scanning stopped or later active phases were skipped to respect the target's "
                 "rate limit. No rate-limit bypass was attempted."
@@ -1989,6 +1993,8 @@ class MainWindow(QMainWindow):
         elif (
             report.get("transport_error_count")
             or report.get("server_error_response_count")
+            or report.get("js_fetch_error_count")
+            or report.get("js_rate_limited_stop")
             or css_summary.get("status") in {"partial", "error"}
             or coverage.get("css_limit_reached")
             or coverage.get("page_limit_reached")
@@ -2000,7 +2006,7 @@ class MainWindow(QMainWindow):
             or coverage.get("asset_probe_partial")
             or content_limited
         ):
-            if report.get("transport_error_count") or report.get("server_error_response_count"):
+            if report.get("transport_error_count") or report.get("server_error_response_count") or report.get("js_fetch_error_count"):
                 overall = "PARTIAL — REQUEST OR SERVER ERRORS / COVERAGE LIMITS"
             else:
                 overall = "PARTIAL — ONE OR MORE COVERAGE LIMITS REACHED"
@@ -2025,6 +2031,7 @@ class MainWindow(QMainWindow):
             lines.append("Crawl limits: not recorded.")
         lines.append(f"User stopped scan: {stopped}")
         lines.append(f"HTTP crawler rate limited: {crawler_limited}")
+        lines.append(f"JavaScript collector rate limited: {bool(report.get('js_rate_limited_stop'))}")
         lines.append("Active crawl scope: starting hostname only; discovered subdomains are never added automatically.")
         lines.append("")
 
@@ -2125,8 +2132,16 @@ class MainWindow(QMainWindow):
                 f"{coverage.get('javascript_files_discovered', 0)} / "
                 f"{coverage.get('javascript_files_attempted', 0)}"
             )
+            lines.append(f"JavaScript files failed / inaccessible: {report.get('js_fetch_error_count', 0)}")
             lines.append(f"JavaScript files truncated: {coverage.get('javascript_files_truncated', 0)}")
             lines.append(f"Response bodies truncated: {coverage.get('response_bodies_truncated', 0)}")
+        for item in report.get("js_fetch_errors", []) or []:
+            lines.append(
+                f"  [JS FETCH ERROR] HTTP {item.get('status', 0)} "
+                f"{item.get('url', '')} — {item.get('error_type', 'not analyzed')}"
+            )
+        if report.get("js_fetch_error_count"):
+            lines.append("WARNING: one or more discovered JavaScript files could not be analyzed; endpoint coverage may be incomplete.")
         lines.append(f"Any body/asset content truncated: {content_limited}")
         for note in report.get("content_limit_notes", []) or []:
             lines.append("WARNING: " + str(note))
