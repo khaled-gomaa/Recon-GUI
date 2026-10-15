@@ -246,7 +246,7 @@ class HistoryStore:
         pages = report.get("pages") or []
         status = (
             "stopped" if report.get("stopped_by_user") else
-            "rate-limited" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") or report.get("css_rate_limited_stop") or (report.get("asset_probe_summary", {}) or {}).get("rate_limited_stop") else
+            "rate-limited" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") or report.get("css_rate_limited_stop") or report.get("js_rate_limited_stop") or (report.get("asset_probe_summary", {}) or {}).get("rate_limited_stop") else
             "partial" if (
                 report.get("page_limit_reached")
                 or report.get("depth_limit_reached")
@@ -259,6 +259,7 @@ class HistoryStore:
                 or (report.get("asset_probe_summary", {}) or {}).get("partial")
                 or report.get("transport_error_count")
                 or report.get("server_error_response_count")
+                or report.get("js_fetch_error_count")
             ) else
             "completed"
         )
