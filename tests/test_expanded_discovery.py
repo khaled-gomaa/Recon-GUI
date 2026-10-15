@@ -428,3 +428,20 @@ def test_static_javascript_infers_methods_from_template_literal_urls():
     assert "limit" in fetch["body_parameters"]
     assert ("/api/items/{itemId}", "PUT") in by_url_method
     assert ("/api/items/{itemId}/status", "PATCH") in by_url_method
+
+
+def test_unattempted_javascript_sources_are_reported_without_query_values():
+    analyzer = ReconAnalyzer("https://example.test/")
+    analyzer.js_collector.js_urls.update({
+        "https://example.test/static/app.js?token=must-not-persist",
+        "https://example.test/static/vendor.js?cache=build-secret",
+    })
+    report = analyzer.to_dict()
+
+    assert report["js_fetch_error_count"] == 0
+    assert report["unattempted_js_files"] == [
+        "https://example.test/static/app.js",
+        "https://example.test/static/vendor.js",
+    ]
+    assert "must-not-persist" not in repr(report)
+    assert "build-secret" not in repr(report)
