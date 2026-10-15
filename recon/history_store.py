@@ -252,6 +252,8 @@ class HistoryStore:
                 or report.get("wordlist_candidate_limit_reached")
                 or report.get("wordlist_recursion_depth_limit_reached")
                 or report.get("content_limit_reached")
+                or (report.get("css_discovery_summary", {}) or {}).get("status") in {"partial", "error"}
+                or (report.get("css_discovery_summary", {}) or {}).get("css_limit_reached")
                 or (report.get("seed_import_summary", {}) or {}).get("limit_reached")
                 or (report.get("asset_probe_summary", {}) or {}).get("partial")
             ) else
