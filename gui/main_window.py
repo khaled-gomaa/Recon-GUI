@@ -1589,7 +1589,9 @@ class MainWindow(QMainWindow):
 
         row = self.discovery_table.rowCount()
         self.discovery_table.insertRow(row)
-        if result.get("baseline_match"):
+        if result.get("error") or not result.get("status"):
+            classification = "Request failed: " + str(result.get("error") or "no HTTP response")
+        elif result.get("baseline_match"):
             classification = "Likely wildcard response"
         elif result.get("potential_hit"):
             classification = "Potential hit"
