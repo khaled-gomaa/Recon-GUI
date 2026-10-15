@@ -180,3 +180,27 @@ def test_jsonld_route_extraction_is_bounded_and_ignores_non_url_fields():
     assert PageParser._jsonld_url_candidates({"url": ["", "/one", "/two"]}) == [
         "/one", "/two"
     ]
+
+
+def test_parser_discovers_pagination_relations_and_social_asset_metadata():
+    html = """
+    <html><head>
+      <link rel="prev" href="/catalog?page=1">
+      <link rel="next" href="/catalog?page=3">
+      <link rel="first" href="/catalog">
+      <meta property="og:image" content="/social/preview.webp?size=large">
+      <meta property="og:video:secure_url" content="/media/preview.mp4">
+      <meta name="twitter:image" content="https://cdn.example.test/cards/card.png">
+    </head><body><h1>Catalog</h1></body></html>
+    """
+    result = PageParser("https://example.test/").parse(
+        html, "https://example.test/catalog?page=2"
+    )
+    links = set(result["links"])
+    assert "https://example.test/catalog?page=1" in links
+    assert "https://example.test/catalog?page=3" in links
+    assert "https://example.test/catalog" in links
+    assets = {item["url"]: item["kind"] for item in result["assets"]}
+    assert assets["https://example.test/social/preview.webp?size=large"] == "image"
+    assert assets["https://example.test/media/preview.mp4"] == "media"
+    assert assets["https://cdn.example.test/cards/card.png"] == "image"
