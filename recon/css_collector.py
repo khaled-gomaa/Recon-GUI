@@ -22,7 +22,7 @@ CSS_URL_RE = re.compile(r"""url\(\s*(?P<quote>['"]?)(?P<url>[^)'"]+?)(?P=quote)\
 CSS_IMPORT_RE = re.compile(
     r"""@import\s+(?:url\(\s*)?['"]?([^'")\s;]+)['"]?\s*\)?""", re.I
 )
-SOURCE_MAP_RE = re.compile(r"""[/\*#@]+\s*sourceMappingURL\s*=\s*([^\s*]+)""", re.I)
+SOURCE_MAP_RE = re.compile(r"""sourceMappingURL\s*=\s*['"]?([^\s*'"<>]+)""", re.I)
 COMMENT_RE = re.compile(r"/\*[\s\S]*?\*/")
 
 
@@ -189,7 +189,19 @@ class CSSCollector:
             value = str(value).strip()
             if not value or value.lower().startswith(("data:", "blob:", "javascript:", "#")):
                 continue
-            absolute = urljoin(css_url, value)
+            try:
+                absolute = urljoin(css_url, value)
+                parsed = urlsplit(absolute)
+                if (
+                    parsed.scheme.lower() not in {"http", "https"}
+                    or not parsed.hostname
+                    or parsed.username
+                    or parsed.password
+                ):
+                    continue
+                _ = parsed.port
+            except (TypeError, ValueError, UnicodeError):
+                continue
             kind = _kind(absolute, imported=imported, source_map=source_map)
             records.append({
                 "url": _safe_url(absolute),
@@ -268,12 +280,20 @@ class CSSCollector:
                         if "css" not in content_type and _extension(url) != ".css":
                             self.errors.append({"url": _safe_url(url), "status": int(response.status), "error": "not-css-content"})
                             continue
-                        body = await response.content.read(MAX_CSS_BYTES + 1)
-                        if len(body) > MAX_CSS_BYTES:
+                        body_buffer = bytearray()
+                        # Stream until EOF or one byte beyond the cap. A single read(n)
+                        # may return an arbitrary short chunk before EOF.
+                        while len(body_buffer) <= MAX_CSS_BYTES:
+                            remaining = MAX_CSS_BYTES + 1 - len(body_buffer)
+                            chunk = await response.content.read(min(64 * 1024, remaining))
+                            if not chunk:
+                                break
+                            body_buffer.extend(chunk)
+                        if len(body_buffer) > MAX_CSS_BYTES:
                             self.truncated_files.add(url)
-                            body = body[:MAX_CSS_BYTES]
-                            self._log(f"[CSS] Truncated oversized stylesheet ({MAX_CSS_BYTES} bytes): {url}")
-                        css = body.decode(response.charset or "utf-8", errors="replace")
+                            del body_buffer[MAX_CSS_BYTES:]
+                            self._log(f"[CSS] Truncated oversized stylesheet ({MAX_CSS_BYTES} bytes): {_safe_url(url)}")
+                        css = bytes(body_buffer).decode(response.charset or "utf-8", errors="replace")
                 except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError, ValueError) as exc:
                     self.errors.append({"url": _safe_url(url), "error": type(exc).__name__})
                     self._log(f"[CSS] Could not read {_safe_url(url)}: {type(exc).__name__}")
