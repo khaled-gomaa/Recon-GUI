@@ -2,6 +2,7 @@
 from urllib.parse import parse_qsl, urljoin, urlparse, urlsplit
 from dataclasses import dataclass, field
 
+from bs4 import BeautifulSoup
 from recon.advanced_analysis import analyze_html
 from recon.email_extractor import EmailExtractor
 from recon.subdomain_finder import SubdomainFinder
@@ -140,8 +141,6 @@ class ReconAnalyzer:
         kind = str((asset or {}).get("kind") or "resource")
         extension = str((asset or {}).get("extension") or "")
         key = (safe_url, kind, page_path)
-        if key in self._asset_observation_keys:
-            return
         self._asset_observation_keys.add(key)
         item_key = (safe_url, kind)
         item = self.asset_observations.setdefault(item_key, {
@@ -159,6 +158,10 @@ class ReconAnalyzer:
             )
         except ValueError:
             pass
+        item["query_parameter_names"].update(
+            str(name) for name in (asset or {}).get("query_parameter_names", [])
+            if str(name).strip()
+        )
 
     def analyze_page(
         self, url: str, html: str, headers: dict = None, discovered_links=None,
@@ -168,12 +171,22 @@ class ReconAnalyzer:
         self.page_urls.add(url)
         for asset in discovered_assets or []:
             self._record_asset_reference(url, asset)
-        # Mine extension-bearing literals from inline script and metadata strings. The
-        # original request URL stays in memory; the report persists query names only.
-        for asset in JSEndpointExtractor.extract_asset_references(
-            html, url, source="html-or-inline-literal"
-        ):
-            self._record_asset_reference(url, asset)
+        # Mine extension-bearing strings from inline scripts (including JSON-LD) without
+        # mistaking every HTML attribute for JavaScript. Honour a valid document <base href>.
+        soup = BeautifulSoup(html, "lxml")
+        script_base = url
+        base_tag = soup.find("base", href=True)
+        if base_tag:
+            candidate_base = urljoin(url, str(base_tag.get("href") or "").strip())
+            parsed_base = urlparse(candidate_base)
+            if parsed_base.scheme.lower() in {"http", "https"} and parsed_base.hostname:
+                script_base = candidate_base
+        for script in soup.find_all("script", src=False):
+            script_text = script.string or script.get_text() or ""
+            for asset in JSEndpointExtractor.extract_asset_references(
+                script_text, script_base, source="inline-javascript"
+            ):
+                self._record_asset_reference(url, asset)
         for link in discovered_links or []:
             if not isinstance(link, str) or not link.startswith(("http://", "https://")):
                 continue
