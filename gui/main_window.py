@@ -900,6 +900,8 @@ class MainWindow(QMainWindow):
                 evidence = "Page crawler requested URL"
             elif record.get("fetched_by_js_collector"):
                 evidence = "JavaScript collector downloaded"
+            elif record.get("fetched_by_css_collector"):
+                evidence = "CSS collector downloaded"
             else:
                 evidence = "Reference only — not fetched"
             if record.get("probe_checked"):
@@ -1714,6 +1716,7 @@ class MainWindow(QMainWindow):
         )
         crawler_limited = report.get("crawler_rate_limited_stop", False)
         discovery_limited = report.get("wordlist_rate_limited_stop", False)
+        css_limited = report.get("css_rate_limited_stop", False)
         page_limited = report.get("page_limit_reached", False)
         depth_limited = report.get("depth_limit_reached", False)
         wordlist_limited = report.get("wordlist_candidate_limit_reached", False)
@@ -1724,7 +1727,7 @@ class MainWindow(QMainWindow):
         asset_probe_limited = bool(asset_probe_summary.get("partial"))
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
-        elif crawler_limited or discovery_limited or asset_probe_summary.get("rate_limited_stop"):
+        elif crawler_limited or discovery_limited or css_limited or asset_probe_summary.get("rate_limited_stop"):
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
         elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited:
             reasons = []
@@ -1750,6 +1753,7 @@ class MainWindow(QMainWindow):
         content_cap_note = (
             f" | truncated body/asset records: {len(report.get('body_truncated_pages', []))} page bodies, "
             f"{len(report.get('truncated_js_files', []))} JS files, "
+            f"{len(report.get('truncated_css_files', []))} CSS files, "
             f"{len(report.get('truncated_wordlist_urls', []))} wordlist responses"
             if content_limited else ""
         )
@@ -1762,6 +1766,7 @@ class MainWindow(QMainWindow):
             f"{len(report.get('cookie_map', []))} cookie metadata records; "
             f"{report.get('wordlist_words_loaded', 0)} wordlist words / "
             f"{report.get('wordlist_candidates', 0)} candidates; "
+            f"{(report.get('css_discovery_summary', {}) or {}).get('css_files_fetched', 0)} CSS files analyzed; "
             f"{len(report.get('related_findings', []))} review findings; "
             f"{len(sim.get('exact_duplicates', []))} duplicate groups; "
             f"{len(sim.get('soft_404_candidates', []))} soft-404 candidates."
@@ -1772,9 +1777,9 @@ class MainWindow(QMainWindow):
             self._append_log("[LIMIT] Page limit was reached; undiscovered same-host links remain in the queue/frontier.")
         if depth_limited:
             self._append_log("[LIMIT] Depth limit was reached while additional same-host links remained unvisited.")
-        if crawler_limited or discovery_limited:
+        if crawler_limited or discovery_limited or css_limited:
             self._append_log(
-                "[429] Scanning stopped or partially resumed to respect the target's "
+                "[429] Scanning stopped or later active phases were skipped to respect the target's "
                 "rate limit. No rate-limit bypass was attempted."
             )
 
@@ -1979,11 +1984,27 @@ class MainWindow(QMainWindow):
         lines.append("Active crawl scope: starting hostname only; discovered subdomains are never added automatically.")
         lines.append("")
 
+        css_summary = report.get("css_discovery_summary", {}) or {}
+        lines.append("=== CSS / NESTED ASSET DISCOVERY ===")
+        lines.append(
+            f"Status: {css_summary.get('status', 'not-run')}; "
+            f"stylesheets discovered/attempted/fetched: "
+            f"{css_summary.get('css_files_discovered', 0)}/"
+            f"{css_summary.get('css_files_attempted', 0)}/"
+            f"{css_summary.get('css_files_fetched', 0)}"
+        )
+        lines.append(f"Truncated CSS files: {len(css_summary.get('css_files_truncated', []) or [])}")
+        lines.append(f"CSS parse/download errors: {len(css_summary.get('css_file_errors', []) or [])}")
+        lines.append(f"CSS discovery rate-limited stop: {bool(report.get('css_rate_limited_stop'))}")
+        if report.get("css_rate_limited_stop"):
+            lines.append("WARNING: later active phases were skipped after the CSS phase reached a rate limit.")
+        lines.append("")
+
         lines.append("=== STATIC ASSET REFERENCES ===")
         lines.append(
             f"References: {coverage.get('asset_references', len(report.get('asset_inventory', [])))}; "
             f"external references: {coverage.get('external_asset_references', 0)}; "
-            f"references not downloaded by page/JS phases: "
+            f"references not downloaded by page/JS/CSS phases: "
             f"{coverage.get('asset_references_without_page_or_js_fetch', 0)}"
         )
         lines.append("Note: this inventory is extracted from markup; a reference does not prove the asset exists or was fetched.")
