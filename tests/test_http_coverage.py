@@ -66,7 +66,7 @@ def test_text_and_csv_exports_disclose_incomplete_http_coverage():
     txt = render_text_report(report)
     csv = render_csv_report(report)
 
-    assert "Partial (request/server errors)" in txt
+    assert "Partial (request/server errors or incomplete JavaScript)" in txt
     assert "TimeoutError" in txt
     assert "HTTP 503" in txt
     assert "request_failure" in csv
