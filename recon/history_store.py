@@ -260,7 +260,6 @@ class HistoryStore:
                 or report.get("transport_error_count")
                 or report.get("server_error_response_count")
                 or report.get("js_fetch_error_count")
-                or report.get("js_fetch_error_count")
             ) else
             "completed"
         )
