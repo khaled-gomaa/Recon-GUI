@@ -81,6 +81,16 @@ class WordlistScanner:
         self._rate_limit_lock = None
         self._rate_limit_cooldown_until = 0.0
 
+    @staticmethod
+    def _safe_result_url(value: str) -> str:
+        """Keep diagnostics query-free; parameter values may contain secrets."""
+        from urllib.parse import urlsplit, urlunsplit
+        try:
+            parsed = urlsplit(str(value or ""))
+            return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", ""))
+        except ValueError:
+            return "(invalid URL)"
+
     def _log(self, message: str):
         """Logging is best-effort and must not terminate a scan worker."""
         try:
@@ -442,12 +452,61 @@ class WordlistScanner:
                             if rate_limit_headers is not None:
                                 await self._handle_429(rate_limit_headers, url)
                         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                            self._log(f"[Wordlist] Request failed for {url}: {exc}")
+                            failure = {
+                                "url": self._safe_result_url(url),
+                                "final_url": self._safe_result_url(url),
+                                "method": "GET",
+                                "source": "wordlist",
+                                "status": 0,
+                                "size": 0,
+                                "word_count": 0,
+                                "content_type": "",
+                                "location": "",
+                                "server": "",
+                                "last_modified": "",
+                                "allow": "",
+                                "www_authenticate": "",
+                                "content_hash": "",
+                                "response_truncated": False,
+                                "set_cookie_names": [],
+                                "baseline_match": False,
+                                "potential_hit": False,
+                                "error": type(exc).__name__,
+                            }
+                            self.responses.append(failure)
+                            self._notify_result(failure)
+                            self._log(
+                                f"[Wordlist] Request failed for {self._safe_result_url(url)}: "
+                                f"{type(exc).__name__}"
+                            )
                         except Exception as exc:
                             # A malformed response or optional callback should not kill a worker.
+                            failure = {
+                                "url": self._safe_result_url(url),
+                                "final_url": self._safe_result_url(url),
+                                "method": "GET",
+                                "source": "wordlist",
+                                "status": 0,
+                                "size": 0,
+                                "word_count": 0,
+                                "content_type": "",
+                                "location": "",
+                                "server": "",
+                                "last_modified": "",
+                                "allow": "",
+                                "www_authenticate": "",
+                                "content_hash": "",
+                                "response_truncated": False,
+                                "set_cookie_names": [],
+                                "baseline_match": False,
+                                "potential_hit": False,
+                                "error": type(exc).__name__,
+                            }
+                            self.responses.append(failure)
+                            self._notify_result(failure)
                             self._log(
-                                f"[Wordlist] Unexpected error for {url}: "
-                                f"{type(exc).__name__}: {exc}"
+                                f"[Wordlist] Unexpected error for {self._safe_result_url(url)}: "
+                                f"{type(exc).__name__}"
                             )
 
                         # Apply delay even for ordinary 404/filtered responses.
