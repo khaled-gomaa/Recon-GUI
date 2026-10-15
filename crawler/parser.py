@@ -130,7 +130,10 @@ class PageParser:
         # Canonical/alternate links can reveal public routes; ignore stylesheet links.
         for tag in soup.find_all("link", href=True):
             rel = {str(value).lower() for value in (tag.get("rel") or [])}
-            if rel.intersection({"canonical", "alternate"}):
+            if rel.intersection({
+                "canonical", "alternate", "next", "prev", "first", "last",
+                "up", "contents", "index", "chapter", "section", "related", "search",
+            }):
                 candidate = self._candidate_url(tag["href"], current_url)
                 if candidate:
                     links.add(candidate)
@@ -343,6 +346,20 @@ class PageParser:
                     "font": "font", "video": "media", "audio": "media", "document": "download",
                 }.get(as_type, "stylesheet" if "stylesheet" in rel else "resource")
                 add(tag["href"], hint)
+
+        # Social/schema metadata can reference assets that are never present in visible markup.
+        meta_asset_kinds = {
+            "og:image": "image", "og:image:url": "image", "og:image:secure_url": "image",
+            "twitter:image": "image", "twitter:image:src": "image",
+            "msapplication-tileimage": "image", "image": "image",
+            "og:video": "media", "og:video:url": "media", "og:video:secure_url": "media",
+            "og:audio": "media", "og:audio:url": "media", "og:audio:secure_url": "media",
+        }
+        for tag in soup.find_all("meta", attrs={"content": True}):
+            key = str(tag.get("property") or tag.get("name") or tag.get("itemprop") or "").strip().lower()
+            kind = meta_asset_kinds.get(key)
+            if kind:
+                add(tag.get("content", ""), kind)
 
         # Expose direct download anchors as assets even when their URLs are also crawl seeds.
         for tag_name in ("a", "area"):
