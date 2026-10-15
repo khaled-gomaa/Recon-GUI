@@ -161,7 +161,7 @@ class PageParser:
         # Structured data can expose pages that are not linked in visible navigation.
         # Only URL-like fields are considered, with strict per-page parsing limits.
         jsonld_count = 0
-        for script in soup.find_all("script", attrs={"type": re.compile(r"application/ld\\+json", re.I)})[:MAX_JSONLD_SCRIPTS]:
+        for script in soup.find_all("script", attrs={"type": re.compile(r"application/ld\+json", re.I)})[:MAX_JSONLD_SCRIPTS]:
             text = script.string or script.get_text() or ""
             if not text.strip() or len(text) > MAX_JSONLD_SCRIPT_CHARS:
                 continue
