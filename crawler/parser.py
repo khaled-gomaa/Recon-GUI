@@ -1,4 +1,5 @@
 """Parse HTML and discover ordinary, hidden, and client-side routes."""
+import json
 import re
 from bs4 import BeautifulSoup, Comment
 from urllib.parse import urljoin, urlparse, urldefrag
@@ -20,6 +21,13 @@ DOWNLOAD_SUFFIXES = (
 )
 SRCSET_RE = re.compile(r"""(?:^|,)\s*([^,\s]+)""")
 CSS_URL_RE = re.compile(r"""url\(\s*['"]?([^'")\s]+)""", re.IGNORECASE)
+JSONLD_URL_KEYS = {
+    "@id", "url", "mainentityofpage", "ispartof", "haspart", "relatedlink",
+    "significantlink", "sameas", "contenturl", "embedurl", "subjectof",
+}
+MAX_JSONLD_SCRIPTS = 100
+MAX_JSONLD_SCRIPT_CHARS = 1_000_000
+MAX_JSONLD_URLS_PER_PAGE = 500
 
 
 class PageParser:
@@ -141,6 +149,36 @@ class PageParser:
                     if candidate:
                         links.add(candidate)
 
+        # Social/meta canonical hints may survive even when a body has no ordinary links.
+        for tag in soup.find_all("meta", attrs={"content": True}):
+            key = str(tag.get("property") or tag.get("name") or tag.get("itemprop") or "").strip().lower()
+            if key not in {"og:url", "twitter:url", "url"}:
+                continue
+            candidate = self._candidate_url(tag.get("content", ""), current_url)
+            if candidate:
+                links.add(candidate)
+
+        # Structured data can expose pages that are not linked in visible navigation.
+        # Only URL-like fields are considered, with strict per-page parsing limits.
+        jsonld_count = 0
+        for script in soup.find_all("script", attrs={"type": re.compile(r"application/ld\\+json", re.I)})[:MAX_JSONLD_SCRIPTS]:
+            text = script.string or script.get_text() or ""
+            if not text.strip() or len(text) > MAX_JSONLD_SCRIPT_CHARS:
+                continue
+            try:
+                data = json.loads(text)
+            except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
+                continue
+            for value in self._jsonld_url_candidates(data):
+                candidate = self._candidate_url(value, current_url)
+                if candidate:
+                    links.add(candidate)
+                    jsonld_count += 1
+                    if jsonld_count >= MAX_JSONLD_URLS_PER_PAGE:
+                        break
+            if jsonld_count >= MAX_JSONLD_URLS_PER_PAGE:
+                break
+
         # HTML meta refresh is a navigation just like an anchor.
         for tag in soup.find_all("meta", attrs={"http-equiv": re.compile("^refresh$", re.I)}):
             match = META_REFRESH_RE.search(tag.get("content", ""))
@@ -183,6 +221,45 @@ class PageParser:
                     links.add(candidate)
 
         return sorted(links)
+
+    @staticmethod
+    def _jsonld_url_candidates(document):
+        """Yield URL-like fields from JSON-LD without treating labels/images as pages."""
+        found = set()
+        visited = 0
+
+        def visit(value, depth=0):
+            nonlocal visited
+            if depth > 20 or visited >= MAX_JSONLD_URLS_PER_PAGE * 20:
+                return
+            visited += 1
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    normalized_key = str(key).strip().lower()
+                    if normalized_key in JSONLD_URL_KEYS:
+                        if isinstance(child, str) and child.strip():
+                            found.add(child.strip())
+                        elif isinstance(child, list):
+                            for item in child:
+                                if isinstance(item, str) and item.strip():
+                                    found.add(item.strip())
+                                elif isinstance(item, (dict, list)):
+                                    visit(item, depth + 1)
+                        elif isinstance(child, dict):
+                            visit(child, depth + 1)
+                    if isinstance(child, (dict, list)):
+                        visit(child, depth + 1)
+                    if len(found) >= MAX_JSONLD_URLS_PER_PAGE:
+                        return
+            elif isinstance(value, list):
+                for child in value:
+                    if isinstance(child, (dict, list)):
+                        visit(child, depth + 1)
+                    if len(found) >= MAX_JSONLD_URLS_PER_PAGE:
+                        return
+
+        visit(document)
+        return sorted(found)[:MAX_JSONLD_URLS_PER_PAGE]
 
     @staticmethod
     def _resource_candidate_url(value: str, current_url: str):
