@@ -14,8 +14,8 @@ def render_text_report(report: dict) -> str:
         "HAR metadata imported (no active scan run)" if import_only else
         "Stopped by user" if report.get("stopped_by_user") else
         "Partial (rate limited)" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") or report.get("css_rate_limited_stop") or (report.get("asset_probe_summary", {}) or {}).get("rate_limited_stop") else
-        "Partial (page/depth/wordlist/content cap)" if report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") or (report.get("css_discovery_summary", {}) or {}).get("status") in {"partial", "error"} or (report.get("css_discovery_summary", {}) or {}).get("css_limit_reached") or (report.get("seed_import_summary", {}) or {}).get("limit_reached") or (report.get("asset_probe_summary", {}) or {}).get("partial") else
-        "Completed"
+        "Partial (request/server errors or coverage cap)" if report.get("transport_error_count") or report.get("server_error_response_count") or report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") or (report.get("css_discovery_summary", {}) or {}).get("status") in {"partial", "error"} or (report.get("css_discovery_summary", {}) or {}).get("css_limit_reached") or (report.get("seed_import_summary", {}) or {}).get("limit_reached") or (report.get("asset_probe_summary", {}) or {}).get("partial") else
+        "Completed (no known caps or request errors)"
     )
     lines = [
         "RECON-GUI - RECONNAISSANCE REPORT",
@@ -27,6 +27,10 @@ def render_text_report(report: dict) -> str:
         f"Asset HEAD checks: {(report.get('asset_probe_summary', {}) or {}).get('requests_completed', 0)}; failed={(report.get('asset_probe_summary', {}) or {}).get('request_failures', 0)}; enabled={(report.get('asset_probe_summary', {}) or {}).get('enabled', False)}; partial={(report.get('asset_probe_summary', {}) or {}).get('partial', False)}",
         f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}",
         f"Content Discovery candidates generated: {report.get('wordlist_candidates', 0)}",
+        f"HTTP status counts: {report.get('http_status_counts', {})}",
+        f"Transport/request errors: {report.get('transport_error_count', 0)}",
+        f"HTTP 5xx responses: {report.get('server_error_response_count', 0)}",
+        f"Restricted responses (401/403): {report.get('restricted_response_count', 0)}",
         f"Explicit wordlist limit reached: {report.get('wordlist_candidate_limit_reached', False)}",
         f"Wordlist word cap: {report.get('wordlist_max_words', 0) or 'unlimited'}; reached: {report.get('wordlist_word_limit_reached', False)}",
         f"Generated path cap: {report.get('wordlist_max_candidates', 0) or 'unlimited'}; reached: {report.get('wordlist_path_limit_reached', False)}",
@@ -60,6 +64,25 @@ def render_text_report(report: dict) -> str:
         lines.append(f"Import truncated: {har_summary.get('truncated', False)}")
         for warning in har_summary.get("warnings", []) or []:
             lines.append("WARNING: " + str(warning))
+
+    _section(lines, "HTTP Coverage / Failed Requests")
+    for item in report.get("failed_requests", []) or []:
+        lines.append(
+            f"[FAILED] [{item.get('phase', '')}] {item.get('url', '')} "
+            f"| error={item.get('error_type', 'No HTTP response')}"
+        )
+    if report.get("failed_requests_list_truncated"):
+        lines.append("WARNING: failed-request detail list was capped; the error count includes more records.")
+    for item in report.get("server_error_responses", []) or []:
+        lines.append(
+            f"[HTTP {item.get('status')}] [{item.get('phase', '')}] {item.get('url', '')}"
+        )
+    if report.get("server_error_list_truncated"):
+        lines.append("WARNING: server-error detail list was capped; the count includes more records.")
+    for item in report.get("restricted_responses", []) or []:
+        lines.append(
+            f"[HTTP {item.get('status')}] [{item.get('phase', '')}] {item.get('url', '')}"
+        )
 
     _section(lines, "Pages")
     for page in report.get("pages", []):
