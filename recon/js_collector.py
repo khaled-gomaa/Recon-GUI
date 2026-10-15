@@ -56,11 +56,23 @@ class JSCollector:
 
     @staticmethod
     def _safe_url(url: str) -> str:
-        """Remove query values and fragments from logs and coverage records."""
+        """Remove credentials, query values, fragments, and invalid ports from diagnostics."""
         from urllib.parse import urlsplit, urlunsplit
         try:
             parsed = urlsplit(str(url or ""))
-            return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", "", ""))
+            scheme = parsed.scheme.lower()
+            host = (parsed.hostname or "").lower()
+            if not host or scheme not in {"http", "https"}:
+                return parsed.path or "(invalid URL)"
+            if ":" in host:
+                host = f"[{host}]"
+            port = parsed.port
+            if port and not (
+                (scheme == "http" and port == 80)
+                or (scheme == "https" and port == 443)
+            ):
+                host = f"{host}:{port}"
+            return urlunsplit((scheme, host, parsed.path or "/", "", ""))
         except (TypeError, ValueError, UnicodeError):
             return "(invalid URL)"
 
