@@ -691,6 +691,7 @@ class CrawlWorker(QThread):
                 report.get("pages", []),
                 wordlist_results,
                 asset_probe_data.get("results", []),
+                report.get("js_fetch_errors", []),
             )
             report.update(http_outcomes)
             report["coverage_summary"] = {
@@ -717,6 +718,7 @@ class CrawlWorker(QThread):
                 "wordlist_limit_reached": report.get("wordlist_candidate_limit_reached", False),
                 "javascript_files_discovered": len(analyzer.js_collector.js_urls),
                 "javascript_files_attempted": len(analyzer.js_collector._analyzed_js_urls),
+                "javascript_files_failed": len(report.get("js_fetch_errors", [])),
                 "javascript_files_truncated": len(truncated_js_files),
                 "css_files_discovered": css_discovery_data.get("css_files_discovered", 0),
                 "css_files_attempted": css_discovery_data.get("css_files_attempted", 0),
