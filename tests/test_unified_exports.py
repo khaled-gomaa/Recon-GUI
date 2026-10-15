@@ -1,4 +1,6 @@
-from gui.report_export import render_csv_report, render_text_report
+from gui.report_export import (
+    render_csv_report, render_text_report, render_markdown_report, render_html_report,
+)
 
 
 def test_exports_include_endpoint_parameter_and_correlated_finding_records():
@@ -190,3 +192,90 @@ def test_exports_include_asset_history_diffs():
     assert "asset_added" in csv
     assert "asset_removed" in csv
     assert "asset_changed" in csv
+
+
+def test_markdown_and_html_exports_include_method_evidence_and_coverage_without_raw_html():
+    report = {
+        "target": "https://example.test",
+        "started_at": "2026-10-15T12:00:00Z",
+        "pages": [{
+            "url": "https://example.test/home",
+            "status": 200,
+            "title": "<script>alert(1)</script>",
+            "content_type": "text/html",
+            "word_count": 42,
+            "content_length": 512,
+            "depth": 0,
+        }],
+        "coverage_summary": {
+            "pages_crawled": 1,
+            "page_cap": 500,
+            "page_limit_reached": False,
+            "depth_limit_reached": False,
+        },
+        "endpoint_inventory": [{
+            "endpoint": "https://example.test/api/search",
+            "methods": ["GET", "POST"],
+            "method_evidence": [
+                {"method": "GET", "evidence": ["runtime-observed"], "sources": ["manual-browser"]},
+                {"method": "POST", "evidence": ["static-js-inference"], "sources": ["javascript-fetch"]},
+            ],
+            "sources": ["manual-browser", "javascript-fetch"],
+            "parameters": ["q", "userId"],
+            "locations": ["https://example.test/app.js"],
+            "location_count": 1,
+        }],
+        "network_observations": [{
+            "url": "https://example.test/api/search",
+            "method": "GET",
+            "status": 200,
+            "resource_type": "fetch",
+            "query_parameters": ["q"],
+            "body_parameters": [],
+            "source": "manual-browser",
+            "page": "https://example.test/home",
+        }],
+        "cookie_map": [{
+            "url": "https://example.test/home",
+            "name": "sessionid",
+            "domain": "example.test",
+            "path": "/",
+            "secure": True,
+            "httponly": True,
+            "samesite": "Lax",
+            "source": "manual-browser",
+        }],
+    }
+    markdown = render_markdown_report(report)
+    html = render_html_report(report)
+
+    assert "## Endpoint Inventory" in markdown
+    assert "runtime-observed" in markdown
+    assert "static-js-inference" in markdown
+    assert "## Coverage and Limits" in markdown
+    assert "sessionid" in markdown
+
+    assert "<!doctype html>" in html.lower()
+    assert "runtime-observed" in html
+    assert "static-js-inference" in html
+    assert "Coverage and Limits" in html
+    assert "sessionid" in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "<script>alert(1)</script>" not in html
+    assert "cookie_value" not in html.lower()
+
+
+def test_markdown_cells_escape_table_delimiters_and_untrusted_html():
+    report = {
+        "target": "https://example.test",
+        "pages": [{
+            "url": "https://example.test/",
+            "status": 200,
+            "title": "A | B <img src=x onerror=alert(1)>",
+        }],
+    }
+    markdown = render_markdown_report(report)
+    html = render_html_report(report)
+    assert r"A \| B &lt;img src=x onerror=alert(1)&gt;" in markdown
+    assert "<img src=x onerror=alert(1)>" not in html
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
