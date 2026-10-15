@@ -542,20 +542,21 @@ class MainWindow(QMainWindow):
         discovery_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.discovery_table, "Content Discovery")
 
-        self.asset_table = QTableWidget(0, 9)
+        self.asset_table = QTableWidget(0, 10)
         self.asset_table.setHorizontalHeaderLabels([
-            "Asset URL (query values removed)", "Kind", "Extension", "Referrers",
+            "Asset URL (query values removed)", "Kind", "Extension", "Discovery source", "Referrers",
             "Fetch evidence", "HEAD status", "HEAD result", "Content type", "Bytes",
         ])
         self.asset_table.setColumnWidth(1, 105)
         self.asset_table.setColumnWidth(2, 80)
-        self.asset_table.setColumnWidth(3, 78)
-        self.asset_table.setColumnWidth(5, 78)
-        self.asset_table.setColumnWidth(6, 190)
-        self.asset_table.setColumnWidth(8, 80)
+        self.asset_table.setColumnWidth(4, 78)
+        self.asset_table.setColumnWidth(6, 78)
+        self.asset_table.setColumnWidth(7, 190)
+        self.asset_table.setColumnWidth(9, 80)
         self.asset_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.asset_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self.asset_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        self.asset_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.asset_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.asset_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.asset_table, "Asset References")
 
         self.network_table = QTableWidget(0, 8)
@@ -910,6 +911,7 @@ class MainWindow(QMainWindow):
                 record.get("url", ""),
                 record.get("kind", "resource"),
                 record.get("extension", ""),
+                ", ".join(record.get("sources", []) or []),
                 record.get("reference_count", 0),
                 evidence,
                 record.get("probe_status") if record.get("probe_checked") and record.get("probe_status") is not None else "--",
