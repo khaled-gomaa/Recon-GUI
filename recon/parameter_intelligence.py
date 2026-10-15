@@ -43,19 +43,52 @@ def _normalize_endpoint(value: str) -> str:
         return value.split("?", 1)[0]
 
 
+def _method_evidence_kind(source: str) -> str:
+    """Describe what supports a method without overstating inferred/static evidence."""
+    source = str(source or "").strip().lower()
+    if any(token in source for token in (
+        "manual-browser", "browser-network", "burp-har", "har-import", "runtime-network",
+    )):
+        return "runtime-observed"
+    if "html-form-declaration" in source:
+        return "form-declared"
+    if any(token in source for token in (
+        "javascript-fetch", "javascript-axios", "javascript-xhr", "javascript-ajax",
+        "javascript-static",
+    )):
+        return "static-js-inference"
+    if source in {"crawled-page", "http-crawl"}:
+        return "crawler-observed"
+    if "wayback" in source or "historical" in source:
+        return "historical-url-hint"
+    return "source-hint"
+
+
 def build_endpoint_inventory(observations, discovered_routes=None, page_urls=None):
-    """Merge duplicate endpoints without preserving query values."""
-    grouped = defaultdict(lambda: {"sources": set(), "locations": set(), "parameters": set(), "methods": set()})
+    """Merge endpoint observations while keeping query values and method evidence separate."""
+    grouped = defaultdict(lambda: {
+        "sources": set(), "locations": set(), "parameters": set(), "methods": set(),
+        "method_evidence": defaultdict(lambda: {"evidence": set(), "sources": set()}),
+    })
+
+    def add_method_evidence(item, method, source):
+        method = str(method or "").strip().upper()
+        if not method:
+            return
+        item["methods"].add(method)
+        evidence = _method_evidence_kind(source)
+        item["method_evidence"][method]["evidence"].add(evidence)
+        item["method_evidence"][method]["sources"].add(str(source or "unknown"))
+
     for record in observations or []:
         raw = record.get("endpoint", "")
         endpoint = _normalize_endpoint(raw)
         if not endpoint:
             continue
         item = grouped[endpoint]
-        item["sources"].add(str(record.get("source") or "unknown"))
-        method = str(record.get("method") or "").strip().upper()
-        if method:
-            item["methods"].add(method)
+        source = str(record.get("source") or "unknown")
+        item["sources"].add(source)
+        add_method_evidence(item, record.get("method", ""), source)
         location = _safe_path(str(record.get("location") or ""))
         if location:
             item["locations"].add(location)
@@ -65,18 +98,24 @@ def build_endpoint_inventory(observations, discovered_routes=None, page_urls=Non
             item["parameters"].update(
                 str(name).strip() for name in (record.get(key) or []) if str(name).strip()
             )
+
     for route in discovered_routes or []:
         endpoint = _normalize_endpoint(str(route))
         if endpoint:
             grouped[endpoint]["sources"].add("discovered-route")
             for name in _names_from_url(str(route)):
                 grouped[endpoint]["parameters"].add(name)
+
     for url in page_urls or []:
         if _names_from_url(str(url)):
             endpoint = _normalize_endpoint(str(url))
-            grouped[endpoint]["sources"].add("crawled-page")
-            grouped[endpoint]["locations"].add(_safe_path(str(url)))
-            grouped[endpoint]["parameters"].update(_names_from_url(str(url)))
+            item = grouped[endpoint]
+            item["sources"].add("crawled-page")
+            item["locations"].add(_safe_path(str(url)))
+            item["parameters"].update(_names_from_url(str(url)))
+            # These are URLs actually fetched by the crawler, not static method guesses.
+            add_method_evidence(item, "GET", "crawled-page")
+
     return [
         {
             "endpoint": endpoint,
@@ -87,6 +126,14 @@ def build_endpoint_inventory(observations, discovered_routes=None, page_urls=Non
             "parameters": sorted(item["parameters"], key=str.casefold),
             "parameter_count": len(item["parameters"]),
             "methods": sorted(item["methods"]),
+            "method_evidence": [
+                {
+                    "method": method,
+                    "evidence": sorted(details["evidence"]),
+                    "sources": sorted(details["sources"]),
+                }
+                for method, details in sorted(item["method_evidence"].items())
+            ],
         }
         for endpoint, item in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
     ]
