@@ -493,16 +493,17 @@ class MainWindow(QMainWindow):
         page_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.table, "Pages")
 
-        self.endpoint_table = QTableWidget(0, 6)
+        self.endpoint_table = QTableWidget(0, 7)
         self.endpoint_table.setHorizontalHeaderLabels([
-            "Endpoint", "Methods", "Sources", "Parameters", "Pages", "Locations",
+            "Endpoint", "Methods", "Method evidence", "Sources", "Parameters", "Pages", "Locations",
         ])
         self.endpoint_table.setColumnWidth(1, 90)
-        self.endpoint_table.setColumnWidth(2, 180)
-        self.endpoint_table.setColumnWidth(3, 100)
-        self.endpoint_table.setColumnWidth(4, 80)
+        self.endpoint_table.setColumnWidth(2, 190)
+        self.endpoint_table.setColumnWidth(3, 180)
+        self.endpoint_table.setColumnWidth(4, 100)
+        self.endpoint_table.setColumnWidth(5, 80)
         self.endpoint_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.endpoint_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.endpoint_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.endpoint_table, "Endpoints")
 
         self.parameter_table = QTableWidget(0, 6)
@@ -931,9 +932,14 @@ class MainWindow(QMainWindow):
         """Populate structured result tables from the unified scan report."""
         self.endpoint_table.setRowCount(0)
         for record in report.get("endpoint_inventory", []) or []:
+            method_evidence = "; ".join(
+                f"{item.get('method', '')}: {', '.join(item.get('evidence', []) or [])}"
+                for item in (record.get("method_evidence", []) or [])
+            )
             values = (
                 record.get("endpoint", ""),
                 ", ".join(record.get("methods", []) or []),
+                method_evidence or "No method evidence",
                 ", ".join(record.get("sources", []) or []),
                 ", ".join(record.get("parameters", []) or []),
                 record.get("location_count", 0),
