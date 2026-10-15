@@ -327,7 +327,15 @@ class ReconAnalyzer:
                 {"url": audit.url, "present": audit.present, "missing": audit.missing}
                 for audit in self.report.header_audits
             ],
-            "js_files": sorted(self.js_collector.js_urls),
+            "js_files": sorted({
+                _normalize_endpoint(url) for url in self.js_collector.js_urls
+                if _normalize_endpoint(url)
+            }),
+            "unattempted_js_files": sorted({
+                _normalize_endpoint(url) for url in (
+                    self.js_collector.js_urls - self.js_collector._analyzed_js_urls
+                ) if _normalize_endpoint(url)
+            }),
             "truncated_js_files": sorted({
                 _normalize_endpoint(url) for url in self.js_collector.truncated_js_files
                 if _normalize_endpoint(url)
