@@ -351,9 +351,77 @@ class CrawlWorker(QThread):
                     if len(engine.results) == before_count:
                         break
 
+            # Parse same-origin stylesheet files and recursively discover CSS @import/url()
+            # references before the optional HEAD check. External CSS references are recorded,
+            # never fetched; the shared session cookie jar remains in-memory only.
+            css_collector = None
+            css_discovery_data = {
+                "css_files_discovered": 0, "css_files_attempted": 0, "css_files_fetched": 0,
+                "css_files_truncated": [], "css_file_errors": [],
+                "css_limit_reached": False, "css_rate_limited_stop": False, "css_assets": [],
+            }
+            css_rate_limited_stop = False
+            if not self._stopping() and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped:
+                from recon.css_collector import CSSCollector
+                css_collector = CSSCollector(
+                    self.url, cookie_jar=session_cookie_jar,
+                    request_headers=phase_headers, on_log=self.log_message.emit,
+                )
+                stylesheet_seeds = list(analyzer.asset_observations.values())
+                for observation in analyzer.network_observations.values():
+                    if (
+                        str(observation.get("resource_type") or "").lower() == "stylesheet"
+                        or str(observation.get("url") or "").split("?", 1)[0].lower().endswith(".css")
+                    ):
+                        stylesheet_seeds.append({
+                            "url": observation.get("url", ""),
+                            "kind": "stylesheet",
+                        })
+                try:
+                    css_discovery_data = loop.run_until_complete(
+                        css_collector.collect(
+                            stylesheet_seeds, should_stop=self._stopping,
+                            delay_ms=max(200, int(engine.crawl_delay_seconds * 1000)),
+                        )
+                    )
+                    css_rate_limited_stop = css_collector.rate_limit_stopped
+                    analyzer.css_files_fetched = {
+                        __import__("recon.parameter_intelligence", fromlist=["_normalize_endpoint"])._normalize_endpoint(url)
+                        for url in css_collector.fetched_contents
+                    }
+                    analyzer.css_files_truncated = {
+                        __import__("recon.parameter_intelligence", fromlist=["_normalize_endpoint"])._normalize_endpoint(url)
+                        for url in css_collector.truncated_files
+                    }
+                    for item in css_collector.assets.values():
+                        analyzer._record_asset_reference(
+                            item.get("referrer") or self.url,
+                            {
+                                "url": item.get("request_url") or item.get("url", ""),
+                                "kind": item.get("kind", "css-resource"),
+                                "extension": item.get("extension", ""),
+                            },
+                        )
+                    if css_collector.css_urls:
+                        self.log_message.emit(
+                            f"[CSS] Discovered {len(css_collector.css_urls)} same-origin stylesheet URL(s); "
+                            f"fetched {len(css_collector.fetched_contents)} and extracted "
+                            f"{len(css_collector.assets)} nested asset references."
+                        )
+                except Exception as exc:
+                    css_discovery_data["css_file_errors"].append(
+                        {"url": "", "error": type(exc).__name__}
+                    )
+                    self.log_message.emit(f"[CSS] Discovery phase failed: {type(exc).__name__}: {exc}")
+                css_discovery_data["css_rate_limited_stop"] = css_rate_limited_stop
+
             wordlist_results = []
             wordlist_rate_limited_stop = False
-            if self.wordlist_path and not self._stopping() and not engine.rate_limit_stopped:
+            if (
+                self.wordlist_path and not self._stopping()
+                and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped
+                and not css_rate_limited_stop
+            ):
                 from recon.wordlist_scanner import WordlistScanner
                 self.log_message.emit(f"[Wordlist] Checking authorized paths: {self.wordlist_path}")
                 scanner = WordlistScanner(
@@ -396,7 +464,8 @@ class CrawlWorker(QThread):
             # downloading bodies. Do not start another request phase after an HTTP 429.
             if (
                 self.probe_assets and not self._stopping()
-                and not engine.rate_limit_stopped and not wordlist_rate_limited_stop
+                and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped
+                and not css_rate_limited_stop and not wordlist_rate_limited_stop
             ):
                 from recon.asset_probe import probe_asset_references
                 candidates = [
@@ -459,6 +528,8 @@ class CrawlWorker(QThread):
                 ) if any(header.lower() == key for header in self.request_headers)
             ]
             report["target"] = self.url
+            report["css_discovery_summary"] = css_discovery_data
+            report["css_rate_limited_stop"] = css_rate_limited_stop
             report["asset_probe_summary"] = asset_probe_data.get("summary", {})
             report["asset_probe_results"] = asset_probe_data.get("results", [])
             probes_by_url = {
@@ -572,6 +643,7 @@ class CrawlWorker(QThread):
                 page.get("url", "") for page in report.get("pages", []) if page.get("body_truncated")
             ]
             truncated_js_files = report.get("truncated_js_files", []) or []
+            truncated_css_urls = css_discovery_data.get("css_files_truncated", []) or []
             truncated_wordlist_urls = [
                 item.get("url", "") for item in wordlist_results if item.get("response_truncated")
             ]
@@ -588,11 +660,16 @@ class CrawlWorker(QThread):
                 content_limit_notes.append(
                     f"{len(truncated_wordlist_urls)} Content Discovery response(s) truncated at the response byte cap."
                 )
+            if truncated_css_urls:
+                content_limit_notes.append(
+                    f"{len(truncated_css_urls)} CSS file(s) truncated at the per-file stylesheet byte cap."
+                )
             report["body_truncated_pages"] = body_truncated_pages
             report["truncated_js_files"] = truncated_js_files
+            report["truncated_css_files"] = truncated_css_urls
             report["truncated_wordlist_urls"] = truncated_wordlist_urls
             report["content_limit_reached"] = bool(
-                body_truncated_pages or truncated_js_files or truncated_wordlist_urls
+                body_truncated_pages or truncated_js_files or truncated_wordlist_urls or truncated_css_urls
             )
             report["content_limit_notes"] = content_limit_notes
             report["coverage_summary"] = {
@@ -616,13 +693,22 @@ class CrawlWorker(QThread):
                 "javascript_files_discovered": len(analyzer.js_collector.js_urls),
                 "javascript_files_attempted": len(analyzer.js_collector._analyzed_js_urls),
                 "javascript_files_truncated": len(truncated_js_files),
+                "css_files_discovered": css_discovery_data.get("css_files_discovered", 0),
+                "css_files_attempted": css_discovery_data.get("css_files_attempted", 0),
+                "css_files_fetched": css_discovery_data.get("css_files_fetched", 0),
+                "css_files_truncated": len(truncated_css_urls),
+                "css_file_errors": len(css_discovery_data.get("css_file_errors", [])),
+                "css_limit_reached": bool(css_discovery_data.get("css_limit_reached")),
+                "css_rate_limited_stop": css_rate_limited_stop,
                 "asset_references": len(report.get("asset_inventory", [])),
                 "external_asset_references": sum(
                     1 for item in report.get("asset_inventory", []) if not item.get("in_scope", False)
                 ),
                 "asset_references_without_page_or_js_fetch": sum(
                     1 for item in report.get("asset_inventory", [])
-                    if not item.get("fetched_by_page_crawler") and not item.get("fetched_by_js_collector")
+                    if not item.get("fetched_by_page_crawler")
+                    and not item.get("fetched_by_js_collector")
+                    and not item.get("fetched_by_css_collector")
                 ),
                 "response_bodies_truncated": len(body_truncated_pages) + len(truncated_wordlist_urls),
                 "content_limit_reached": report["content_limit_reached"],
