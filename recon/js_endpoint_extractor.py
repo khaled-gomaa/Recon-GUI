@@ -129,10 +129,10 @@ class JSEndpointExtractor:
             # with placeholders. This is a static hint; it is not proof the request ran.
             def _template_placeholder(match):
                 expression = match.group(1).strip()
-                identifier = re.findall(r"[A-Za-z_$][\\w$]*", expression)
+                identifier = re.findall(r"[A-Za-z_$][\w$]*", expression)
                 return "{" + (identifier[-1] if identifier else "param") + "}"
-            url = re.sub(r"\\$\\{([^}]{1,160})\\}", _template_placeholder, url)
-            url = url.replace("\\\\`", "`")
+            url = re.sub(r"\$\{([^}]{1,160})\}", _template_placeholder, url)
+            url = url.replace("\\`", "`")
             method = str(method or "GET").upper()
             if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
                 method = "UNKNOWN"
