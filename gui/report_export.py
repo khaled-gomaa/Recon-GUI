@@ -134,6 +134,7 @@ def render_text_report(report: dict) -> str:
         lines.append(
             f"[{item.get('kind', 'resource')}] {item.get('url', '')} | "
             f"extension={item.get('extension', '') or '(none)'} | "
+            f"sources={', '.join(item.get('sources', []) or []) or '(unknown)'} | "
             f"referrers={item.get('reference_count', 0)} | {evidence}"
         )
         if item.get("query_parameter_names"):
