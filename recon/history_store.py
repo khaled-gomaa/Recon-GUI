@@ -202,6 +202,7 @@ class HistoryStore:
             key = f"{url} [{kind}]"
             result[key] = {
                 "extension": str(item.get("extension") or ""),
+                "sources": sorted(item.get("sources", []) or []),
                 "in_scope": bool(item.get("in_scope", False)),
                 "query_parameter_names": sorted(item.get("query_parameter_names", []) or []),
                 "referrers": sorted(item.get("referrers", []) or []),
