@@ -26,6 +26,7 @@ def render_text_report(report: dict) -> str:
         or (report.get("css_discovery_summary", {}) or {}).get("css_limit_reached")
         or (report.get("seed_import_summary", {}) or {}).get("limit_reached")
         or (report.get("asset_probe_summary", {}) or {}).get("partial")
+        or report.get("unattempted_js_files")
     )
     has_http_errors = bool(
         report.get("transport_error_count")
@@ -240,6 +241,7 @@ def render_text_report(report: dict) -> str:
             ("JS files attempted", "javascript_files_attempted"),
             ("JS files truncated", "javascript_files_truncated"),
             ("JS files failed/inaccessible", "javascript_files_failed"),
+            ("JS files unattempted", "javascript_files_unattempted"),
             ("Response bodies truncated", "response_bodies_truncated"),
         ):
             lines.append(f"{label}: {coverage.get(key, 0)}")
@@ -604,6 +606,8 @@ def render_csv_report(report: dict) -> str:
             "javascript_fetch_failure", item.get("url", ""), item.get("status", ""),
             "javascript", "partial", item.get("error_type", "not analyzed"),
         ])
+    for url in (report.get("unattempted_js_files", []) or []):
+        writer.writerow(["javascript_not_attempted", url, "", "javascript", "partial", "Not fetched/analyzed in this scan"])
     for item in report.get("server_error_responses", []) or []:
         writer.writerow([
             "http_server_error", item.get("url", ""), item.get("status", ""),
@@ -621,6 +625,7 @@ def render_csv_report(report: dict) -> str:
             "partial" if (
                 report.get("transport_error_count") or report.get("server_error_response_count")
                 or report.get("js_fetch_error_count") or report.get("js_rate_limited_stop")
+                or report.get("unattempted_js_files")
                 or report.get("content_limit_reached") or report.get("page_limit_reached")
                 or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached")
             ) else "no-limit-reported",
