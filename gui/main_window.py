@@ -1751,12 +1751,18 @@ class MainWindow(QMainWindow):
         seed_import_limited = bool((report.get("seed_import_summary", {}) or {}).get("limit_reached"))
         asset_probe_summary = report.get("asset_probe_summary", {}) or {}
         asset_probe_limited = bool(asset_probe_summary.get("partial"))
+        transport_errors = int(report.get("transport_error_count", 0) or 0)
+        server_errors = int(report.get("server_error_response_count", 0) or 0)
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
         elif crawler_limited or discovery_limited or css_limited or asset_probe_summary.get("rate_limited_stop"):
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
-        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited or css_coverage_partial:
+        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited or css_coverage_partial or transport_errors or server_errors:
             reasons = []
+            if transport_errors:
+                reasons.append("REQUEST ERRORS")
+            if server_errors:
+                reasons.append("HTTP 5XX")
             if page_limited:
                 reasons.append("PAGE")
             if depth_limited:
@@ -1979,7 +1985,9 @@ class MainWindow(QMainWindow):
         elif crawler_limited or wordlist_limited or asset_probe_summary.get("rate_limited_stop"):
             overall = "PARTIAL — RATE LIMITED"
         elif (
-            css_summary.get("status") in {"partial", "error"}
+            report.get("transport_error_count")
+            or report.get("server_error_response_count")
+            or css_summary.get("status") in {"partial", "error"}
             or coverage.get("css_limit_reached")
             or coverage.get("page_limit_reached")
             or coverage.get("depth_limit_reached")
@@ -1990,7 +1998,10 @@ class MainWindow(QMainWindow):
             or coverage.get("asset_probe_partial")
             or content_limited
         ):
-            overall = "PARTIAL — ONE OR MORE COVERAGE LIMITS REACHED"
+            if report.get("transport_error_count") or report.get("server_error_response_count"):
+                overall = "PARTIAL — REQUEST OR SERVER ERRORS / COVERAGE LIMITS"
+            else:
+                overall = "PARTIAL — ONE OR MORE COVERAGE LIMITS REACHED"
         elif coverage:
             overall = "NO REPORTED COVERAGE CAP OR TRUNCATION REACHED"
         else:
@@ -2013,6 +2024,36 @@ class MainWindow(QMainWindow):
         lines.append(f"User stopped scan: {stopped}")
         lines.append(f"HTTP crawler rate limited: {crawler_limited}")
         lines.append("Active crawl scope: starting hostname only; discovered subdomains are never added automatically.")
+        lines.append("")
+
+        lines.append("=== OBSERVED HTTP OUTCOMES ===")
+        status_counts = coverage.get("http_status_counts", report.get("http_status_counts", {})) or {}
+        if status_counts:
+            lines.append("HTTP status counts: " + ", ".join(
+                f"{status}: {count}" for status, count in status_counts.items()
+            ))
+        else:
+            lines.append("No HTTP response status summary was recorded.")
+        lines.append(f"Transport/request errors: {report.get('transport_error_count', 0)}")
+        lines.append(f"HTTP 5xx responses: {report.get('server_error_response_count', 0)}")
+        lines.append(f"Restricted/unauthorized responses (401/403): {report.get('restricted_response_count', 0)}")
+        for item in report.get("failed_requests", []) or []:
+            lines.append(
+                f"  [REQUEST FAILED] [{item.get('phase', '')}] {item.get('url', '')} "
+                f"— {item.get('error_type', 'No HTTP response')}"
+            )
+        if report.get("failed_requests_list_truncated"):
+            lines.append("WARNING: failed-request detail list was capped; the failure count includes additional items.")
+        for item in report.get("server_error_responses", []) or []:
+            lines.append(
+                f"  [HTTP {item.get('status')}] [{item.get('phase', '')}] {item.get('url', '')}"
+            )
+        if report.get("server_error_list_truncated"):
+            lines.append("WARNING: server-error detail list was capped; the count includes additional items.")
+        for item in report.get("restricted_responses", []) or []:
+            lines.append(
+                f"  [HTTP {item.get('status')}] [{item.get('phase', '')}] {item.get('url', '')}"
+            )
         lines.append("")
 
         css_summary = report.get("css_discovery_summary", {}) or {}
