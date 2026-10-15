@@ -1,6 +1,6 @@
 """Extract API endpoints and likely client-side routes from JavaScript."""
 import re
-from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit, urldefrag
+from urllib.parse import parse_qsl, urljoin, urlparse, urlsplit, urlunsplit, urldefrag
 
 ENDPOINT_PATTERNS = [
     re.compile(r"""["'](/api/[a-zA-Z0-9_\-/{}.:]+)["']"""),
@@ -82,13 +82,26 @@ class JSEndpointExtractor:
                     kind = "download"
                 safe_url = urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", "", ""))
                 key = (safe_url, kind)
-                found.setdefault(key, {
+                try:
+                    query_names = {
+                        name for name, _value in parse_qsl(parsed.query, keep_blank_values=True) if name
+                    }
+                except ValueError:
+                    query_names = set()
+                record = found.setdefault(key, {
                     "url": absolute, "kind": kind, "extension": extension,
                     "source": str(source or "javascript-static-reference"),
+                    "query_parameter_names": set(),
                 })
+                record["query_parameter_names"].update(query_names)
             except (TypeError, ValueError, UnicodeError):
                 continue
-        return [found[key] for key in sorted(found, key=lambda value: (value[0].casefold(), value[1]))]
+        results = []
+        for key in sorted(found, key=lambda value: (value[0].casefold(), value[1])):
+            item = dict(found[key])
+            item["query_parameter_names"] = sorted(item.get("query_parameter_names", set()))
+            results.append(item)
+        return results
 
     @staticmethod
     def extract(js_content: str) -> set:
