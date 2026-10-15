@@ -35,7 +35,7 @@ SOURCE_MAP_RE = re.compile(r"""sourceMappingURL\s*=\s*['"]?([^\s*'"<>]+)""", re.
 
 class JSEndpointExtractor:
     @staticmethod
-    def extract_asset_references(content: str, base_url: str) -> list:
+    def extract_asset_references(content: str, base_url: str, source: str = "javascript-static-reference") -> list:
         """Find quoted static asset/file URLs in HTML or JavaScript without fetching them.
 
         Query values stay in memory for the HTTP request phase only; the analyzer strips them
@@ -84,7 +84,7 @@ class JSEndpointExtractor:
                 key = (safe_url, kind)
                 found.setdefault(key, {
                     "url": absolute, "kind": kind, "extension": extension,
-                    "source": "javascript-static-reference",
+                    "source": str(source or "javascript-static-reference"),
                 })
             except (TypeError, ValueError, UnicodeError):
                 continue
