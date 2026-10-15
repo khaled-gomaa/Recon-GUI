@@ -332,6 +332,8 @@ class ReconAnalyzer:
                 _normalize_endpoint(url) for url in self.js_collector.truncated_js_files
                 if _normalize_endpoint(url)
             }),
+            "js_fetch_errors": list(self.js_collector.fetch_errors),
+            "js_fetch_error_count": len(self.js_collector.fetch_errors),
             "source_maps": sorted(self.js_collector.source_maps),
             "discovered_routes": safe_routes,
             "inline_script_count": len(self.js_collector.inline_scripts),
