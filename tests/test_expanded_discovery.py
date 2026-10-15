@@ -367,3 +367,45 @@ def test_asset_inventory_strips_query_values_and_marks_external_references():
     assert "another-secret" not in serialized
     assert "external-secret" not in serialized
     assert "page-secret" not in serialized
+
+
+def test_js_asset_literals_join_inventory_without_persisting_query_values():
+    content = """
+    import styles from "./styles/app.css";
+    const logo = "/assets/logo.svg?version=release-a";
+    const logoAgain = "/assets/logo.svg?cacheBust=release-b";
+    const settings = "/.well-known/app-config.json?api_key=super-secret-value";
+    const sourceMap = "bundle.js.map";
+    const notAnAsset = "javascript:alert(1)";
+    """
+    assets = JSEndpointExtractor.extract_asset_references(
+        content, "https://example.test/static/app.js"
+    )
+    by_path = {item["url"].split("?", 1)[0]: item for item in assets}
+    assert "https://example.test/static/styles/app.css" in by_path
+    assert by_path["https://example.test/assets/logo.svg"]["kind"] == "image"
+    assert set(by_path["https://example.test/assets/logo.svg"]["query_parameter_names"]) == {
+        "version", "cacheBust",
+    }
+    assert by_path["https://example.test/.well-known/app-config.json"]["kind"] == "data"
+    assert "super-secret-value" not in repr(assets)
+    assert "alert(1)" not in repr(assets)
+
+
+def test_analyzer_records_inline_script_file_sources_and_query_names_only():
+    analyzer = ReconAnalyzer("https://example.test/")
+    html = """
+    <html><body><script>
+      const icon = "/assets/icon.svg?build=12";
+      const config = "/.well-known/config.json?token=secret-token-value";
+    </script></body></html>
+    """
+    analyzer.analyze_page("https://example.test/dashboard", html)
+    assets = analyzer.to_dict()["asset_inventory"]
+    by_url = {item["url"]: item for item in assets}
+    icon = by_url["https://example.test/assets/icon.svg"]
+    config = by_url["https://example.test/.well-known/config.json"]
+    assert "inline-javascript" in icon["sources"]
+    assert icon["query_parameter_names"] == ["build"]
+    assert config["query_parameter_names"] == ["token"]
+    assert "secret-token-value" not in repr(assets)
