@@ -716,7 +716,7 @@ class CrawlWorker(QThread):
                 "external_asset_references": sum(
                     1 for item in report.get("asset_inventory", []) if not item.get("in_scope", False)
                 ),
-                "asset_references_without_page_or_js_fetch": sum(
+                "asset_references_without_page_js_or_css_fetch": sum(
                     1 for item in report.get("asset_inventory", [])
                     if not item.get("fetched_by_page_crawler")
                     and not item.get("fetched_by_js_collector")
