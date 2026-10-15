@@ -1923,6 +1923,7 @@ class MainWindow(QMainWindow):
         report = report or {}
         coverage = report.get("coverage_summary", {}) or {}
         asset_probe_summary = report.get("asset_probe_summary", {}) or {}
+        css_summary = report.get("css_discovery_summary", {}) or {}
         lines = []
         lines.append("=== SCAN COVERAGE / GAPS ===")
         lines.append(f"Target: {report.get('target') or '(no target recorded)'}")
