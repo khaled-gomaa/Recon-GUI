@@ -1757,11 +1757,12 @@ class MainWindow(QMainWindow):
         transport_errors = int(report.get("transport_error_count", 0) or 0)
         server_errors = int(report.get("server_error_response_count", 0) or 0)
         js_fetch_errors = int(report.get("js_fetch_error_count", 0) or 0)
+        js_unattempted = len(report.get("unattempted_js_files", []) or [])
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
         elif crawler_limited or discovery_limited or css_limited or js_limited or asset_probe_summary.get("rate_limited_stop"):
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
-        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited or css_coverage_partial or transport_errors or server_errors or js_fetch_errors:
+        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited or css_coverage_partial or transport_errors or server_errors or js_fetch_errors or js_unattempted:
             reasons = []
             if transport_errors:
                 reasons.append("REQUEST ERRORS")
@@ -1769,6 +1770,8 @@ class MainWindow(QMainWindow):
                 reasons.append("HTTP 5XX")
             if js_fetch_errors:
                 reasons.append("JS FETCH")
+            if js_unattempted:
+                reasons.append("JS PENDING")
             if page_limited:
                 reasons.append("PAGE")
             if depth_limited:
@@ -1995,6 +1998,7 @@ class MainWindow(QMainWindow):
             or report.get("server_error_response_count")
             or report.get("js_fetch_error_count")
             or report.get("js_rate_limited_stop")
+            or report.get("unattempted_js_files")
             or css_summary.get("status") in {"partial", "error"}
             or coverage.get("css_limit_reached")
             or coverage.get("page_limit_reached")
@@ -2032,6 +2036,7 @@ class MainWindow(QMainWindow):
         lines.append(f"User stopped scan: {stopped}")
         lines.append(f"HTTP crawler rate limited: {crawler_limited}")
         lines.append(f"JavaScript collector rate limited: {bool(report.get('js_rate_limited_stop'))}")
+        lines.append(f"Discovered JavaScript files not attempted: {len(report.get('unattempted_js_files', []) or [])}")
         lines.append("Active crawl scope: starting hostname only; discovered subdomains are never added automatically.")
         lines.append("")
 
@@ -2133,13 +2138,19 @@ class MainWindow(QMainWindow):
                 f"{coverage.get('javascript_files_attempted', 0)}"
             )
             lines.append(f"JavaScript files failed / inaccessible: {report.get('js_fetch_error_count', 0)}")
+            lines.append(f"JavaScript files not attempted: {len(report.get('unattempted_js_files', []) or [])}")
             lines.append(f"JavaScript files truncated: {coverage.get('javascript_files_truncated', 0)}")
             lines.append(f"Response bodies truncated: {coverage.get('response_bodies_truncated', 0)}")
         for item in report.get("js_fetch_errors", []) or []:
+            js_status = item.get("status") or "NO RESPONSE"
             lines.append(
-                f"  [JS FETCH ERROR] HTTP {item.get('status', 0)} "
+                f"  [JS FETCH ERROR] {js_status} "
                 f"{item.get('url', '')} — {item.get('error_type', 'not analyzed')}"
             )
+        for url in (report.get("unattempted_js_files", []) or [])[:200]:
+            lines.append(f"  [JS NOT ATTEMPTED] {url}")
+        if len(report.get("unattempted_js_files", []) or []) > 200:
+            lines.append("WARNING: unattempted JavaScript URL list truncated to 200 entries.")
         if report.get("js_fetch_error_count"):
             lines.append("WARNING: one or more discovered JavaScript files could not be analyzed; endpoint coverage may be incomplete.")
         lines.append(f"Any body/asset content truncated: {content_limited}")
