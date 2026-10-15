@@ -15,7 +15,9 @@ from gui.status_style import status_colors
 from gui.worker import CrawlWorker
 from recon.matchers import MatcherFilter
 from recon.similarity_detector import SimilarityDetector
-from gui.report_export import render_text_report, render_csv_report
+from gui.report_export import (
+    render_text_report, render_csv_report, render_markdown_report, render_html_report,
+)
 from recon.history_store import HistoryStore
 from recon.external_tools import available_tools
 from gui.tool_worker import ExternalToolWorker
@@ -720,9 +722,19 @@ class MainWindow(QMainWindow):
         self.export_csv_btn.setObjectName("secondaryButton")
         self.export_csv_btn.setEnabled(False)
         self.export_csv_btn.clicked.connect(self._export_csv)
+        self.export_md_btn = QPushButton("Export MD")
+        self.export_md_btn.setObjectName("secondaryButton")
+        self.export_md_btn.setEnabled(False)
+        self.export_md_btn.clicked.connect(self._export_markdown)
+        self.export_html_btn = QPushButton("Export HTML")
+        self.export_html_btn.setObjectName("secondaryButton")
+        self.export_html_btn.setEnabled(False)
+        self.export_html_btn.clicked.connect(self._export_html)
         footer.addWidget(self.export_txt_btn)
         footer.addWidget(self.export_btn)
         footer.addWidget(self.export_csv_btn)
+        footer.addWidget(self.export_md_btn)
+        footer.addWidget(self.export_html_btn)
         footer.addStretch(1)
         root.addLayout(footer)
 
@@ -1439,6 +1451,8 @@ class MainWindow(QMainWindow):
         self.export_btn.setEnabled(False)
         self.export_txt_btn.setEnabled(False)
         self.export_csv_btn.setEnabled(False)
+        self.export_md_btn.setEnabled(False)
+        self.export_html_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.status_label.setText("Crawling...")
@@ -1671,6 +1685,8 @@ class MainWindow(QMainWindow):
         self.export_btn.setEnabled(True)
         self.export_txt_btn.setEnabled(True)
         self.export_csv_btn.setEnabled(True)
+        self.export_md_btn.setEnabled(True)
+        self.export_html_btn.setEnabled(True)
         self._populate_history(report.get("recent_scans", []))
         self.tabs.setTabText(self.tabs.indexOf(self.table), f"Pages ({len(filtered)})")
         self.tabs.setTabText(
@@ -2307,6 +2323,8 @@ class MainWindow(QMainWindow):
         self.export_btn.setEnabled(True)
         self.export_txt_btn.setEnabled(True)
         self.export_csv_btn.setEnabled(True)
+        self.export_md_btn.setEnabled(True)
+        self.export_html_btn.setEnabled(True)
         summary = imported.get("summary", {})
         self.status_label.setText("HAR IMPORTED")
         self._append_log(
@@ -2354,11 +2372,51 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Export failed", f"Could not write CSV report:\n{exc}")
 
     def _export_json(self):
+        if not self.recon_report:
+            QMessageBox.information(self, "No report", "Run a scan or import HAR before exporting.")
+            return
         path, _ = QFileDialog.getSaveFileName(
             self, "Export Recon JSON", "recon_report.json", "JSON (*.json)"
         )
         if path:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.recon_report, f, indent=2, ensure_ascii=False)
-            self.status_label.setText("JSON EXPORTED")
-            self._append_log(f"[Export] JSON report saved: {path}")
+            try:
+                with open(path, "w", encoding="utf-8", newline="\\n") as f:
+                    json.dump(self.recon_report, f, indent=2, ensure_ascii=False, default=str)
+                self.status_label.setText("JSON EXPORTED")
+                self._append_log(f"[Export] JSON report saved: {path}")
+            except OSError as exc:
+                QMessageBox.critical(self, "Export failed", f"Could not write JSON report:\\n{exc}")
+
+    def _export_markdown(self):
+        if not self.recon_report:
+            QMessageBox.information(self, "No report", "Run a scan or import HAR before exporting.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Recon Markdown", "recon_report.md", "Markdown (*.md)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8", newline="\\n") as report_file:
+                report_file.write(render_markdown_report(self.recon_report))
+            self.status_label.setText("MARKDOWN EXPORTED")
+            self._append_log(f"[Export] Markdown report saved: {path}")
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Could not write Markdown report:\\n{exc}")
+
+    def _export_html(self):
+        if not self.recon_report:
+            QMessageBox.information(self, "No report", "Run a scan or import HAR before exporting.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Recon HTML", "recon_report.html", "HTML report (*.html)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8", newline="\\n") as report_file:
+                report_file.write(render_html_report(self.recon_report))
+            self.status_label.setText("HTML EXPORTED")
+            self._append_log(f"[Export] HTML report saved: {path}")
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Could not write HTML report:\\n{exc}")
