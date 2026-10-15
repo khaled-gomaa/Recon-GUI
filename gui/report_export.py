@@ -10,11 +10,31 @@ def render_text_report(report: dict) -> str:
     """Render a complete, readable TXT report without third-party dependencies."""
     report = report or {}
     import_only = bool(report.get("har_import_summary")) and not report.get("started_at") and not report.get("pages")
+    has_rate_limit = bool(
+        report.get("crawler_rate_limited_stop")
+        or report.get("wordlist_rate_limited_stop")
+        or report.get("css_rate_limited_stop")
+        or (report.get("asset_probe_summary", {}) or {}).get("rate_limited_stop")
+    )
+    has_coverage_cap = bool(
+        report.get("page_limit_reached")
+        or report.get("depth_limit_reached")
+        or report.get("wordlist_candidate_limit_reached")
+        or report.get("content_limit_reached")
+        or (report.get("css_discovery_summary", {}) or {}).get("status") in {"partial", "error"}
+        or (report.get("css_discovery_summary", {}) or {}).get("css_limit_reached")
+        or (report.get("seed_import_summary", {}) or {}).get("limit_reached")
+        or (report.get("asset_probe_summary", {}) or {}).get("partial")
+    )
+    has_http_errors = bool(
+        report.get("transport_error_count") or report.get("server_error_response_count")
+    )
     status = (
         "HAR metadata imported (no active scan run)" if import_only else
         "Stopped by user" if report.get("stopped_by_user") else
-        "Partial (rate limited)" if report.get("crawler_rate_limited_stop") or report.get("wordlist_rate_limited_stop") or report.get("css_rate_limited_stop") or (report.get("asset_probe_summary", {}) or {}).get("rate_limited_stop") else
-        "Partial (request/server errors or coverage cap)" if report.get("transport_error_count") or report.get("server_error_response_count") or report.get("page_limit_reached") or report.get("depth_limit_reached") or report.get("wordlist_candidate_limit_reached") or report.get("content_limit_reached") or (report.get("css_discovery_summary", {}) or {}).get("status") in {"partial", "error"} or (report.get("css_discovery_summary", {}) or {}).get("css_limit_reached") or (report.get("seed_import_summary", {}) or {}).get("limit_reached") or (report.get("asset_probe_summary", {}) or {}).get("partial") else
+        "Partial (rate limited)" if has_rate_limit else
+        "Partial (request/server errors)" if has_http_errors else
+        "Partial (page/depth/wordlist/content cap)" if has_coverage_cap else
         "Completed (no known caps or request errors)"
     )
     lines = [
