@@ -26,6 +26,10 @@ class JSCollector:
         self.request_headers = dict(request_headers or {})
         self.cookie_jar = cookie_jar
         self.rate_limit_stopped = False
+        # Each failed referenced script is tracked as metadata only; query values and
+        # raw exception strings are never recorded.
+        self.fetch_errors: list[dict] = []
+        self._fetch_error_keys: set[tuple] = set()
         self.js_urls: set = set()
         self.js_contents: dict = {}
         self.truncated_js_files: set = set()
@@ -49,6 +53,34 @@ class JSCollector:
     def _in_scope(self, url: str) -> bool:
         host = urlparse(url).hostname
         return bool(host and host.lower() == self.base_host)
+
+    @staticmethod
+    def _safe_url(url: str) -> str:
+        """Remove query values and fragments from logs and coverage records."""
+        from urllib.parse import urlsplit, urlunsplit
+        try:
+            parsed = urlsplit(str(url or ""))
+            return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", "", ""))
+        except (TypeError, ValueError, UnicodeError):
+            return "(invalid URL)"
+
+    def _record_fetch_error(self, url: str, status=None, error_type=""):
+        safe_url = self._safe_url(url)
+        try:
+            code = int(status) if status is not None else 0
+        except (TypeError, ValueError, OverflowError):
+            code = 0
+        kind = str(error_type or (f"HTTP {code}" if code else "No HTTP response"))
+        key = (safe_url, code, kind)
+        if key in self._fetch_error_keys:
+            return
+        self._fetch_error_keys.add(key)
+        self.fetch_errors.append({
+            "url": safe_url,
+            "status": code,
+            "error_type": kind,
+            "source": "javascript",
+        })
 
     def collect_from_html(self, page_url: str, html: str):
         soup = BeautifulSoup(html or "", "lxml")
@@ -124,9 +156,17 @@ class JSCollector:
                 # Do not follow redirects: their destinations may be outside scope.
                 if resp.status == 429:
                     self.rate_limit_stopped = True
-                    self.on_log(f"[429] JavaScript download was rate-limited at {url}; stopping JS collection safely.")
+                    self._record_fetch_error(url, resp.status, "HTTP 429 rate limited")
+                    self.on_log(
+                        f"[429] JavaScript download was rate-limited at {self._safe_url(url)}; "
+                        "stopping JS collection safely."
+                    )
                     return
                 if resp.status != 200:
+                    self._record_fetch_error(url, resp.status, f"HTTP {resp.status}; response not analyzed")
+                    self.on_log(
+                        f"[JS] Could not analyze {self._safe_url(url)}: HTTP {resp.status}."
+                    )
                     return
                 data = await resp.content.read(MAX_JS_BYTES + 1)
                 if len(data) > MAX_JS_BYTES:
@@ -135,7 +175,8 @@ class JSCollector:
                     self.on_log(f"[JS] Truncated oversized file: {url}")
                 content = data.decode(resp.charset or "utf-8", errors="replace")
         except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError) as exc:
-            self.on_log(f"[JS] Error {url}: {exc}")
+            self._record_fetch_error(url, 0, type(exc).__name__)
+            self.on_log(f"[JS] Request failed for {self._safe_url(url)}: {type(exc).__name__}")
             return
 
         self.js_contents[url] = content
@@ -161,6 +202,8 @@ class JSCollector:
         return {
             "js_files": sorted(self.js_urls),
             "truncated_js_files": sorted(self.truncated_js_files),
+            "js_fetch_errors": list(self.fetch_errors),
+            "js_fetch_error_count": len(self.fetch_errors),
             "inline_script_count": len(self.inline_scripts),
             "endpoints": sorted(self.endpoints),
             "source_maps": sorted(self.source_maps),
