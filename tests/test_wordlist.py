@@ -243,3 +243,43 @@ def test_retry_after_parser_supports_seconds_and_invalid_values():
     assert WordlistScanner._parse_retry_after("15") == 15
     assert WordlistScanner._parse_retry_after("bad-value") is None
     assert WordlistScanner._parse_retry_after(None) is None
+
+
+def test_content_discovery_keeps_failed_request_as_an_explicit_result(tmp_path, monkeypatch):
+    import aiohttp
+
+    original_get = aiohttp.ClientSession.get
+
+    def selective_failure(self, url, *args, **kwargs):
+        if "/unreachable" in str(url):
+            raise aiohttp.ClientError("synthetic network failure")
+        return original_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "get", selective_failure)
+
+    async def scenario():
+        app = web.Application()
+        app.router.add_get("/{name:.*}", lambda _request: web.Response(status=404, text="missing"))
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            wordlist = tmp_path / "paths.txt"
+            wordlist.write_text("unreachable", encoding="utf-8")
+            scanner = WordlistScanner(
+                f"http://127.0.0.1:{port}/", str(wordlist),
+                extensions=[""], concurrency=1, delay_ms=0,
+            )
+            await scanner.scan()
+            assert len(scanner.responses) == 1
+            result = scanner.responses[0]
+            assert result["url"].endswith("/unreachable")
+            assert result["status"] == 0
+            assert result["error"] == "ClientError"
+            assert result["potential_hit"] is False
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
