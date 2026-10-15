@@ -298,3 +298,37 @@ def test_partial_css_discovery_does_not_infer_removed_history(tmp_path):
     assert partial["history_diff"]["removed_urls"] == []
     assert partial["history_diff"]["removed_endpoints"] == []
     assert partial["history_diff"]["removed_parameters"] == []
+
+
+def test_transport_errors_make_history_partial_and_suppress_removal_diffs(tmp_path):
+    store = HistoryStore(tmp_path / "history.sqlite3")
+    store.save_report({
+        "target": "https://network-errors.example/",
+        "pages": [
+            _page("https://network-errors.example/a"),
+            _page("https://network-errors.example/b"),
+        ],
+        "endpoint_inventory": [{"endpoint": "/api/old", "sources": ["javascript"]}],
+        "parameters": [{"name": "id", "sources": ["query"]}],
+    })
+    partial = store.save_report({
+        "target": "https://network-errors.example/",
+        "pages": [_page("https://network-errors.example/a")],
+        "endpoint_inventory": [],
+        "parameters": [],
+        "transport_error_count": 1,
+        "failed_requests": [{
+            "url": "https://network-errors.example/b",
+            "phase": "crawl",
+            "error_type": "TimeoutError",
+        }],
+    })
+    status = next(
+        row["status"] for row in store.recent_scans("https://network-errors.example/")
+        if row["scan_id"] == partial["scan_id"]
+    )
+    assert status == "partial"
+    assert partial["history_diff"]["comparison_status"].startswith("partial")
+    assert partial["history_diff"]["removed_urls"] == []
+    assert partial["history_diff"]["removed_endpoints"] == []
+    assert partial["history_diff"]["removed_parameters"] == []
