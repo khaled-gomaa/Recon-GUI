@@ -54,7 +54,7 @@ def test_css_collector_follows_same_origin_imports_and_redacts_query_values():
             assert by_url["images/logo.svg"]["query_parameter_names"] == ["signature"]
             assert "fonts/site.woff2" in by_url
             assert "images/pattern.png" in by_url
-            assert "site.css.map" in by_url
+            assert "styles/site.css.map" in by_url
             assert "commented-out.png" not in repr(report)
             assert "external.css" in repr(report)  # reported, not fetched
             assert "private-value" not in repr(report)
