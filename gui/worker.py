@@ -356,6 +356,7 @@ class CrawlWorker(QThread):
             # never fetched; the shared session cookie jar remains in-memory only.
             css_collector = None
             css_discovery_data = {
+                "status": "not-run",
                 "css_files_discovered": 0, "css_files_attempted": 0, "css_files_fetched": 0,
                 "css_files_truncated": [], "css_file_errors": [],
                 "css_limit_reached": False, "css_rate_limited_stop": False, "css_assets": [],
@@ -363,6 +364,7 @@ class CrawlWorker(QThread):
             css_rate_limited_stop = False
             if not self._stopping() and not engine.rate_limit_stopped and not analyzer.js_collector.rate_limit_stopped:
                 from recon.css_collector import CSSCollector
+                from recon.parameter_intelligence import _normalize_endpoint
                 css_collector = CSSCollector(
                     self.url, cookie_jar=session_cookie_jar,
                     request_headers=phase_headers, on_log=self.log_message.emit,
@@ -385,12 +387,17 @@ class CrawlWorker(QThread):
                         )
                     )
                     css_rate_limited_stop = css_collector.rate_limit_stopped
+                    css_discovery_data["status"] = (
+                        "rate-limited" if css_rate_limited_stop else
+                        "partial" if css_collector.truncated_files or css_collector.errors or css_collector.limit_reached else
+                        "completed"
+                    )
                     analyzer.css_files_fetched = {
-                        __import__("recon.parameter_intelligence", fromlist=["_normalize_endpoint"])._normalize_endpoint(url)
+                        _normalize_endpoint(url)
                         for url in css_collector.fetched_contents
                     }
                     analyzer.css_files_truncated = {
-                        __import__("recon.parameter_intelligence", fromlist=["_normalize_endpoint"])._normalize_endpoint(url)
+                        _normalize_endpoint(url)
                         for url in css_collector.truncated_files
                     }
                     for item in css_collector.assets.values():
@@ -409,11 +416,16 @@ class CrawlWorker(QThread):
                             f"{len(css_collector.assets)} nested asset references."
                         )
                 except Exception as exc:
+                    css_discovery_data["status"] = "error"
                     css_discovery_data["css_file_errors"].append(
                         {"url": "", "error": type(exc).__name__}
                     )
                     self.log_message.emit(f"[CSS] Discovery phase failed: {type(exc).__name__}: {exc}")
                 css_discovery_data["css_rate_limited_stop"] = css_rate_limited_stop
+            elif self._stopping():
+                css_discovery_data["status"] = "stopped"
+            elif engine.rate_limit_stopped or analyzer.js_collector.rate_limit_stopped:
+                css_discovery_data["status"] = "skipped-after-rate-limit"
 
             wordlist_results = []
             wordlist_rate_limited_stop = False
@@ -710,7 +722,7 @@ class CrawlWorker(QThread):
                     and not item.get("fetched_by_js_collector")
                     and not item.get("fetched_by_css_collector")
                 ),
-                "response_bodies_truncated": len(body_truncated_pages) + len(truncated_wordlist_urls),
+                "response_bodies_truncated": len(body_truncated_pages) + len(truncated_wordlist_urls) + len(truncated_css_urls),
                 "content_limit_reached": report["content_limit_reached"],
                 "imported_seed_candidates": len(self.imported_seed_urls),
                 "imported_seed_urls_crawled": report.get("imported_seed_urls_crawled", 0),
