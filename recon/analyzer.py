@@ -146,9 +146,10 @@ class ReconAnalyzer:
         item_key = (safe_url, kind)
         item = self.asset_observations.setdefault(item_key, {
             "url": safe_url, "request_url": raw_url, "kind": kind, "extension": extension,
-            "referrers": set(), "query_parameter_names": set(),
+            "referrers": set(), "sources": set(), "query_parameter_names": set(),
             "in_scope": host == self.base_host,
         })
+        item.setdefault("sources", set()).add(str((asset or {}).get("source") or "html-markup"))
         if page_path:
             item["referrers"].add(page_path)
         try:
@@ -166,6 +167,12 @@ class ReconAnalyzer:
         html = html or ""
         self.page_urls.add(url)
         for asset in discovered_assets or []:
+            self._record_asset_reference(url, asset)
+        # Mine extension-bearing literals from inline script and metadata strings. The
+        # original request URL stays in memory; the report persists query names only.
+        for asset in JSEndpointExtractor.extract_asset_references(
+            html, url, source="html-or-inline-literal"
+        ):
             self._record_asset_reference(url, asset)
         for link in discovered_links or []:
             if not isinstance(link, str) or not link.startswith(("http://", "https://")):
@@ -234,6 +241,8 @@ class ReconAnalyzer:
             )
         )
         for js_url, js_content in self.js_collector.js_contents.items():
+            for asset in JSEndpointExtractor.extract_asset_references(js_content, js_url):
+                self._record_asset_reference(js_url, asset)
             for endpoint in JSEndpointExtractor.extract(js_content):
                 self._record_endpoint(endpoint, "javascript", js_url)
             for request in JSEndpointExtractor.extract_request_observations(js_content):
@@ -281,6 +290,7 @@ class ReconAnalyzer:
             "asset_inventory": [
                 {
                     "url": item["url"], "kind": item["kind"], "extension": item["extension"],
+                    "sources": sorted(item.get("sources", set())),
                     "referrers": sorted(item["referrers"]),
                     "reference_count": len(item["referrers"]),
                     "query_parameter_names": sorted(item["query_parameter_names"]),
