@@ -1717,6 +1717,8 @@ class MainWindow(QMainWindow):
         crawler_limited = report.get("crawler_rate_limited_stop", False)
         discovery_limited = report.get("wordlist_rate_limited_stop", False)
         css_limited = report.get("css_rate_limited_stop", False)
+        css_summary = report.get("css_discovery_summary", {}) or {}
+        css_coverage_partial = css_summary.get("status") in {"partial", "error"} or bool(css_summary.get("css_limit_reached"))
         page_limited = report.get("page_limit_reached", False)
         depth_limited = report.get("depth_limit_reached", False)
         wordlist_limited = report.get("wordlist_candidate_limit_reached", False)
@@ -1729,7 +1731,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
         elif crawler_limited or discovery_limited or css_limited or asset_probe_summary.get("rate_limited_stop"):
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
-        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited:
+        elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited or css_coverage_partial:
             reasons = []
             if page_limited:
                 reasons.append("PAGE")
@@ -1745,6 +1747,8 @@ class MainWindow(QMainWindow):
                 reasons.append("SEED IMPORT")
             if asset_probe_limited:
                 reasons.append("ASSET HEAD")
+            if css_coverage_partial:
+                reasons.append("CSS")
             self.status_label.setText("PARTIAL  ·  " + "/".join(reasons) + " LIMIT")
         else:
             self.status_label.setText(f"COMPLETE  ·  {total} pages")
@@ -1950,7 +1954,9 @@ class MainWindow(QMainWindow):
         elif crawler_limited or wordlist_limited or asset_probe_summary.get("rate_limited_stop"):
             overall = "PARTIAL — RATE LIMITED"
         elif (
-            coverage.get("page_limit_reached")
+            css_summary.get("status") in {"partial", "error"}
+            or coverage.get("css_limit_reached")
+            or coverage.get("page_limit_reached")
             or coverage.get("depth_limit_reached")
             or coverage.get("wordlist_word_limit_reached")
             or coverage.get("wordlist_path_limit_reached")
@@ -2005,7 +2011,7 @@ class MainWindow(QMainWindow):
             f"References: {coverage.get('asset_references', len(report.get('asset_inventory', [])))}; "
             f"external references: {coverage.get('external_asset_references', 0)}; "
             f"references not downloaded by page/JS/CSS phases: "
-            f"{coverage.get('asset_references_without_page_or_js_fetch', 0)}"
+            f"{coverage.get('asset_references_without_page_js_or_css_fetch', 0)}"
         )
         lines.append("Note: this inventory is extracted from markup; a reference does not prove the asset exists or was fetched.")
         if asset_probe_summary.get("enabled"):
