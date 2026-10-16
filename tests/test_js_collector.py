@@ -113,7 +113,9 @@ def test_js_collector_records_429_and_stops_collection_safely():
 
         async def limited(request):
             calls.append(request.path)
-            return web.Response(status=429, headers={"Retry-After": "30"}, text="slow down")
+            if len(calls) == 1:
+                return web.Response(status=429, headers={"Retry-After": "0"}, text="slow down")
+            return web.Response(text="const route='/resumed';", content_type="application/javascript")
 
         async def other_js(request):
             calls.append(request.path)
@@ -133,9 +135,10 @@ def test_js_collector_records_429_and_stops_collection_safely():
             collector.js_urls.update({base + "limited.js", base + "other.js"})
             await collector.download_and_analyze(concurrency=1)
             report = collector.to_dict()
-            assert collector.rate_limit_stopped is True
+            assert collector.rate_limit_stopped is False
             assert any(item["status"] == 429 for item in report["js_fetch_errors"])
-            assert all(path in {"/limited.js", "/other.js"} for path in calls)
+            assert calls.count("/limited.js") == 2
+            assert base + "limited.js" in collector.js_contents
         finally:
             await runner.cleanup()
 
