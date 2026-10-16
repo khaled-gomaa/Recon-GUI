@@ -494,3 +494,29 @@ def test_crawler_decompresses_gzip_sitemap_within_limits():
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+def test_engine_constructor_does_not_require_a_running_event_loop():
+    # The GUI creates CrawlEngine in a QThread before entering run_until_complete().
+    engine = CrawlEngine("https://example.com", max_depth=1, max_pages=2)
+    assert engine._request_gate_lock is None
+    assert engine._schedule_lock is None
+
+
+def test_shared_cookie_jar_factory_runs_inside_event_loop():
+    from yarl import URL
+    from gui.session import create_session_cookie_jar
+
+    async def scenario():
+        logs = []
+        target = "http://127.0.0.1:8080/"
+        jar = await create_session_cookie_jar(
+            target, "sessionid=secret-value; theme=dark", logs.append
+        )
+        cookies = jar.filter_cookies(URL(target))
+        assert cookies["sessionid"].value == "secret-value"
+        assert cookies["theme"].value == "dark"
+        assert any("in-memory session jar" in message for message in logs)
+        assert "secret-value" not in "\n".join(logs)
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=3))

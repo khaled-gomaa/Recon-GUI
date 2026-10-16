@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QGridLayout, QGroupBox, QLineEdit, QSpinBox, QPushButton, QTextEdit,
-    QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox, QComboBox, QToolButton, QHeaderView,
+    QTableWidget, QTableWidgetItem, QTabWidget, QFileDialog, QMessageBox, QCheckBox, QComboBox, QToolButton, QHeaderView, QMenu,
 )
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtCore import Qt, QTimer
@@ -258,6 +258,23 @@ class MainWindow(QMainWindow):
         for column, stretch in ((1, 2), (3, 1), (5, 1), (6, 1), (7, 0)):
             grid.setColumnStretch(column, stretch)
         root.addWidget(settings)
+        self.scan_settings_grid = grid
+        self.config_toggle_toolbar = QHBoxLayout()
+        self.config_toggle_toolbar.setContentsMargins(0, 0, 0, 0)
+        self.config_toggle_toolbar.setSpacing(8)
+        root.addLayout(self.config_toggle_toolbar)
+        self.scan_controls_toggle = QToolButton()
+        self.scan_controls_toggle.setObjectName("advancedToggle")
+        self.scan_controls_toggle.setText("Scan options & wordlist  ▾")
+        self.scan_controls_toggle.setCheckable(True)
+        self.scan_controls_toggle.setChecked(True)
+        self.scan_controls_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.scan_controls_toggle.setToolTip(
+            "Show or hide depth, concurrency, wordlist, extension and coverage-limit controls. "
+            "The target and Start/Stop controls remain visible."
+        )
+        self.scan_controls_toggle.toggled.connect(self._set_scan_controls_visible)
+        self.config_toggle_toolbar.addWidget(self.scan_controls_toggle)
 
         # Keep advanced modules hidden until requested so results remain the main workspace.
         self.advanced_toggle = QToolButton()
@@ -267,7 +284,7 @@ class MainWindow(QMainWindow):
         self.advanced_toggle.setChecked(False)
         self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.advanced_toggle.toggled.connect(self._set_advanced_visible)
-        root.addWidget(self.advanced_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        self.config_toggle_toolbar.addWidget(self.advanced_toggle)
 
         options = QGroupBox("Optional modules & session")
         options.setObjectName("sectionCard")
@@ -383,6 +400,18 @@ class MainWindow(QMainWindow):
         options.setVisible(False)
         root.addWidget(options)
 
+        # Optional local filters can be collapsed to give the result tables more room.
+        self.filters_toggle = QToolButton()
+        self.filters_toggle.setObjectName("advancedToggle")
+        self.filters_toggle.setText("Result filters  ▸")
+        self.filters_toggle.setCheckable(True)
+        self.filters_toggle.setChecked(False)
+        self.filters_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.filters_toggle.setToolTip("Show or hide local result filters without repeating the scan.")
+        self.filters_toggle.toggled.connect(self._set_filters_visible)
+        self.config_toggle_toolbar.addWidget(self.filters_toggle)
+        self.config_toggle_toolbar.addStretch(1)
+
         # Compact filter bar: two rows of matching/exclusion fields instead of nested cards.
         filters = QGroupBox("Result filters")
         filters.setObjectName("sectionCard")
@@ -450,6 +479,8 @@ class MainWindow(QMainWindow):
         for column in (1, 2, 3):
             filter_grid.setColumnStretch(column, 1)
         filter_outer.addLayout(filter_grid)
+        self.result_filters_group = filters
+        filters.setVisible(False)
         root.addWidget(filters)
 
         # A single search field filters visible rows across the result tables.
@@ -466,10 +497,40 @@ class MainWindow(QMainWindow):
         search_row.addWidget(self.results_search, 1)
         root.addLayout(search_row)
 
+        self.panels_button = QToolButton()
+        self.panels_button.setObjectName("advancedToggle")
+        self.panels_button.setText("Visible panels  ▾")
+        self.panels_button.setToolTip(
+            "Show or hide result panels. Hidden panels remain populated and can be restored here."
+        )
+        self.panels_button.clicked.connect(self._show_panel_visibility_menu)
+        self.focus_view_button = QToolButton()
+        self.focus_view_button.setObjectName("advancedToggle")
+        self.focus_view_button.setText("Focus on results")
+        self.focus_view_button.setCheckable(True)
+        self.focus_view_button.setToolTip(
+            "Collapse scan options, advanced settings and filters to maximize the result workspace."
+        )
+        self.focus_view_button.toggled.connect(self._set_focus_view)
+        self.reset_layout_button = QToolButton()
+        self.reset_layout_button.setObjectName("advancedToggle")
+        self.reset_layout_button.setText("Reset layout")
+        self.reset_layout_button.setToolTip("Restore the default visible controls, panels and filters.")
+        self.reset_layout_button.clicked.connect(self._reset_layout)
+        workspace_toolbar = QHBoxLayout()
+        workspace_toolbar.setContentsMargins(0, 0, 0, 0)
+        workspace_toolbar.addWidget(self.panels_button)
+        workspace_toolbar.addWidget(self.focus_view_button)
+        workspace_toolbar.addWidget(self.reset_layout_button)
+        workspace_toolbar.addStretch(1)
+        root.addLayout(workspace_toolbar)
+
         # Main results
         self.tabs = QTabWidget()
         self.tabs.setObjectName("resultsTabs")
         self.tabs.setDocumentMode(True)
+        self.tabs.setMovable(True)
+        self.tabs.setTabsClosable(False)
         self.tabs.setMinimumHeight(260)
         root.addWidget(self.tabs, 1)
 
@@ -694,6 +755,10 @@ class MainWindow(QMainWindow):
             self.subdomain_table, self.history_table,
         ):
             self._style_table(table)
+            table.horizontalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            table.horizontalHeader().customContextMenuRequested.connect(
+                lambda position, current_table=table: self._show_column_visibility_menu(current_table, position)
+            )
             table.horizontalHeader().sortIndicatorChanged.connect(
                 lambda _column, _order: self._filter_result_tables(self.results_search.text())
             )
@@ -864,13 +929,23 @@ class MainWindow(QMainWindow):
             }
             QCheckBox { color: #344863; font-weight: 600; spacing: 5px; }
             QToolButton#advancedToggle {
-                color: #1d4ed8;
-                font-weight: 600;
-                padding: 2px 5px;
-                border: none;
-                background: transparent;
+                color: #244b8f;
+                font-weight: 650;
+                padding: 5px 10px;
+                border: 1px solid #d5dfec;
+                border-radius: 7px;
+                background: #ffffff;
             }
-            QToolButton#advancedToggle:hover { color: #1e40af; }
+            QToolButton#advancedToggle:hover {
+                color: #1e40af;
+                border-color: #9bbdf5;
+                background: #f3f7ff;
+            }
+            QToolButton#advancedToggle:checked {
+                color: #1e40af;
+                border-color: #a9c7f7;
+                background: #eaf2ff;
+            }
         """)
 
     def _result_tables(self):
@@ -1189,6 +1264,85 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.cookie_table.setItem(row, column, QTableWidgetItem(str(value)))
             self._filter_table_row(self.cookie_table, row, self.results_search.text().strip().casefold())
+
+    def _set_scan_controls_visible(self, visible: bool):
+        """Collapse nonessential scan controls without hiding the target or Start/Stop buttons."""
+        for index in range(self.scan_settings_grid.count()):
+            item = self.scan_settings_grid.itemAt(index)
+            row, _column, _row_span, _column_span = self.scan_settings_grid.getItemPosition(index)
+            widget = item.widget()
+            if widget is not None and row > 0:
+                widget.setVisible(visible)
+        self.scan_controls_toggle.setText(
+            "Scan options & wordlist  ▾" if visible else "Scan options & wordlist  ▸"
+        )
+
+    def _set_filters_visible(self, visible: bool):
+        self.result_filters_group.setVisible(visible)
+        self.filters_toggle.setText("Result filters  ▾" if visible else "Result filters  ▸")
+
+    def _set_focus_view(self, focused: bool):
+        """Collapse secondary controls while keeping the target and result navigation available."""
+        if focused:
+            self.scan_controls_toggle.setChecked(False)
+            self.advanced_toggle.setChecked(False)
+            self.filters_toggle.setChecked(False)
+            self.focus_view_button.setText("Exit focus mode")
+        else:
+            self.focus_view_button.setText("Focus on results")
+
+    def _reset_layout(self):
+        """Restore a useful default layout without clearing or rerunning any scan data."""
+        self.focus_view_button.setChecked(False)
+        self.scan_controls_toggle.setChecked(True)
+        self.advanced_toggle.setChecked(False)
+        self.filters_toggle.setChecked(False)
+        for index in range(self.tabs.count()):
+            self.tabs.setTabVisible(index, True)
+        for table in (item for item in self._result_tables() if item is not None):
+            for column in range(table.columnCount()):
+                table.setColumnHidden(column, False)
+
+    def _show_panel_visibility_menu(self):
+        """Allow each result panel to be hidden and restored without losing its contents."""
+        menu = QMenu(self)
+        for index in range(self.tabs.count()):
+            action = menu.addAction(self.tabs.tabText(index))
+            action.setCheckable(True)
+            action.setChecked(self.tabs.isTabVisible(index))
+            action.toggled.connect(
+                lambda checked, tab_index=index: self._set_result_panel_visible(tab_index, checked)
+            )
+        menu.exec(self.panels_button.mapToGlobal(self.panels_button.rect().bottomLeft()))
+
+    def _set_result_panel_visible(self, index: int, visible: bool):
+        """Do not allow the user to accidentally hide every result panel."""
+        visible_count = sum(self.tabs.isTabVisible(i) for i in range(self.tabs.count()))
+        if not visible and visible_count <= 1:
+            return
+        self.tabs.setTabVisible(index, visible)
+
+    def _show_column_visibility_menu(self, table: QTableWidget, position):
+        """Right-click a result table header to hide or restore columns."""
+        menu = QMenu(table)
+        for column in range(table.columnCount()):
+            header_item = table.horizontalHeaderItem(column)
+            label = header_item.text() if header_item else f"Column {column + 1}"
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(not table.isColumnHidden(column))
+            action.toggled.connect(
+                lambda checked, current_table=table, column_index=column:
+                self._set_result_column_visible(current_table, column_index, checked)
+            )
+        menu.exec(table.horizontalHeader().mapToGlobal(position))
+
+    @staticmethod
+    def _set_result_column_visible(table: QTableWidget, column: int, visible: bool):
+        visible_count = sum(not table.isColumnHidden(i) for i in range(table.columnCount()))
+        if not visible and visible_count <= 1:
+            return
+        table.setColumnHidden(column, not visible)
 
     def _set_advanced_visible(self, visible: bool):
         """Show optional renderer/passive/auth fields only when explicitly requested."""

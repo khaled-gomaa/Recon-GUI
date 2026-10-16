@@ -20,6 +20,42 @@ NAVIGATION_TIMEOUT_MS = 15000
 AUTO_SCROLL_MAX_STEPS = 5
 AUTO_SCROLL_SETTLE_MS = 250
 
+def _schedule_async_handler(loop, callback, argument, on_log=None, label="Browser"):
+    """Schedule an async Playwright event handler on the loop that owns the browser.
+
+    Playwright event callbacks may be dispatched from contexts where asyncio.create_task()
+    cannot discover a running loop. Using the captured loop avoids that lookup and reports
+    handler errors instead of turning them into an opaque fatal scan error.
+    """
+    log = on_log or (lambda _message: None)
+
+    def create_task():
+        if loop.is_closed():
+            return
+        try:
+            task = loop.create_task(callback(argument))
+        except Exception as exc:
+            log(f"[{label}] Could not schedule response handler: {type(exc).__name__}: {exc}")
+            return
+
+        def report_failure(done_task):
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                log(f"[{label}] Response handler failed: {type(exc).__name__}: {exc}")
+
+        task.add_done_callback(report_failure)
+
+    try:
+        loop.call_soon_threadsafe(create_task)
+    except RuntimeError as exc:
+        # The event loop may already be shutting down during cancellation/cleanup.
+        log(f"[{label}] Ignored late response event during shutdown: {type(exc).__name__}: {exc}")
+
+
+
 
 async def _bounded_scroll_page(page, should_stop=None, max_steps=AUTO_SCROLL_MAX_STEPS,
                                settle_ms=AUTO_SCROLL_SETTLE_MS, idle_limit=2):
@@ -91,6 +127,7 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
     ))[:max(1, min(int(max_pages), MAX_RENDER_PAGES))]
     if not limited_urls:
         return {}
+    event_loop = asyncio.get_running_loop()
     try:
         from playwright.async_api import async_playwright
     except ImportError as exc:
@@ -224,7 +261,12 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
                     requests_by_id = {}
                     requests_by_key = {}
                     page.on("request", on_request)
-                    page.on("response", lambda response: asyncio.create_task(on_response(response)))
+                    page.on(
+                        "response",
+                        lambda response: _schedule_async_handler(
+                            event_loop, on_response, response, log, "Browser"
+                        ),
+                    )
 
                     async def scope_guard(route):
                         request_host = (urlparse(route.request.url).hostname or "").lower()
@@ -290,10 +332,11 @@ async def capture_manual_session(
     expected_host = (parsed_start.hostname or "").lower().rstrip(".")
     expected_origin = _origin(start_url)
     duration = max(15, min(int(duration_seconds), 600))
+    event_loop = asyncio.get_running_loop()
     observations = {}
     captured_cookies = []
     browser_storage_state = {}
-    capture_started = asyncio.get_running_loop().time()
+    capture_started = event_loop.time()
 
     def safe_url(value):
         parsed = urlsplit(value or "")
@@ -444,7 +487,12 @@ async def capture_manual_session(
 
                 pending_by_key = {}
                 page.on("request", on_request)
-                page.on("response", lambda response: __import__("asyncio").create_task(on_response(response)))
+                page.on(
+                    "response",
+                    lambda response: _schedule_async_handler(
+                        event_loop, on_response, response, log, "Manual Browser"
+                    ),
+                )
                 try:
                     await page.goto(start_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
                 except Exception as exc:
@@ -453,7 +501,7 @@ async def capture_manual_session(
                     f"[Manual Browser] Chromium is open for manual login/browsing for up to {duration}s. "
                     "Only same-origin request metadata is recorded; request bodies and cookie values are not logged."
                 )
-                deadline = __import__("asyncio").get_running_loop().time() + duration
+                deadline = event_loop.time() + duration
                 while not stop() and __import__("asyncio").get_running_loop().time() < deadline:
                     await __import__("asyncio").sleep(0.25)
                 if stop():

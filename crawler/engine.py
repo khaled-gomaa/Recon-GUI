@@ -154,11 +154,14 @@ class CrawlEngine:
         self.crawl_delay_seconds = 0.0
         self.robots_url = ""
         self._robots_loaded = False
-        self._request_gate_lock = asyncio.Lock()
+        # Loop-bound synchronization primitives are created inside crawl(), where
+        # an active event loop is guaranteed. The GUI constructs this engine in a QThread
+        # before the worker starts running its asyncio loop.
+        self._request_gate_lock = None
         self._next_request_time = 0.0
         self.visited: set = set()
         self.results: list = []
-        self._schedule_lock = asyncio.Lock()
+        self._schedule_lock = None
         self.rate_limit_stopped = False
         self.page_limit_reached = False
         self.depth_limit_reached = False
@@ -367,6 +370,9 @@ class CrawlEngine:
             "User-Agent": "Recon-GUI/3.0 (+authorized security testing)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
+        # Create loop-bound primitives only after crawl() is running in its event loop.
+        self._request_gate_lock = asyncio.Lock()
+        self._schedule_lock = asyncio.Lock()
         queue = asyncio.Queue()
         self._resume_event = asyncio.Event()
         self._resume_event.set()

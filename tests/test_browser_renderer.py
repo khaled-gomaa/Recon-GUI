@@ -90,3 +90,34 @@ def test_bounded_scroll_honors_stop_callback():
         assert steps <= 1
 
     asyncio.run(scenario())
+
+
+def test_async_browser_handler_uses_captured_loop_from_another_thread():
+    import threading
+    from recon.browser_renderer import _schedule_async_handler
+
+    loop = asyncio.new_event_loop()
+    seen = []
+    errors = []
+
+    async def handler(value):
+        seen.append(value)
+
+    async def scenario():
+        thread = threading.Thread(
+            target=lambda: _schedule_async_handler(
+                loop, handler, "response", errors.append, "Test Browser"
+            )
+        )
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        await asyncio.sleep(0.02)
+
+    try:
+        loop.run_until_complete(scenario())
+    finally:
+        loop.close()
+
+    assert seen == ["response"]
+    assert errors == []
