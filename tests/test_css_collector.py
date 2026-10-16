@@ -65,7 +65,7 @@ def test_css_collector_follows_same_origin_imports_and_redacts_query_values():
     asyncio.run(asyncio.wait_for(scenario(), timeout=8))
 
 
-def test_css_collector_stops_safely_on_429_without_retry_after():
+def test_css_collector_retries_after_429_cooldown():
     async def scenario():
         requested = []
 
