@@ -11,8 +11,11 @@ def render_text_report(report: dict) -> str:
     report = report or {}
     import_only = bool(report.get("har_import_summary")) and not report.get("started_at") and not report.get("pages")
     has_rate_limit = bool(
-        report.get("crawler_rate_limited_stop")
+        report.get("rate_limit_stopped")
+        or report.get("crawler_rate_limited_stop")
         or report.get("wordlist_rate_limited_stop")
+        or report.get("crawler_unresolved_rate_limited_urls")
+        or report.get("wordlist_unresolved_rate_limited_urls")
         or report.get("css_rate_limited_stop")
         or report.get("js_rate_limited_stop")
         or (report.get("asset_probe_summary", {}) or {}).get("rate_limited_stop")
@@ -109,6 +112,36 @@ def render_text_report(report: dict) -> str:
         lines.append(
             f"[HTTP {item.get('status')}] [{item.get('phase', '')}] {item.get('url', '')}"
         )
+
+    rate_summary = report.get("rate_limit_summary", {}) or {}
+    rate_attempts = report.get("rate_limit_attempts", []) or []
+    crawler_unresolved = report.get("crawler_unresolved_rate_limited_urls", []) or []
+    wordlist_unresolved = report.get("wordlist_unresolved_rate_limited_urls", []) or []
+    if rate_summary or rate_attempts or crawler_unresolved or wordlist_unresolved:
+        _section(lines, "HTTP 429 Recovery")
+        lines.append(f"Shared policy stopped new active requests: {bool(rate_summary.get('stopped') or report.get('rate_limit_stopped'))}")
+        lines.append(f"Cooldowns applied: {rate_summary.get('cooldowns_applied', 0)}")
+        lines.append(f"Consecutive cooldowns at end: {rate_summary.get('consecutive_cooldowns', 0)}")
+        lines.append(f"Cooldown ceiling: {rate_summary.get('max_cooldowns', 0)}")
+        lines.append(f"Crawler URL retry attempts recorded: {len(rate_attempts)}")
+        for item in rate_attempts[:1000]:
+            lines.append(
+                f"[HTTP 429] [{item.get('phase', 'Crawler')}] {item.get('url', '')} "
+                f"| depth={item.get('depth', '')} | attempt={item.get('attempt', '')}"
+            )
+        if len(rate_attempts) > 1000:
+            lines.append(f"WARNING: only the first 1000 of {len(rate_attempts)} crawler retry attempts are shown.")
+        if crawler_unresolved:
+            lines.append("Crawler URLs still unverified after retry budget:")
+            lines.extend(f"  - {url}" for url in crawler_unresolved[:1000])
+        if wordlist_unresolved:
+            lines.append("Content-discovery paths still unverified after retry budget:")
+            lines.extend(f"  - {url}" for url in wordlist_unresolved[:1000])
+        for item in rate_summary.get("events", []) or []:
+            lines.append(
+                f"[Cooldown] [{item.get('phase', '')}] {item.get('url', '')} "
+                f"| wait={item.get('delay_seconds', 0)}s | reason={item.get('reason', '')}"
+            )
 
     _section(lines, "Pages")
     for page in report.get("pages", []):
