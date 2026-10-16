@@ -179,7 +179,7 @@ class WordlistScanner:
                 self._resume_event.set()
                 return False
             self._resume_event.set()
-            self._log("[429] Cool-down complete; continuing queued candidates at reduced pacing.")
+            self._log("[429] Cool-down complete; resuming remaining queued checks at reduced pacing.")
             return True
 
     def _iter_wordlist(self, deduplicate: bool = True, *, track_stats: bool = True):
