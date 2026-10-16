@@ -91,6 +91,7 @@ class RateLimitManager:
         self.fallback_initial_seconds = max(0.0, float(fallback_initial_seconds))
         self.fallback_max_seconds = max(self.fallback_initial_seconds, float(fallback_max_seconds))
         self.pause_count = 0
+        self.consecutive_pauses = 0
         self.stopped = False
         self.last_delay_seconds = 0.0
         self.last_reason = ""
@@ -117,6 +118,11 @@ class RateLimitManager:
                 callback(message)
             except Exception:
                 pass
+
+    def note_success(self) -> None:
+        """Reset a sustained 429 streak after ordinary responses resume."""
+        if not self.stopped and not self._waiting:
+            self.consecutive_pauses = 0
 
     async def wait_until_ready(self, should_stop=None) -> bool:
         """Gate a new request until the scan-wide cooldown has ended."""
@@ -157,7 +163,7 @@ class RateLimitManager:
                 already_waiting = True
             else:
                 retry_after = parse_retry_after(header_value(headers, "Retry-After"))
-                if self.pause_count >= self.max_pauses:
+                if self.consecutive_pauses >= self.max_pauses:
                     self.stopped = True
                     self._resume_event.set()
                     self._log(
@@ -183,12 +189,13 @@ class RateLimitManager:
                 else:
                     # A missing header is not a signal to retry immediately. Use cautious backoff.
                     delay = min(
-                        self.fallback_initial_seconds * (2 ** self.pause_count),
+                        self.fallback_initial_seconds * (2 ** self.consecutive_pauses),
                         self.fallback_max_seconds,
                     )
                     reason = "fallback backoff (no valid Retry-After)"
 
                 self.pause_count += 1
+                self.consecutive_pauses += 1
                 self.last_delay_seconds = delay
                 self.last_reason = reason
                 self._paused_until = loop.time() + delay
@@ -198,6 +205,7 @@ class RateLimitManager:
                     "phase": str(phase),
                     "url": safe_url(url),
                     "pause_number": self.pause_count,
+                    "consecutive_pause": self.consecutive_pauses,
                     "delay_seconds": round(delay, 3),
                     "reason": reason,
                 })
@@ -209,7 +217,8 @@ class RateLimitManager:
         self._log(
             on_log,
             f"[429] {phase}: pausing new HTTP requests for {delay:.1f}s ({reason}; "
-            f"cooldown {self.pause_count}/{self.max_pauses}).",
+            f"consecutive cooldown {self.consecutive_pauses}/{self.max_pauses}; "
+            f"total cooldowns {self.pause_count}).",
         )
         deadline = loop.time() + delay
         while loop.time() < deadline:
@@ -233,6 +242,7 @@ class RateLimitManager:
         return {
             "stopped": bool(self.stopped),
             "cooldowns_applied": int(self.pause_count),
+            "consecutive_cooldowns": int(self.consecutive_pauses),
             "last_delay_seconds": float(self.last_delay_seconds),
             "last_reason": self.last_reason,
             "max_cooldowns": self.max_pauses,
