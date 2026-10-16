@@ -279,6 +279,7 @@ class CSSCollector:
                                 break
                             self.attempted_urls.discard(url)  # retry after the shared cooldown
                             continue
+                        self.rate_limit_manager.note_success()
                         if response.status != 200:
                             self.errors.append({"url": _safe_url(url), "status": int(response.status), "error": "http-error"})
                             continue
