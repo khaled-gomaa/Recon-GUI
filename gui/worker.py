@@ -593,7 +593,10 @@ class CrawlWorker(QThread):
                 "stopped" if self._stopping() else
                 "not-run" if not self.wordlist_path else
                 "partial" if (
-                    report["wordlist_word_limit_reached"] if "wordlist_word_limit_reached" in report else False
+                    "scanner" in locals() and (
+                        scanner.word_limit_reached or scanner.path_limit_reached
+                        or scanner.recursion_depth_limit_reached
+                    )
                 ) else "completed"
             )
             report["wordlist_word_limit_reached"] = (
