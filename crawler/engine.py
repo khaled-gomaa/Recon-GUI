@@ -436,11 +436,7 @@ class CrawlEngine:
                                 # UI/reporting callbacks must not prevent discovery from continuing.
                                 self._log(f"[CALLBACK ERROR] {type(exc).__name__}: {exc}")
 
-                        if result.status == 429 or (
-                            result.status == 503 and any(
-                                str(key).lower() == "retry-after" for key in result.headers
-                            )
-                        ):
+                        if result.status in {429, 503}:
                             await self._handle_429(result.headers, url, status=result.status)
                             continue
                         if result.status not in {429, 503}:
