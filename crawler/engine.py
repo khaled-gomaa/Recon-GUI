@@ -165,6 +165,7 @@ class CrawlEngine:
         self.visited: set = set()
         self.results: list = []
         self.rate_limit_attempts: list[dict] = []
+        self.unresolved_rate_limited_urls: set[str] = set()
         self._schedule_lock = None
         self.rate_limit_stopped = False
         self.page_limit_reached = False
@@ -332,6 +333,7 @@ class CrawlEngine:
         self._request_gate_lock = asyncio.Lock()
         self._schedule_lock = asyncio.Lock()
         self.rate_limit_attempts = []
+        self.unresolved_rate_limited_urls = set()
         rate_limit_retries = {}
         queue = asyncio.Queue()
         self._resume_event = asyncio.Event()
@@ -411,6 +413,7 @@ class CrawlEngine:
                                 continue
                             # Keep only a terminal 429 in the page table; intermediate attempts
                             # are listed separately in rate_limit_attempts to avoid duplicate pages.
+                            self.unresolved_rate_limited_urls.add(url)
                             self.results.append(result)
                             self._log(
                                 f"[429] {safe_url(url)} remains rate-limited; this response is recorded "
