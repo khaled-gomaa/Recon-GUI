@@ -354,6 +354,19 @@ class WordlistScanner:
         value = re.sub(r"\b\d{10,13}\b", "{timestamp}", value)
         return " ".join(value.casefold().split())
 
+    @staticmethod
+    def _similarity_sample(value: str) -> str:
+        """Sample beginning, middle and end so large pages are not judged by their headers alone."""
+        if len(value) <= 8192:
+            return value
+        midpoint = len(value) // 2
+        middle_start = max(0, midpoint - 1024)
+        return (
+            value[:4096] + " {middle} "
+            + value[middle_start:middle_start + 2048] + " {tail} "
+            + value[-2048:]
+        )
+
     def _matches_baseline(self, url, status, content_type, location, body):
         """Return (wildcard match, similarity, reason) using status, redirects and body text."""
         if self.baseline_status is None:
@@ -381,8 +394,10 @@ class WordlistScanner:
             if self.baseline_size is not None and abs(len(body) - self.baseline_size) <= 4:
                 return True, 1.0, "empty-body-size-match"
             return False, 0.0, "empty-body-differs"
-        left, right = baseline_text[:8192], candidate_text[:8192]
-        similarity = SequenceMatcher(None, left, right, autojunk=False).ratio()
+        left = self._similarity_sample(baseline_text)
+        right = self._similarity_sample(candidate_text)
+        # Keep difflib's autojunk optimization enabled to avoid quadratic work on repetitive text.
+        similarity = SequenceMatcher(None, left, right, autojunk=True).ratio()
         size_delta = abs(len(body) - (self.baseline_size or 0))
         relative_delta = size_delta / max(1, self.baseline_size or 1)
         if similarity >= 0.94 and relative_delta <= 0.20:
