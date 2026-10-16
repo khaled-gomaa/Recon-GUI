@@ -423,6 +423,8 @@ class CrawlEngine:
                                     self._log(f"[CALLBACK ERROR] {type(exc).__name__}: {exc}")
                             continue
 
+                        if result.status and result.status != 429:
+                            self.rate_limit_manager.note_success()
                         self.results.append(result)
                         self._log(
                             f"[{result.status or 'ERR'}] depth={depth} {safe_url(url)}"
