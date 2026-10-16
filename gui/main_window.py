@@ -499,7 +499,26 @@ class MainWindow(QMainWindow):
             "Show or hide result panels. Hidden panels remain populated and can be restored here."
         )
         self.panels_button.clicked.connect(self._show_panel_visibility_menu)
-        root.addWidget(self.panels_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.focus_view_button = QToolButton()
+        self.focus_view_button.setObjectName("advancedToggle")
+        self.focus_view_button.setText("Focus on results")
+        self.focus_view_button.setCheckable(True)
+        self.focus_view_button.setToolTip(
+            "Collapse scan options, advanced settings and filters to maximize the result workspace."
+        )
+        self.focus_view_button.toggled.connect(self._set_focus_view)
+        self.reset_layout_button = QToolButton()
+        self.reset_layout_button.setObjectName("advancedToggle")
+        self.reset_layout_button.setText("Reset layout")
+        self.reset_layout_button.setToolTip("Restore the default visible controls, panels and filters.")
+        self.reset_layout_button.clicked.connect(self._reset_layout)
+        workspace_toolbar = QHBoxLayout()
+        workspace_toolbar.setContentsMargins(0, 0, 0, 0)
+        workspace_toolbar.addWidget(self.panels_button)
+        workspace_toolbar.addWidget(self.focus_view_button)
+        workspace_toolbar.addWidget(self.reset_layout_button)
+        workspace_toolbar.addStretch(1)
+        root.addLayout(workspace_toolbar)
 
         # Main results
         self.tabs = QTabWidget()
@@ -1246,6 +1265,28 @@ class MainWindow(QMainWindow):
     def _set_filters_visible(self, visible: bool):
         self.result_filters_group.setVisible(visible)
         self.filters_toggle.setText("Result filters  ▾" if visible else "Result filters  ▸")
+
+    def _set_focus_view(self, focused: bool):
+        """Collapse secondary controls while keeping the target and result navigation available."""
+        if focused:
+            self.scan_controls_toggle.setChecked(False)
+            self.advanced_toggle.setChecked(False)
+            self.filters_toggle.setChecked(False)
+            self.focus_view_button.setText("Exit focus mode")
+        else:
+            self.focus_view_button.setText("Focus on results")
+
+    def _reset_layout(self):
+        """Restore a useful default layout without clearing or rerunning any scan data."""
+        self.focus_view_button.setChecked(False)
+        self.scan_controls_toggle.setChecked(True)
+        self.advanced_toggle.setChecked(False)
+        self.filters_toggle.setChecked(False)
+        for index in range(self.tabs.count()):
+            self.tabs.setTabVisible(index, True)
+        for table in (item for item in self._result_tables() if item is not None):
+            for column in range(table.columnCount()):
+                table.setColumnHidden(column, False)
 
     def _show_panel_visibility_menu(self):
         """Allow each result panel to be hidden and restored without losing its contents."""
