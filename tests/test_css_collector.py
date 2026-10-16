@@ -2,7 +2,8 @@ import asyncio
 
 from aiohttp import web
 
-from recon.css_collector import CSSCollector, MAX_CSS_BYTES
+from recon.css_collector import CSSCollector
+from recon.rate_limit import RateLimitManager, MAX_CSS_BYTES
 
 
 def test_css_collector_follows_same_origin_imports_and_redacts_query_values():
@@ -65,7 +66,7 @@ def test_css_collector_follows_same_origin_imports_and_redacts_query_values():
     asyncio.run(asyncio.wait_for(scenario(), timeout=8))
 
 
-def test_css_collector_stops_safely_on_429_without_retry_after():
+def test_css_collector_backoffs_and_stops_after_repeated_429_without_retry_after():
     async def scenario():
         requested = []
 
@@ -82,14 +83,18 @@ def test_css_collector_stops_safely_on_429_without_retry_after():
             await site.start()
             port = site._server.sockets[0].getsockname()[1]
             target = f"http://127.0.0.1:{port}/"
-            collector = CSSCollector(target, on_log=lambda _message: None)
+            manager = RateLimitManager(fallback_initial_seconds=0)
+            collector = CSSCollector(
+                target, on_log=lambda _message: None, rate_limit_manager=manager
+            )
             report = await collector.collect(
                 [{"url": target + "site.css", "kind": "stylesheet"}],
                 delay_ms=0,
             )
-            assert requested == ["/site.css"]
+            assert requested == ["/site.css"] * 4
             assert report["css_rate_limited_stop"] is True
             assert report["css_file_errors"][0]["error"] == "rate-limited-stop"
+            assert manager.stopped is True
         finally:
             await runner.cleanup()
 
