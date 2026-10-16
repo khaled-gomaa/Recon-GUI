@@ -286,3 +286,85 @@ def test_content_discovery_keeps_failed_request_as_an_explicit_result(tmp_path, 
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+def test_wildcard_baseline_uses_normalized_body_not_size_alone(tmp_path):
+    async def scenario():
+        async def handler(request):
+            if request.path == "/this-path-should-not-exist-recon-baseline-74c31" or request.path == "/missing":
+                return web.Response(
+                    status=200,
+                    text=f"<html><body>Not found for path: {request.path}</body></html>",
+                    content_type="text/html",
+                )
+            if request.path == "/actual":
+                return web.Response(
+                    status=200,
+                    text="<html><body>Real dashboard: account overview and useful data</body></html>",
+                    content_type="text/html",
+                )
+            return web.Response(status=404, text="missing")
+
+        app = web.Application()
+        app.router.add_get("/{tail:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            wordlist = tmp_path / "paths.txt"
+            wordlist.write_text("missing\nactual\n", encoding="utf-8")
+            scanner = WordlistScanner(
+                f"http://127.0.0.1:{port}/", str(wordlist),
+                extensions=[""], concurrency=1, delay_ms=0,
+            )
+            hits = await scanner.scan()
+            records = {item["url"].rsplit("/", 1)[-1]: item for item in scanner.responses}
+            assert records["missing"]["wildcard_match"] is True
+            assert records["missing"]["wildcard_match_reason"] == "normalized-body-identical"
+            assert records["missing"]["potential_hit"] is False
+            assert records["actual"]["wildcard_match"] is False
+            assert records["actual"]["potential_hit"] is True
+            assert any(item["url"].endswith("/actual") for item in hits)
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=8))
+
+
+def test_same_length_distinct_200_page_is_not_suppressed_as_wildcard(tmp_path):
+    async def scenario():
+        baseline_text = "Generic missing response template"
+        actual_text = "Real customer dashboard contents"
+        assert len(baseline_text) == len(actual_text)
+
+        async def handler(request):
+            if request.path == "/this-path-should-not-exist-recon-baseline-74c31":
+                return web.Response(status=200, text=baseline_text, content_type="text/plain")
+            if request.path == "/dashboard":
+                return web.Response(status=200, text=actual_text, content_type="text/plain")
+            return web.Response(status=404, text="missing")
+
+        app = web.Application()
+        app.router.add_get("/{tail:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            wordlist = tmp_path / "paths.txt"
+            wordlist.write_text("dashboard", encoding="utf-8")
+            scanner = WordlistScanner(
+                f"http://127.0.0.1:{port}/", str(wordlist),
+                extensions=[""], concurrency=1, delay_ms=0,
+            )
+            hits = await scanner.scan()
+            assert scanner.responses[0]["wildcard_match"] is False
+            assert scanner.responses[0]["potential_hit"] is True
+            assert len(hits) == 1
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=8))
