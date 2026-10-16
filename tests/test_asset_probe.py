@@ -3,6 +3,7 @@ import asyncio
 from aiohttp import web
 
 from recon.asset_probe import probe_asset_references
+from recon.rate_limit import RateLimitManager
 
 
 def test_asset_probe_uses_head_records_metadata_and_redacts_query_values():
@@ -73,7 +74,7 @@ def test_asset_probe_uses_head_records_metadata_and_redacts_query_values():
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
 
 
-def test_asset_probe_stops_safely_on_429_without_retry_after():
+def test_asset_probe_backoffs_and_stops_after_repeated_429_without_retry_after():
     async def scenario():
         requests = []
 
@@ -90,19 +91,21 @@ def test_asset_probe_stops_safely_on_429_without_retry_after():
             await site.start()
             port = site._server.sockets[0].getsockname()[1]
             target = f"http://127.0.0.1:{port}/"
+            manager = RateLimitManager(fallback_initial_seconds=0)
             result = await probe_asset_references(
                 target,
                 [
-                    {"url": target + "one.js", "kind": "javascript"},
-                    {"url": target + "two.css", "kind": "stylesheet"},
+                    {"url": target + f"asset-{index}.js", "kind": "javascript"}
+                    for index in range(4)
                 ],
-                delay_ms=0,
+                delay_ms=0, rate_limit_manager=manager,
             )
-            assert requests == ["/one.js"]
+            assert requests == ["/asset-0.js", "/asset-1.js", "/asset-2.js", "/asset-3.js"]
             assert result["summary"]["rate_limited_stop"] is True
             assert result["summary"]["partial"] is True
-            assert len(result["results"]) == 1
-            assert result["results"][0]["status"] == 429
+            assert len(result["results"]) == 4
+            assert all(item["status"] == 429 for item in result["results"])
+            assert manager.stopped is True
         finally:
             await runner.cleanup()
 
