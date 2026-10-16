@@ -74,3 +74,30 @@ def test_concurrent_429_responses_share_one_cooldown():
         assert manager.stopped is False
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=3))
+
+
+def test_successful_response_resets_the_consecutive_429_streak():
+    async def scenario():
+        manager = RateLimitManager(fallback_initial_seconds=0)
+        assert await manager.handle_429(
+            {}, "https://example.com/first",
+            on_log=lambda _message: None,
+        )
+        assert manager.consecutive_pauses == 1
+        manager.note_success()
+        assert manager.consecutive_pauses == 0
+        assert manager.pause_count == 1
+        # A recovered endpoint doesn't consume the remaining scan-wide burst budget.
+        assert await manager.handle_429(
+            {}, "https://example.com/second",
+            on_log=lambda _message: None,
+        )
+        manager.note_success()
+        assert await manager.handle_429(
+            {}, "https://example.com/third",
+            on_log=lambda _message: None,
+        )
+        assert manager.stopped is False
+        assert manager.pause_count == 3
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=3))
