@@ -271,29 +271,46 @@ class CrawlEngine:
         return max(candidates) if candidates else 0.0
 
     async def _load_robots(self, session):
-        """Fetch robots.txt once and adopt Crawl-delay when present."""
+        """Fetch robots.txt, retrying 429 only after the shared cooldown policy allows it."""
         self._robots_loaded = True
         parsed = urlparse(self.start_url)
         self.robots_url = parsed._replace(path="/robots.txt", params="", query="", fragment="").geturl()
-        try:
-            if not await self.rate_limit_manager.wait_until_ready(self.should_stop):
+        for _attempt in range(self.rate_limit_manager.max_pauses + 1):
+            if self.should_stop():
                 return
-            async with session.get(self.robots_url, headers=self._headers_for_url(self.robots_url) or None, allow_redirects=False) as response:
-                if response.status == 429:
-                    await self._handle_429(dict(response.headers), self.robots_url)
+            if not await self.rate_limit_manager.wait_until_ready(self.should_stop):
+                self.rate_limit_stopped = self.rate_limit_manager.stopped and not self.should_stop()
+                return
+            try:
+                async with session.get(
+                    self.robots_url,
+                    headers=self._headers_for_url(self.robots_url) or None,
+                    allow_redirects=False,
+                ) as response:
+                    if response.status == 429:
+                        resumed = await self._handle_429(dict(response.headers), self.robots_url)
+                        if resumed:
+                            continue
+                        self.rate_limit_stopped = self.rate_limit_manager.stopped and not self.should_stop()
+                        self._log("[robots.txt] HTTP 429 could not be recovered within the shared policy.")
+                        return
+                    self.rate_limit_manager.note_success()
+                    if response.status != 200:
+                        self._log(f"[robots.txt] HTTP {response.status}; no Crawl-delay directive applied.")
+                        return
+                    data = await response.content.read(1024 * 1024 + 1)
+                    text = data[:1024 * 1024].decode(response.charset or "utf-8", errors="replace")
+                    self.crawl_delay_seconds = self._parse_crawl_delay(text)
+                    if self.crawl_delay_seconds:
+                        self._log(f"[robots.txt] Respecting Crawl-delay={self.crawl_delay_seconds:g}s.")
+                    else:
+                        self._log("[robots.txt] No applicable Crawl-delay directive.")
                     return
-                if response.status != 200:
-                    self._log(f"[robots.txt] HTTP {response.status}; no Crawl-delay directive applied.")
-                    return
-                data = await response.content.read(1024 * 1024 + 1)
-                text = data[:1024 * 1024].decode(response.charset or "utf-8", errors="replace")
-                self.crawl_delay_seconds = self._parse_crawl_delay(text)
-                if self.crawl_delay_seconds:
-                    self._log(f"[robots.txt] Respecting Crawl-delay={self.crawl_delay_seconds:g}s.")
-                else:
-                    self._log("[robots.txt] No applicable Crawl-delay directive.")
-        except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError, ValueError) as exc:
-            self._log(f"[robots.txt] Could not read Crawl-delay: {type(exc).__name__}: {exc}")
+            except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError, ValueError) as exc:
+                self._log(f"[robots.txt] Could not read Crawl-delay: {type(exc).__name__}: {exc}")
+                return
+        if self.rate_limit_manager.stopped and not self.should_stop():
+            self.rate_limit_stopped = True
 
     async def _request_gate(self) -> bool:
         """Apply the shared 429 gate and robots Crawl-delay before each new request."""
