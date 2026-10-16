@@ -405,3 +405,47 @@ def test_wildcard_similarity_samples_body_tail_not_only_shared_header(tmp_path):
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=8))
+
+
+def test_status_different_fallback_body_is_flagged_but_not_suppressed(tmp_path):
+    async def scenario():
+        def missing_template(path):
+            return f"<html><body>Not found for path: {path}</body></html>"
+
+        async def handler(request):
+            if request.path == "/this-path-should-not-exist-recon-baseline-74c31":
+                return web.Response(
+                    status=404, text=missing_template(request.path), content_type="text/html"
+                )
+            if request.path == "/maybe-real":
+                # Some frameworks send their generic fallback as HTTP 200.
+                return web.Response(
+                    status=200, text=missing_template(request.path), content_type="text/html"
+                )
+            return web.Response(status=404, text="ordinary missing", content_type="text/plain")
+
+        app = web.Application()
+        app.router.add_get("/{tail:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            wordlist = tmp_path / "paths.txt"
+            wordlist.write_text("maybe-real", encoding="utf-8")
+            scanner = WordlistScanner(
+                f"http://127.0.0.1:{port}/", str(wordlist),
+                extensions=[""], concurrency=1, delay_ms=0,
+            )
+            hits = await asyncio.wait_for(scanner.scan(), timeout=5)
+            record = scanner.responses[0]
+            assert record["wildcard_match"] is False
+            assert record["wildcard_suspect"] is True
+            assert record["wildcard_match_reason"] == "body-identical-status-differs"
+            assert record["potential_hit"] is True
+            assert len(hits) == 1
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=8))
