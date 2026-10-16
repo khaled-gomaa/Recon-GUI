@@ -13,6 +13,7 @@ from recon.matchers import MatcherFilter
 from recon.favicon_hasher import get_favicon_hash
 from recon.similarity_detector import SimilarityDetector
 from gui.session import create_session_cookie_jar
+from recon.rate_limit import RateLimitManager
 
 
 
@@ -83,6 +84,7 @@ class CrawlWorker(QThread):
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            rate_limit_manager = RateLimitManager()
 
             # One cookie jar is reused between crawl, JS and Content Discovery. Build it
             # from inside the running loop: modern aiohttp versions may raise
@@ -99,6 +101,7 @@ class CrawlWorker(QThread):
             analyzer = ReconAnalyzer(
                 self.url, request_headers=phase_headers, on_log=self.log_message.emit,
                 cookie_jar=session_cookie_jar,
+                rate_limit_manager=rate_limit_manager,
             )
             engine = CrawlEngine(
                 start_url=self.url,
@@ -111,6 +114,7 @@ class CrawlWorker(QThread):
                 request_headers=phase_headers,
                 respect_robots=True,
                 cookie_jar=session_cookie_jar,
+                rate_limit_manager=rate_limit_manager,
             )
             passive_results = {
                 "passive_subdomains": [], "historical_urls": [],
@@ -361,6 +365,7 @@ class CrawlWorker(QThread):
                 css_collector = CSSCollector(
                     self.url, cookie_jar=session_cookie_jar,
                     request_headers=phase_headers, on_log=self.log_message.emit,
+                    rate_limit_manager=rate_limit_manager,
                 )
                 stylesheet_seeds = list(analyzer.asset_observations.values())
                 for observation in analyzer.network_observations.values():
@@ -448,6 +453,7 @@ class CrawlWorker(QThread):
                     on_result=lambda result: self.discovery_result.emit(result),
                     request_headers=phase_headers,
                     cookie_jar=session_cookie_jar,
+                    rate_limit_manager=rate_limit_manager,
                     delay_ms=max(200, int(engine.crawl_delay_seconds * 1000)),
                 )
                 analyzer.wordlist_hits = loop.run_until_complete(scanner.scan())
@@ -491,9 +497,10 @@ class CrawlWorker(QThread):
                 try:
                     asset_probe_data = loop.run_until_complete(probe_asset_references(
                         self.url, candidates, cookie_jar=session_cookie_jar,
-                        request_headers=self.request_headers, should_stop=self._stopping,
+                        request_headers=phase_headers, should_stop=self._stopping,
                         on_log=self.log_message.emit, max_assets=self.asset_probe_max,
                         delay_ms=max(200, int(engine.crawl_delay_seconds * 1000)),
+                        rate_limit_manager=rate_limit_manager,
                     ))
                 except Exception as exc:
                     self.log_message.emit(f"[Assets] Probe phase failed: {type(exc).__name__}")
@@ -637,6 +644,8 @@ class CrawlWorker(QThread):
             )
             report["wordlist_rate_limited_stop"] = wordlist_rate_limited_stop
             report["crawler_rate_limited_stop"] = engine.rate_limit_stopped
+            report["rate_limit_summary"] = rate_limit_manager.to_dict()
+            report["rate_limit_stopped"] = bool(rate_limit_manager.stopped)
             report["page_limit_reached"] = engine.page_limit_reached
             report["depth_limit_reached"] = engine.depth_limit_reached
             report["filtered_pages"] = [result.to_dict() for result in filtered]
@@ -744,6 +753,8 @@ class CrawlWorker(QThread):
                 "asset_probe_rate_limited": asset_probe_data.get("summary", {}).get("rate_limited", False),
                 "asset_probe_rate_limited_stop": asset_probe_data.get("summary", {}).get("rate_limited_stop", False),
                 "asset_probe_partial": asset_probe_data.get("summary", {}).get("partial", False),
+                "rate_limit_stopped": bool(rate_limit_manager.stopped),
+                "rate_limit_cooldowns_applied": rate_limit_manager.pause_count,
             }
             # Merge static clues with genuine runtime observations, but label the evidence.
             from recon.request_intelligence import merge_observations
