@@ -186,22 +186,21 @@ class CrawlEngine:
 
     async def _handle_429(self, headers: dict, url: str):
         """Use the scan-wide policy, coalescing concurrent 429 responses into one pause."""
-        async with self._rate_limit_lock:
-            if self.rate_limit_stopped:
-                return False
-            self._resume_event.clear()
-            resumed = await self.rate_limit_manager.handle_429(
-                headers, url, on_log=self._log, should_stop=self.should_stop,
-                phase="Crawler",
-            )
-            self._rate_limit_pauses = self.rate_limit_manager.pause_count
-            self._rate_limit_cooldown_until = getattr(
-                self.rate_limit_manager, "_paused_until", 0.0
-            )
-            if not resumed and not self.should_stop():
-                self.rate_limit_stopped = True
-            self._resume_event.set()
-            return resumed
+        if self.rate_limit_stopped:
+            return False
+        self._resume_event.clear()
+        resumed = await self.rate_limit_manager.handle_429(
+            headers, url, on_log=self._log, should_stop=self.should_stop,
+            phase="Crawler",
+        )
+        self._rate_limit_pauses = self.rate_limit_manager.pause_count
+        self._rate_limit_cooldown_until = getattr(
+            self.rate_limit_manager, "_paused_until", 0.0
+        )
+        if not resumed and not self.should_stop():
+            self.rate_limit_stopped = True
+        self._resume_event.set()
+        return resumed
 
     @staticmethod
     def _origin(url: str):
