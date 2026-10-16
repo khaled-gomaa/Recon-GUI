@@ -100,7 +100,6 @@ class RateLimitManager:
         self._resume_event = None
         self._waiting = False
         self._paused_until = 0.0
-        self._last_resume_at = 0.0
 
     def _ensure_primitives(self):
         loop = asyncio.get_running_loop()
@@ -156,9 +155,6 @@ class RateLimitManager:
                 return False
             if self._waiting:
                 already_waiting = True
-            elif self.pause_count and loop.time() <= self._last_resume_at + 2.0:
-                # Multiple requests already in flight may report the same rate-limit burst.
-                return True
             else:
                 retry_after = parse_retry_after(header_value(headers, "Retry-After"))
                 if self.pause_count >= self.max_pauses:
@@ -229,7 +225,6 @@ class RateLimitManager:
             if stop():
                 self._resume_event.set()
                 return False
-            self._last_resume_at = loop.time()
             self._resume_event.set()
         self._log(on_log, f"[429] {phase}: cooldown complete; resuming queued requests.")
         return not self.stopped and not stop()
