@@ -10,7 +10,7 @@ from urllib.parse import urlparse, urljoin, urldefrag
 
 import aiohttp
 from crawler.parser import PageParser
-from recon.rate_limit import RateLimitManager, parse_retry_after
+from recon.rate_limit import RateLimitManager, parse_retry_after, safe_url
 
 MAX_BODY_BYTES = 5 * 1024 * 1024
 MAX_DECOMPRESSED_SITEMAP_BYTES = 20 * 1024 * 1024
@@ -164,6 +164,7 @@ class CrawlEngine:
         self._next_request_time = 0.0
         self.visited: set = set()
         self.results: list = []
+        self.rate_limit_attempts: list[dict] = []
         self._schedule_lock = None
         self.rate_limit_stopped = False
         self.page_limit_reached = False
@@ -330,6 +331,8 @@ class CrawlEngine:
         # Create loop-bound primitives only after crawl() is running in its event loop.
         self._request_gate_lock = asyncio.Lock()
         self._schedule_lock = asyncio.Lock()
+        self.rate_limit_attempts = []
+        rate_limit_retries = {}
         queue = asyncio.Queue()
         self._resume_event = asyncio.Event()
         self._resume_event.set()
@@ -389,10 +392,41 @@ class CrawlEngine:
                         result, links = await self._crawl_one(session, url, depth)
                         if result is None:
                             continue
+                        if result.status == 429:
+                            attempt_number = rate_limit_retries.get(url, 0) + 1
+                            self.rate_limit_attempts.append({
+                                "url": safe_url(url), "status": 429,
+                                "depth": depth, "attempt": attempt_number,
+                            })
+                            self._log(f"[429] depth={depth} {safe_url(url)}; applying shared cooldown.")
+                            resumed = await self._handle_429(result.headers, url)
+                            prior_retries = rate_limit_retries.get(url, 0)
+                            if resumed and prior_retries < self.rate_limit_manager.max_pauses and not self.should_stop():
+                                rate_limit_retries[url] = prior_retries + 1
+                                queue.put_nowait((url, depth))
+                                self._log(
+                                    f"[429] Re-queued {safe_url(url)} after cooldown "
+                                    f"(retry {prior_retries + 1}/{self.rate_limit_manager.max_pauses})."
+                                )
+                                continue
+                            # Keep only a terminal 429 in the page table; intermediate attempts
+                            # are listed separately in rate_limit_attempts to avoid duplicate pages.
+                            self.results.append(result)
+                            self._log(
+                                f"[429] {safe_url(url)} remains rate-limited; this response is recorded "
+                                "and active discovery will stop if the scan-wide policy is exhausted."
+                            )
+                            if self.on_page_crawled:
+                                try:
+                                    self.on_page_crawled(result)
+                                except Exception as exc:
+                                    self._log(f"[CALLBACK ERROR] {type(exc).__name__}: {exc}")
+                            continue
+
                         self.results.append(result)
                         self._log(
-                            f"[{result.status or 'ERR'}] depth={depth} {url}"
-                            + (f" -> {result.final_url}" if result.final_url != url else "")
+                            f"[{result.status or 'ERR'}] depth={depth} {safe_url(url)}"
+                            + (f" -> {safe_url(result.final_url)}" if result.final_url != url else "")
                             + (f" -- {result.title[:60]}" if result.title else "")
                             + (f" -- {result.error}" if result.error else "")
                         )
@@ -402,10 +436,6 @@ class CrawlEngine:
                             except Exception as exc:
                                 # UI/reporting callbacks must not prevent discovery from continuing.
                                 self._log(f"[CALLBACK ERROR] {type(exc).__name__}: {exc}")
-
-                        if result.status == 429:
-                            await self._handle_429(result.headers, url)
-                            continue
 
                         if result.status != 200 or self.should_stop() or self.rate_limit_stopped:
                             continue
