@@ -1,5 +1,6 @@
 import asyncio
 
+import aiohttp
 from aiohttp import web
 
 from recon.rate_limit import RateLimitManager
@@ -42,7 +43,7 @@ def test_favicon_request_retries_after_429_and_uses_shared_cooldown():
             await site.start()
             port = site._server.sockets[0].getsockname()[1]
             manager = RateLimitManager(fallback_initial_seconds=0)
-            async with __import__("aiohttp").ClientSession() as session:
+            async with aiohttp.ClientSession() as session:
                 result = await get_favicon_hash(
                     session, f"http://127.0.0.1:{port}/",
                     rate_limit_manager=manager,
