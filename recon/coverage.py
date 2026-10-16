@@ -166,7 +166,7 @@ def build_coverage_report(
     wordlist_stats=None, request_intelligence=None, max_pages=0, max_depth=0,
     target_url="", page_limit_reached=None, depth_limit_reached=False,
     stopped_by_user=False, crawler_rate_limited=False, wordlist_rate_limited=False,
-    javascript_rate_limited=False, css_rate_limited=False, asset_probe_partial=False,
+    javascript_rate_limited=False, css_rate_limited=False, rate_limit_stopped=False, asset_probe_partial=False,
     asset_probe_rate_limited=False, transport_error_count=0,
     server_error_response_count=0, restricted_response_count=0,
     js_fetch_errors=None, unattempted_js_files=None, truncated_js_files=None,
