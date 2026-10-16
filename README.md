@@ -93,7 +93,11 @@ If the origin returns HTTP 429, Recon-GUI parses Retry-After (seconds or an HTTP
 
 ## Cross-platform validation
 
-GitHub Actions runs syntax checks and the regression suite on both `ubuntu-latest` and `windows-latest` using Python 3.12. The project is launched with `python main.py` on the machine where you want to use it; no Windows EXE or bundled executable is required. Optional Playwright and external CLI tools still need their separate installation steps.
+GitHub Actions runs syntax checks and the regression suite on both `ubuntu-latest` and `windows-latest` using Python 3.12. You can run the source with `python main.py` on Windows or Linux. Optional Playwright and external CLI tools still need their separate installation steps.
+
+## Portable Windows build
+
+A portable Windows application folder can be built from Actions → **Windows portable application build**. Choose **Run workflow**, then download the successful `ReconGUI-Windows-...` artifact. Extract the entire folder and run `ReconGUI.exe`; keep its companion files and folders next to the executable. The workflow also runs for pull requests and pushes to `main`. This portable build is optional; source-based execution remains supported on Windows and Linux.
 
 ## Tests
 
