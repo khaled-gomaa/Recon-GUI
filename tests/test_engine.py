@@ -494,3 +494,10 @@ def test_crawler_decompresses_gzip_sitemap_within_limits():
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+def test_engine_constructor_does_not_require_a_running_event_loop():
+    # The GUI creates CrawlEngine in a QThread before entering run_until_complete().
+    engine = CrawlEngine("https://example.com", max_depth=1, max_pages=2)
+    assert engine._request_gate_lock is None
+    assert engine._schedule_lock is None
