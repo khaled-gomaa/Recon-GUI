@@ -133,6 +133,7 @@ class CrawlWorker(QThread):
                         should_stop=self._stopping, on_log=self.log_message.emit,
                         on_network_event=analyzer.record_network_observation,
                         duration_seconds=self.manual_browser_duration,
+                        rate_limit_manager=rate_limit_manager,
                     ))
                     self.log_message.emit(
                         f"[Manual Browser] Captured {len(manual_browser_results.get('network_observations', []))} request records "
@@ -262,6 +263,7 @@ class CrawlWorker(QThread):
                         max_pages=self.max_pages,
                         storage_state=manual_browser_results.get("_storage_state"),
                         cookie_jar=session_cookie_jar,
+                        rate_limit_manager=rate_limit_manager,
                     ))
                 except RuntimeError as exc:
                     rendered = {}
