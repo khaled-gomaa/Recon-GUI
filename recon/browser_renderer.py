@@ -118,10 +118,12 @@ def _filter_storage_state_for_target(storage_state, target_url):
 
 async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_network_event=None,
                        max_pages: int = MAX_RENDER_PAGES, concurrency: int = MAX_RENDER_CONCURRENCY,
-                       storage_state=None, cookie_jar=None):
+                       storage_state=None, cookie_jar=None, rate_limit_manager=None):
     """Render a bounded list of URLs and return their post-JavaScript DOM HTML."""
     stop = should_stop or (lambda: False)
     log = on_log or (lambda _message: None)
+    from recon.rate_limit import RateLimitManager
+    rate_limit_manager = rate_limit_manager or RateLimitManager()
     limited_urls = list(dict.fromkeys(
         str(url) for url in urls if str(url).startswith(("http://", "https://"))
     ))[:max(1, min(int(max_pages), MAX_RENDER_PAGES))]
@@ -252,11 +254,16 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
                             response_headers = await response.all_headers()
                             record["content_type"] = response_headers.get("content-type", "")
                         except Exception:
-                            pass
+                            response_headers = {}
                         try:
                             emit(dict(record))
                         except Exception:
                             pass
+                        if response.status == 429:
+                            await rate_limit_manager.handle_429(
+                                response_headers, response.url, on_log=log,
+                                should_stop=stop, phase="Browser rendering",
+                            )
 
                     requests_by_id = {}
                     requests_by_key = {}
@@ -271,6 +278,8 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
                     async def scope_guard(route):
                         request_host = (urlparse(route.request.url).hostname or "").lower()
                         if request_host != expected_host or _origin(route.request.url) != expected_origin:
+                            await route.abort()
+                        elif not await rate_limit_manager.wait_until_ready(stop):
                             await route.abort()
                         else:
                             await route.continue_()
@@ -313,7 +322,7 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
 
 async def capture_manual_session(
     start_url: str, cookie_jar=None, should_stop=None, on_log=None,
-    on_network_event=None, duration_seconds: int = 90,
+    on_network_event=None, duration_seconds: int = 90, rate_limit_manager=None,
 ):
     """Open headed Chromium so an operator can log in/browse while same-origin traffic is recorded.
 
@@ -328,6 +337,8 @@ async def capture_manual_session(
     stop = should_stop or (lambda: False)
     log = on_log or (lambda _message: None)
     emit = on_network_event or (lambda _record: None)
+    from recon.rate_limit import RateLimitManager
+    rate_limit_manager = rate_limit_manager or RateLimitManager()
     parsed_start = urlsplit(start_url)
     expected_host = (parsed_start.hostname or "").lower().rstrip(".")
     expected_origin = _origin(start_url)
@@ -482,8 +493,13 @@ async def capture_manual_session(
                         headers = await response.all_headers()
                         record["content_type"] = headers.get("content-type", "")
                     except Exception:
-                        pass
+                        headers = {}
                     notify(record)
+                    if response.status == 429:
+                        await rate_limit_manager.handle_429(
+                            headers, response.url, on_log=log,
+                            should_stop=stop, phase="Manual browser session",
+                        )
 
                 pending_by_key = {}
                 page.on("request", on_request)
@@ -493,6 +509,15 @@ async def capture_manual_session(
                         event_loop, on_response, response, log, "Manual Browser"
                     ),
                 )
+                async def rate_limit_guard(route):
+                    # External login/SSO requests remain available; only the target origin
+                    # is gated by this scan's HTTP 429 cooldown.
+                    if _origin(route.request.url) == expected_origin:
+                        if not await rate_limit_manager.wait_until_ready(stop):
+                            await route.abort()
+                            return
+                    await route.continue_()
+                await page.route("**/*", rate_limit_guard)
                 try:
                     await page.goto(start_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
                 except Exception as exc:
