@@ -48,10 +48,11 @@ jobs:
           --collect-submodules recon
           --collect-submodules crawler
           --collect-submodules gui
+          --collect-all tldextract
           --add-data "wordlists/common.txt;wordlists"
           main.py
 
-      - name: Verify executable and bundled wordlist
+      - name: Verify executable, wordlist, and bundled public-suffix scope
         shell: pwsh
         run: |
           if (-not (Test-Path "dist/ReconGUI/ReconGUI.exe")) {
@@ -59,6 +60,10 @@ jobs:
           }
           if (-not (Get-ChildItem -Path "dist/ReconGUI" -Recurse -Filter "common.txt")) {
             throw "Bundled content-discovery wordlist was not included."
+          }
+          $scopeTest = Start-Process -FilePath "dist/ReconGUI/ReconGUI.exe" -ArgumentList "--self-test-domain-scope" -PassThru -Wait
+          if ($scopeTest.ExitCode -ne 0) {
+            throw "Bundled Public Suffix List test failed with exit code $($scopeTest.ExitCode)."
           }
 
       - name: Upload portable Windows app

@@ -30,9 +30,17 @@ Recon-GUI is a Python desktop application for mapping and documenting web assets
 
 ## Quick start (Windows and Linux)
 
-Recon-GUI runs from source with Python and PySide6 on both Windows and Linux. It does not require a packaged EXE, and this repository no longer builds or distributes platform-specific executable bundles.
+Recon-GUI runs from source with Python and PySide6 on both Windows and Linux. On Windows, the included launcher creates an isolated `.venv`, installs every dependency from `requirements.txt` (including public-suffix support for domain-scope checks), verifies `tldextract`, and then starts the app.
 
-### Windows (PowerShell)
+### Windows (recommended)
+
+Double-click `run_windows.bat`, or launch it from Command Prompt:
+
+    run_windows.bat
+
+The first run requires Python 3.12, an internet connection for dependency installation, and permission to create files in the project folder. Dependencies are installed in the project's `.venv`; they are not added to other Python environments. Later launches reuse that environment and verify/update requirements.
+
+### Windows (manual PowerShell setup)
 
     py -3.12 -m venv .venv
     .\.venv\Scripts\Activate.ps1
@@ -40,12 +48,24 @@ Recon-GUI runs from source with Python and PySide6 on both Windows and Linux. It
     python -m pip install -r requirements.txt
     python main.py
 
-If PowerShell blocks activation, use Command Prompt instead:
+If PowerShell blocks activation, use Command Prompt and run:
 
     py -3.12 -m venv .venv
     .venv\Scripts\activate.bat
     python -m pip install -r requirements.txt
     python main.py
+
+### Troubleshooting: missing `tldextract`
+
+If the log reports `No module named 'tldextract'`, install requirements into the exact interpreter used to launch Recon-GUI:
+
+    py -m pip install -r requirements.txt
+
+With a project virtual environment, use:
+
+    .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+Do not ignore the error during explicit subdomain verification: public-suffix support is used to avoid treating unrelated hosted tenants as one authorized domain.
 
 ### Linux (Ubuntu/Debian/Kali)
 

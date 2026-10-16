@@ -28,7 +28,7 @@ class ReconAnalyzer:
         host = (parsed_host or base_domain).lower()
         self.base_host = host
         self.base_url = base_domain if "://" in base_domain else "https://" + base_domain
-        self.subdomain_finder = SubdomainFinder(host)
+        self.subdomain_finder = SubdomainFinder(host, on_log=on_log)
         self.report = ReconReport()
         self.js_collector = JSCollector(
             base_domain, on_log=on_log, request_headers=request_headers, cookie_jar=cookie_jar
