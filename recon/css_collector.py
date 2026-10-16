@@ -113,6 +113,7 @@ class CSSCollector:
         self.assets: dict[tuple[str, str], dict] = {}
         self.rate_limit_stopped = False
         self.retry_after_pauses = 0
+        self.unresolved_rate_limited_urls: set[str] = set()
         self.limit_reached = False
 
     def _log(self, message: str):
@@ -220,6 +221,8 @@ class CSSCollector:
     async def collect(self, asset_references, *, should_stop=None, delay_ms=200):
         """Fetch and analyze the discovered same-origin CSS queue; recurse through @import."""
         stop = should_stop or (lambda: False)
+        self.unresolved_rate_limited_urls.clear()
+        rate_limit_retries = {}
         self.seed_from_references(asset_references)
         delay_ms = max(0, min(int(delay_ms), 86_400_000))
         timeout = aiohttp.ClientTimeout(total=15, connect=8)
@@ -277,6 +280,19 @@ class CSSCollector:
                                 self.errors.append({"url": _safe_url(url), "error": "rate-limited-stop"})
                                 self._log(f"[CSS] {_safe_url(url)} hit HTTP 429; CSS discovery stopped safely.")
                                 break
+                            retries = rate_limit_retries.get(url, 0)
+                            if retries >= self.rate_limit_manager.max_pauses:
+                                self.unresolved_rate_limited_urls.add(_safe_url(url))
+                                self.errors.append({
+                                    "url": _safe_url(url), "status": 429,
+                                    "error": "rate-limit-retries-exhausted",
+                                })
+                                self._log(
+                                    f"[CSS] Retry budget exhausted for {_safe_url(url)}; "
+                                    "leaving it unverified and continuing other stylesheet candidates."
+                                )
+                                continue
+                            rate_limit_retries[url] = retries + 1
                             self.attempted_urls.discard(url)  # retry after the shared cooldown
                             continue
                         self.rate_limit_manager.note_success()
@@ -325,6 +341,7 @@ class CSSCollector:
             "css_file_errors": list(self.errors),
             "css_limit_reached": self.limit_reached,
             "css_rate_limited_stop": self.rate_limit_stopped,
+            "css_rate_limited_unresolved_urls": sorted(self.unresolved_rate_limited_urls),
             "css_assets": [
                 {key: value for key, value in item.items() if key != "request_url"}
                 for item in sorted(self.assets.values(), key=lambda row: (row["url"].casefold(), row["kind"]))
