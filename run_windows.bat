@@ -32,13 +32,6 @@ if not exist "%~dp0.venv\Scripts\python.exe" (
 set "APP_PYTHON=%~dp0.venv\Scripts\python.exe"
 
 echo [Setup] Installing or verifying project dependencies...
-"%APP_PYTHON%" -m pip install --disable-pip-version-check --upgrade pip
-if errorlevel 1 (
-  echo [ERROR] Could not update pip. Check your network connection and Python installation.
-  pause
-  exit /b 1
-)
-
 "%APP_PYTHON%" -m pip install --disable-pip-version-check -r "%~dp0requirements.txt"
 if errorlevel 1 (
   echo [ERROR] Dependency installation failed. Check the messages above, then retry.
