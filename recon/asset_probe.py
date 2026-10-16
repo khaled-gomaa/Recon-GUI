@@ -11,6 +11,7 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import aiohttp
+from recon.rate_limit import RateLimitManager
 
 MAX_ASSET_PROBES = 5000
 MAX_RESPONSE_HEADERS = 100
@@ -67,6 +68,7 @@ async def probe_asset_references(
     max_assets: int = 500,
     timeout: int = 8,
     delay_ms: int = 200,
+    rate_limit_manager=None,
 ) -> dict:
     """Check status/headers of unique referenced URLs using HEAD requests only.
 
@@ -76,6 +78,7 @@ async def probe_asset_references(
     """
     stop = should_stop or (lambda: False)
     log = on_log or (lambda _message: None)
+    rate_limit_manager = rate_limit_manager or RateLimitManager()
     target_origin = _origin(target_url)
     if not target_origin:
         raise ValueError("target_url must be a valid HTTP(S) URL.")
@@ -142,6 +145,9 @@ async def probe_asset_references(
         for item in selected:
             if stop() or rate_limited_stop:
                 break
+            if not await rate_limit_manager.wait_until_ready(stop):
+                rate_limited_stop = rate_limit_manager.stopped and not stop()
+                break
             if delay_ms:
                 await asyncio.sleep(delay_ms / 1000)
             if stop():
@@ -185,26 +191,16 @@ async def probe_asset_references(
                     )
                     if response.status == 429:
                         rate_limited = True
-                        retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
-                        pause_count += 1
-                        if (
-                            retry_after is None
-                            or retry_after > 120
-                            or pause_count > 3
-                        ):
-                            rate_limited_stop = True
-                            record["result"] = "rate limited; phase stopped safely"
-                            log(
-                                f"[Assets] {item['url']} returned HTTP 429 without an acceptable "
-                                "Retry-After. Stopping asset checks rather than bypassing the limit."
-                            )
+                        resumed = await rate_limit_manager.handle_429(
+                            dict(response.headers), item["request_url"], on_log=log,
+                            should_stop=stop, phase="Asset HEAD checks",
+                        )
+                        pause_count = rate_limit_manager.pause_count
+                        if not resumed:
+                            rate_limited_stop = rate_limit_manager.stopped and not stop()
+                            record["result"] = "rate limited; phase stopped safely" if rate_limited_stop else "rate limited; user stopped scan"
                         else:
-                            record["result"] = "rate limited; compliant cooldown applied"
-                            log(
-                                f"[Assets] HTTP 429; pausing for {retry_after:.1f}s as requested "
-                                f"(cooldown {pause_count}/3)."
-                            )
-                            await asyncio.sleep(retry_after)
+                            record["result"] = "rate limited; cooldown applied; this asset remains unverified"
                     # Do not follow redirects. Redirect destinations are separate scope decisions.
                     response.release()
             except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError, ValueError) as exc:
