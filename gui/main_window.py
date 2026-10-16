@@ -1914,7 +1914,7 @@ class MainWindow(QMainWindow):
         js_unattempted = len(report.get("unattempted_js_files", []) or [])
         if report.get("stopped_by_user"):
             self.status_label.setText(f"STOPPED  ·  {total} pages")
-        elif crawler_limited or discovery_limited or css_limited or js_limited or asset_probe_summary.get("rate_limited_stop"):
+        elif report.get("rate_limit_stopped") or crawler_limited or discovery_limited or css_limited or js_limited or asset_probe_summary.get("rate_limited_stop"):
             self.status_label.setText("PARTIAL  ·  RATE LIMITED")
         elif page_limited or depth_limited or wordlist_limited or content_limited or recursion_depth_limited or seed_import_limited or asset_probe_limited or css_coverage_partial or transport_errors or server_errors or js_fetch_errors or js_unattempted:
             reasons = []
