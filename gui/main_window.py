@@ -259,6 +259,10 @@ class MainWindow(QMainWindow):
             grid.setColumnStretch(column, stretch)
         root.addWidget(settings)
         self.scan_settings_grid = grid
+        self.config_toggle_toolbar = QHBoxLayout()
+        self.config_toggle_toolbar.setContentsMargins(0, 0, 0, 0)
+        self.config_toggle_toolbar.setSpacing(8)
+        root.addLayout(self.config_toggle_toolbar)
         self.scan_controls_toggle = QToolButton()
         self.scan_controls_toggle.setObjectName("advancedToggle")
         self.scan_controls_toggle.setText("Scan options & wordlist  ▾")
@@ -270,7 +274,7 @@ class MainWindow(QMainWindow):
             "The target and Start/Stop controls remain visible."
         )
         self.scan_controls_toggle.toggled.connect(self._set_scan_controls_visible)
-        root.addWidget(self.scan_controls_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        self.config_toggle_toolbar.addWidget(self.scan_controls_toggle)
 
         # Keep advanced modules hidden until requested so results remain the main workspace.
         self.advanced_toggle = QToolButton()
@@ -280,7 +284,7 @@ class MainWindow(QMainWindow):
         self.advanced_toggle.setChecked(False)
         self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.advanced_toggle.toggled.connect(self._set_advanced_visible)
-        root.addWidget(self.advanced_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        self.config_toggle_toolbar.addWidget(self.advanced_toggle)
 
         options = QGroupBox("Optional modules & session")
         options.setObjectName("sectionCard")
@@ -405,7 +409,8 @@ class MainWindow(QMainWindow):
         self.filters_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.filters_toggle.setToolTip("Show or hide local result filters without repeating the scan.")
         self.filters_toggle.toggled.connect(self._set_filters_visible)
-        root.addWidget(self.filters_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        self.config_toggle_toolbar.addWidget(self.filters_toggle)
+        self.config_toggle_toolbar.addStretch(1)
 
         # Compact filter bar: two rows of matching/exclusion fields instead of nested cards.
         filters = QGroupBox("Result filters")
@@ -924,13 +929,23 @@ class MainWindow(QMainWindow):
             }
             QCheckBox { color: #344863; font-weight: 600; spacing: 5px; }
             QToolButton#advancedToggle {
-                color: #1d4ed8;
-                font-weight: 600;
-                padding: 2px 5px;
-                border: none;
-                background: transparent;
+                color: #244b8f;
+                font-weight: 650;
+                padding: 5px 10px;
+                border: 1px solid #d5dfec;
+                border-radius: 7px;
+                background: #ffffff;
             }
-            QToolButton#advancedToggle:hover { color: #1e40af; }
+            QToolButton#advancedToggle:hover {
+                color: #1e40af;
+                border-color: #9bbdf5;
+                background: #f3f7ff;
+            }
+            QToolButton#advancedToggle:checked {
+                color: #1e40af;
+                border-color: #a9c7f7;
+                background: #eaf2ff;
+            }
         """)
 
     def _result_tables(self):
