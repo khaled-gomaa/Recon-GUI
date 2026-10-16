@@ -141,7 +141,7 @@ class WordlistScanner:
                 await asyncio.sleep(min(0.25, wait))
             return False
 
-    async def _handle_429(self, headers, url):
+    async def _handle_429(self, headers, url, status=429):
         """Honor Retry-After or exponential backoff, then resume within a safe retry budget."""
         async with self._rate_limit_lock:
             if self._rate_limited or self.should_stop():
@@ -151,12 +151,12 @@ class WordlistScanner:
                  if str(key).lower() == "retry-after"),
                 None,
             )
-            decision = self.rate_controller.on_rate_limit(retry_after, status=429)
+            decision = self.rate_controller.on_rate_limit(retry_after, status=int(status))
             self._rate_limit_pauses = self.rate_controller.consecutive_limits
             if decision.should_stop:
                 self._rate_limited = True
                 self._log(
-                    f"[429] {self._safe_result_url(url)}: {decision.reason}. "
+                    f"[Rate limit] HTTP {status} at {self._safe_result_url(url)}: {decision.reason}. "
                     "Stopping this discovery phase rather than retrying early."
                 )
                 self._resume_event.set()
@@ -310,11 +310,9 @@ class WordlistScanner:
         return ""
 
     async def _fetch_baseline(self, session):
+        """Keep the wildcard baseline usable by waiting and retrying rate-limited responses."""
         baseline_url = urljoin(self.origin, "this-path-should-not-exist-recon-baseline-74c31")
-        for attempt in range(2):
-            if self.should_stop() or self._rate_limited:
-                return
-            await self._resume_event.wait()
+        while not self.should_stop() and not self._rate_limited:
             if not await self._request_gate():
                 return
             try:
@@ -323,18 +321,16 @@ class WordlistScanner:
                     timeout=aiohttp.ClientTimeout(total=self.timeout),
                     allow_redirects=False,
                 ) as resp:
-                    if resp.status == 429:
-                        headers = dict(resp.headers)
-                        self._log(f"[Baseline] Received HTTP 429 from {baseline_url}.")
-                        resumed = await self._handle_429(headers, baseline_url)
-                        if resumed and attempt == 0:
+                    if resp.status in {429, 503}:
+                        self._log(
+                            f"[Baseline] Received HTTP {resp.status} from "
+                            f"{self._safe_result_url(baseline_url)}."
+                        )
+                        if await self._handle_429(dict(resp.headers), baseline_url, status=resp.status):
                             continue
-                        # A second 429 on the baseline means the phase cannot classify
-                        # wildcard responses reliably; stop this phase after honoring the wait.
-                        self._rate_limited = True
-                        self._log("[Baseline] Repeated HTTP 429; stopping content discovery safely.")
                         self._resume_event.set()
                         return
+                    self.rate_controller.on_success()
                     data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
                     self.baseline_size = len(data[:MAX_RESPONSE_BYTES])
                     self._log(
@@ -397,6 +393,7 @@ class WordlistScanner:
                             continue
                         try:
                             rate_limit_headers = None
+                            rate_limit_status = 429
                             async with session.get(url, allow_redirects=False) as resp:
                                 data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
                                 body = data[:MAX_RESPONSE_BYTES]
@@ -442,8 +439,9 @@ class WordlistScanner:
                                 }
                                 self.responses.append(result)
                                 self._notify_result(result)
-                                if resp.status == 429:
+                                if resp.status in {429, 503}:
                                     rate_limit_headers = dict(resp.headers)
+                                    rate_limit_status = int(resp.status)
                                 else:
                                     self.rate_controller.on_success()
                                 if result["potential_hit"] and resp.status != 429:
@@ -451,7 +449,7 @@ class WordlistScanner:
                                     self._notify_hit(url, resp.status, size)
 
                             if rate_limit_headers is not None:
-                                await self._handle_429(rate_limit_headers, url)
+                                await self._handle_429(rate_limit_headers, url, status=rate_limit_status)
                         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                             failure = {
                                 "url": self._safe_result_url(url),
