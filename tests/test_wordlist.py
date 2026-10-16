@@ -198,7 +198,7 @@ def test_baseline_429_honors_retry_after_then_resumes(tmp_path):
             assert baseline_count["value"] == 2
             assert "/admin" in paths
             assert scanner._rate_limited is False
-            assert any("resuming remaining queued checks" in line for line in logs)
+            assert any("cooldown complete; resuming queued requests" in line for line in logs)
         finally:
             await runner.cleanup()
 
