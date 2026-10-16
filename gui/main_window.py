@@ -1762,8 +1762,10 @@ class MainWindow(QMainWindow):
         self.discovery_table.insertRow(row)
         if result.get("error") or not result.get("status"):
             classification = "Request failed: " + str(result.get("error") or "no HTTP response")
-        elif result.get("baseline_match"):
-            classification = "Likely wildcard response"
+        elif result.get("baseline_match", result.get("wildcard_match", False)):
+            classification = "Likely wildcard response (suppressed)"
+        elif result.get("wildcard_suspect"):
+            classification = "Potential hit — fallback-like body, status differs"
         elif result.get("potential_hit"):
             classification = "Potential hit"
         else:
@@ -1981,7 +1983,11 @@ class MainWindow(QMainWindow):
         cookie_url_count = int(report.get("cookie_url_count", 0) or 0)
         wordlist_attempted = int(report.get("wordlist_requests_attempted", len(path_results)) or 0)
         wordlist_unattempted = int(report.get("wordlist_requests_unattempted", max(0, report.get("wordlist_candidates", 0) - wordlist_attempted)) or 0)
-        wildcard_responses = sum(1 for item in path_results if item.get("wildcard_match", item.get("baseline_match", False)))
+        wildcard_responses = sum(
+            1 for item in path_results
+            if item.get("wildcard_match", item.get("baseline_match", False))
+        )
+        wildcard_suspects = sum(1 for item in path_results if item.get("wildcard_suspect"))
         summary = (
             f"[Summary] {total} pages crawled; {kept} match current filters; "
             f"{len(path_results)} content-discovery responses; {len(path_hits)} potential hits; "
@@ -1994,6 +2000,7 @@ class MainWindow(QMainWindow):
             f"{report.get('wordlist_candidates', 0)} candidates "
             f"({wordlist_attempted} attempted, {wordlist_unattempted} unattempted); "
             f"{wildcard_responses} wildcard-like responses suppressed; "
+            f"{wildcard_suspects} status-different fallback lookalikes flagged; "
             f"{(report.get('css_discovery_summary', {}) or {}).get('css_files_fetched', 0)} CSS files analyzed; "
             f"{len(report.get('related_findings', []))} review findings; "
             f"{len(sim.get('exact_duplicates', []))} duplicate groups; "
