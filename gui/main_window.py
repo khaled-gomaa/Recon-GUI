@@ -1894,8 +1894,14 @@ class MainWindow(QMainWindow):
             f" | content discovery {len(path_results)} responses/{len(path_hits)} potential hits"
             if path_results or self.content_discovery_check.isChecked() else ""
         )
-        crawler_limited = report.get("crawler_rate_limited_stop", False)
-        discovery_limited = report.get("wordlist_rate_limited_stop", False)
+        crawler_limited = bool(
+            report.get("crawler_rate_limited_stop")
+            or report.get("crawler_unresolved_rate_limited_urls")
+        )
+        discovery_limited = bool(
+            report.get("wordlist_rate_limited_stop")
+            or report.get("wordlist_unresolved_rate_limited_urls")
+        )
         css_limited = report.get("css_rate_limited_stop", False)
         js_limited = report.get("js_rate_limited_stop", False)
         css_summary = report.get("css_discovery_summary", {}) or {}
