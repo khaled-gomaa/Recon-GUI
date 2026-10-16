@@ -206,7 +206,7 @@ def test_baseline_429_honors_retry_after_then_resumes(tmp_path):
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
 
 
-def test_429_without_retry_after_stops_instead_of_retrying(tmp_path):
+def test_repeated_429_without_retry_after_uses_backoff_then_stops(tmp_path):
     async def scenario():
         requested = []
 
@@ -230,7 +230,7 @@ def test_429_without_retry_after_stops_instead_of_retrying(tmp_path):
             )
             await scanner.scan()
             assert scanner._rate_limited is True
-            assert len(requested) == 1  # only baseline; never retry before guidance
+            assert len(requested) == 2  # baseline retried once after adaptive backoff
         finally:
             await runner.cleanup()
 
