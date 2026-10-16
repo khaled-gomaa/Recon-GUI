@@ -78,8 +78,8 @@ def test_baseline_http_429_stops_wordlist_requests(tmp_path):
             hits = await scanner.scan()
             assert hits == []
             assert scanner._rate_limited is True
-            assert len(requested) == 1
-            assert "this-path-should-not-exist-recon-baseline" in requested[0]
+            assert len(requested) == 2  # one retry after the adaptive cool-down
+            assert all("this-path-should-not-exist-recon-baseline" in value for value in requested)
         finally:
             await runner.cleanup()
 
