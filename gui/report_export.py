@@ -633,14 +633,17 @@ def render_csv_report(report: dict) -> str:
             "", "potential" if item.get("potential_hit") else "",
             "method={}; source={}; bytes={}; words={}; type={}; final_url={}; "
             "location={}; server={}; last_modified={}; allow={}; content_hash={}; "
-            "response_truncated={}; baseline_match={}; error={}; set_cookie_names={}".format(
+            "response_truncated={}; baseline_match={}; wildcard_suspect={}; "
+            "wildcard_similarity={}; wildcard_reason={}; error={}; set_cookie_names={}".format(
                 item.get("method", "GET"), item.get("source", "wordlist"),
                 item.get("size", 0), item.get("word_count", 0),
                 item.get("content_type", ""), item.get("final_url", ""),
                 item.get("location", ""), item.get("server", ""),
                 item.get("last_modified", ""), item.get("allow", ""),
                 item.get("content_hash", ""), item.get("response_truncated", False),
-                item.get("baseline_match", False), item.get("error", ""),
+                item.get("baseline_match", False), item.get("wildcard_suspect", False),
+                item.get("wildcard_similarity", 0), item.get("wildcard_match_reason", ""),
+                item.get("error", ""),
                 json.dumps(item.get("set_cookie_names", []), ensure_ascii=False, sort_keys=True),
             ),
         ])
