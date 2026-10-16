@@ -4,10 +4,6 @@ import hashlib
 import threading
 import traceback
 from datetime import datetime, timezone
-from http.cookies import SimpleCookie
-
-from yarl import URL
-
 import aiohttp
 from PySide6.QtCore import QThread, Signal
 
@@ -16,22 +12,8 @@ from recon.analyzer import ReconAnalyzer
 from recon.matchers import MatcherFilter
 from recon.favicon_hasher import get_favicon_hash
 from recon.similarity_detector import SimilarityDetector
+from gui.session import create_session_cookie_jar
 
-
-async def _create_session_cookie_jar(target_url, raw_cookie_header="", on_log=None):
-    """Create the shared aiohttp cookie jar while an asyncio loop is actually running."""
-    log = on_log or (lambda _message: None)
-    jar = aiohttp.CookieJar(unsafe=True)
-    if raw_cookie_header:
-        parsed_cookies = SimpleCookie()
-        try:
-            parsed_cookies.load(raw_cookie_header)
-            if parsed_cookies:
-                jar.update_cookies(parsed_cookies, response_url=URL(target_url))
-                log("[Session] Imported supplied cookie names into the in-memory session jar.")
-        except Exception as exc:
-            log(f"[Session] Supplied Cookie header could not be parsed: {type(exc).__name__}.")
-    return jar
 
 
 
@@ -112,7 +94,7 @@ class CrawlWorker(QThread):
                     raw_cookie_header = phase_headers.pop(header_name)
                     break
             session_cookie_jar = loop.run_until_complete(
-                _create_session_cookie_jar(self.url, raw_cookie_header, self.log_message.emit)
+                create_session_cookie_jar(self.url, raw_cookie_header, self.log_message.emit)
             )
             analyzer = ReconAnalyzer(
                 self.url, request_headers=phase_headers, on_log=self.log_message.emit,
