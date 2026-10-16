@@ -362,3 +362,30 @@ def test_javascript_fetch_failures_make_scan_partial(tmp_path):
     assert partial["history_diff"]["comparison_status"].startswith("partial")
     assert partial["history_diff"]["removed_urls"] == []
     assert partial["history_diff"]["removed_endpoints"] == []
+
+
+def test_shared_rate_limit_stop_marks_history_incomplete_and_suppresses_removals(tmp_path):
+    store = HistoryStore(tmp_path / "history.sqlite3")
+    store.save_report({
+        "target": "https://shared-429.example/",
+        "pages": [
+            _page("https://shared-429.example/a"),
+            _page("https://shared-429.example/b"),
+        ],
+    })
+    partial = store.save_report({
+        "target": "https://shared-429.example/",
+        "pages": [_page("https://shared-429.example/a")],
+        "rate_limit_stopped": True,
+        "rate_limit_summary": {
+            "stopped": True, "cooldowns_applied": 3,
+            "events": [{"phase": "javascript", "url": "https://shared-429.example/app.js", "reason": "fallback"}],
+        },
+    })
+    status = next(
+        row["status"] for row in store.recent_scans("https://shared-429.example/")
+        if row["scan_id"] == partial["scan_id"]
+    )
+    assert status == "rate-limited"
+    assert partial["history_diff"]["comparison_status"].startswith("partial")
+    assert partial["history_diff"]["removed_urls"] == []
