@@ -48,6 +48,7 @@ jobs:
           --collect-submodules recon
           --collect-submodules crawler
           --collect-submodules gui
+          --collect-all tldextract
           --add-data "wordlists/common.txt;wordlists"
           main.py
 
