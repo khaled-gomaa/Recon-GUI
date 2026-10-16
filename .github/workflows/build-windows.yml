@@ -40,6 +40,20 @@ jobs:
         timeout-minutes: 2
         run: python -m compileall -q crawler recon gui main.py
 
+      - name: Stage Public Suffix List snapshot explicitly
+        shell: pwsh
+        run: |
+          $packageDir = python -c "import pathlib, tldextract; print(pathlib.Path(tldextract.__file__).resolve().parent)"
+          $snapshot = Join-Path $packageDir ".tld_set_snapshot"
+          if (-not (Test-Path -LiteralPath $snapshot -PathType Leaf)) {
+            throw "tldextract snapshot was not found at $snapshot"
+          }
+          New-Item -ItemType Directory -Force -Path "build-data/tldextract" | Out-Null
+          Copy-Item -LiteralPath $snapshot -Destination "build-data/tldextract/.tld_set_snapshot" -Force
+          if (-not (Test-Path -LiteralPath "build-data/tldextract/.tld_set_snapshot" -PathType Leaf)) {
+            throw "Failed to stage the Public Suffix List snapshot."
+          }
+
       - name: Build portable Windows application folder
         timeout-minutes: 12
         run: >-
@@ -48,7 +62,8 @@ jobs:
           --collect-submodules recon
           --collect-submodules crawler
           --collect-submodules gui
-          --collect-all tldextract
+          --collect-submodules tldextract
+          --add-data "build-data/tldextract/.tld_set_snapshot;tldextract"
           --add-data "wordlists/common.txt;wordlists"
           main.py
 
@@ -60,6 +75,11 @@ jobs:
           }
           if (-not (Get-ChildItem -Path "dist/ReconGUI" -Recurse -Filter "common.txt")) {
             throw "Bundled content-discovery wordlist was not included."
+          }
+          $suffixSnapshot = Get-ChildItem -Path "dist/ReconGUI" -Recurse -Force -File |
+            Where-Object { $_.Name -eq ".tld_set_snapshot" } | Select-Object -First 1
+          if (-not $suffixSnapshot) {
+            throw "Bundled tldextract Public Suffix List snapshot was not included."
           }
           $scopeTest = Start-Process -FilePath "dist/ReconGUI/ReconGUI.exe" -ArgumentList "--self-test-domain-scope" -PassThru -Wait
           if ($scopeTest.ExitCode -ne 0) {

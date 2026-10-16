@@ -445,3 +445,38 @@ def test_unattempted_javascript_sources_are_reported_without_query_values():
     ]
     assert "must-not-persist" not in repr(report)
     assert "build-secret" not in repr(report)
+
+
+def test_missing_public_suffix_snapshot_does_not_abort_optional_subdomain_extraction(monkeypatch):
+    from recon import domain_scope
+    from recon.subdomain_finder import SubdomainFinder
+
+    class MissingSnapshotExtractor:
+        def __call__(self, _hostname):
+            raise FileNotFoundError("simulated missing .tld_set_snapshot")
+
+    monkeypatch.setattr(domain_scope, "_extractor", lambda: MissingSnapshotExtractor())
+    logs = []
+    finder = SubdomainFinder("www.example.com", on_log=logs.append)
+
+    # A packaging problem disables this optional text matcher, not the full crawl.
+    assert finder.enabled is False
+    assert finder.find("api.example.com www.example.com") == set()
+    assert any("Text-based subdomain extraction is disabled" in item for item in logs)
+
+
+def test_subfinder_fails_closed_if_public_suffix_snapshot_is_missing(monkeypatch):
+    from recon import domain_scope
+
+    class MissingSnapshotExtractor:
+        def __call__(self, _hostname):
+            raise FileNotFoundError("simulated missing .tld_set_snapshot")
+
+    monkeypatch.setattr(domain_scope, "_extractor", lambda: MissingSnapshotExtractor())
+    logs = []
+    result = discover_subdomains("https://www.example.com/", on_log=logs.append)
+
+    assert result["subfinder_subdomains"] == []
+    assert result["subfinder_status"] == "scope-unavailable"
+    assert "snapshot is missing" in result["subfinder_error"]
+    assert any("skipping safely" in item for item in logs)
