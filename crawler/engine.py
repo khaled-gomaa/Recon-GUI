@@ -325,7 +325,8 @@ class CrawlEngine:
                 wait = self._next_request_time - loop.time()
                 if wait <= 0:
                     self._next_request_time = loop.time() + delay
-                    return True
+                    # A 429 may arrive while this request waits on Crawl-delay.
+                    return await self.rate_limit_manager.wait_until_ready(self.should_stop)
                 await asyncio.sleep(min(0.25, wait))
             return False
 
