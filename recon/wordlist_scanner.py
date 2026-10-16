@@ -284,6 +284,7 @@ class WordlistScanner:
                         self._rate_limited = self.rate_limit_manager.stopped and not self.should_stop()
                         self._log("[Baseline] Rate limit policy ended the baseline phase.")
                         return
+                    self.rate_limit_manager.note_success()
                     data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
                     self.baseline_size = len(data[:MAX_RESPONSE_BYTES])
                     self._log(
@@ -396,9 +397,11 @@ class WordlistScanner:
                                 self._notify_result(result)
                                 if resp.status == 429:
                                     rate_limit_headers = dict(resp.headers)
-                                elif result["potential_hit"]:
-                                    self.hits.append(result)
-                                    self._notify_hit(url, resp.status, size)
+                                else:
+                                    self.rate_limit_manager.note_success()
+                                    if result["potential_hit"]:
+                                        self.hits.append(result)
+                                        self._notify_hit(url, resp.status, size)
 
                             if rate_limit_headers is not None:
                                 can_resume = await self._handle_429(rate_limit_headers, url)
