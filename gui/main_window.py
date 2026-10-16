@@ -1987,7 +1987,7 @@ class MainWindow(QMainWindow):
             f"{len(path_results)} content-discovery responses; {len(path_hits)} potential hits; "
             f"{len(report.get('endpoint_inventory', []))} endpoints; "
             f"{len(report.get('parameters', []))} parameter names; "
-              f"{runtime_network_count} observed browser requests (capture: {network_capture_mode}); "
+            f"{runtime_network_count} observed browser request records (capture: {network_capture_mode}); "
             f"{cookie_identity_count} cookie identities / {cookie_observation_count} observations "
             f"across {cookie_url_count} identity-URL associations; "
             f"{report.get('wordlist_words_loaded', 0)} wordlist words / "
@@ -2001,6 +2001,18 @@ class MainWindow(QMainWindow):
             f"{content_cap_note}"
         )
         self._append_log(summary)
+        if runtime_network_count == 0:
+            if network_capture_mode == "off":
+                self._append_log(
+                    "[Network Capture] No runtime requests were recorded because Manual Browser Session "
+                    "and JavaScript rendering are both disabled. Static endpoint inference remains separate."
+                )
+            else:
+                self._append_log(
+                    "[Network Capture] Capture was enabled but recorded no same-origin request records. "
+                    "Confirm Playwright/Chromium is installed and, for manual mode, interact with the target "
+                    "during the capture window."
+                )
         if page_limited:
             self._append_log("[LIMIT] Page limit was reached; undiscovered same-host links remain in the queue/frontier.")
         if depth_limited:
