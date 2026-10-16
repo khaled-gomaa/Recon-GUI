@@ -373,15 +373,14 @@ class WordlistScanner:
             # If the control request failed for a transport reason, do not suppress
             # candidates based solely on response length.
             return False, 0.0, "baseline-unavailable"
-        if int(status or 0) != int(self.baseline_status):
-            return False, 0.0, "status-differs"
+        status_matches = int(status or 0) == int(self.baseline_status)
         baseline_type = str(self.baseline_content_type or "").split(";", 1)[0].strip().lower()
         current_type = str(content_type or "").split(";", 1)[0].strip().lower()
         if baseline_type and current_type and baseline_type != current_type:
             return False, 0.0, "content-type-differs"
         baseline_location = str(self.baseline_location or "").strip()
         current_location = str(location or "").strip()
-        if baseline_location and current_location and baseline_location == current_location:
+        if status_matches and baseline_location and current_location and baseline_location == current_location:
             return True, 1.0, "same-redirect-destination"
         baseline_text = self.baseline_normalized_text
         candidate_text = self._comparison_text(
@@ -389,10 +388,14 @@ class WordlistScanner:
             url,
         )
         if baseline_text == candidate_text:
-            return True, 1.0, "normalized-body-identical"
+            if status_matches:
+                return True, 1.0, "normalized-body-identical"
+            return False, 1.0, "body-identical-status-differs"
         if not baseline_text and not candidate_text:
             if self.baseline_size is not None and abs(len(body) - self.baseline_size) <= 4:
-                return True, 1.0, "empty-body-size-match"
+                if status_matches:
+                    return True, 1.0, "empty-body-size-match"
+                return False, 1.0, "body-identical-status-differs"
             return False, 0.0, "empty-body-differs"
         left = self._similarity_sample(baseline_text)
         right = self._similarity_sample(candidate_text)
@@ -401,8 +404,12 @@ class WordlistScanner:
         size_delta = abs(len(body) - (self.baseline_size or 0))
         relative_delta = size_delta / max(1, self.baseline_size or 1)
         if similarity >= 0.94 and relative_delta <= 0.20:
-            return True, similarity, "normalized-body-similar"
-        return False, similarity, "body-differs"
+            if status_matches:
+                return True, similarity, "normalized-body-similar"
+            # Keep status-different lookalikes as potential hits, but explicitly flag them
+            # so the operator can review possible soft-404/fallback routing.
+            return False, similarity, "body-similar-status-differs"
+        return False, similarity, "body-differs" if status_matches else "status-and-body-differ"
 
     async def _fetch_baseline(self, session):
         baseline_url = urljoin(self.origin, "this-path-should-not-exist-recon-baseline-74c31")
@@ -534,6 +541,13 @@ class WordlistScanner:
                                     "set_cookie_names": set_cookie_names,
                                     "baseline_match": baseline_match,
                                     "wildcard_match": baseline_match,
+                                    "wildcard_suspect": (
+                                        not baseline_match and wildcard_similarity >= 0.94
+                                        and wildcard_reason in {
+                                            "body-identical-status-differs",
+                                            "body-similar-status-differs",
+                                        }
+                                    ),
                                     "wildcard_similarity": round(wildcard_similarity, 4),
                                     "wildcard_match_reason": wildcard_reason,
                                     "potential_hit": (
@@ -571,6 +585,7 @@ class WordlistScanner:
                                 "set_cookie_names": [],
                                 "baseline_match": False,
                                 "wildcard_match": False,
+                                "wildcard_suspect": False,
                                 "wildcard_similarity": 0.0,
                                 "wildcard_match_reason": "request-failed",
                                 "potential_hit": False,
