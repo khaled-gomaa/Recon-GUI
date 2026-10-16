@@ -2169,6 +2169,20 @@ class MainWindow(QMainWindow):
         lines = []
         lines.append("=== SCAN COVERAGE / GAPS ===")
         lines.append(f"Target: {report.get('target') or '(no target recorded)'}")
+        lines.append(
+            f"Runtime request capture: {report.get('network_capture_mode', 'unknown')} "
+            f"({report.get('runtime_network_request_count', len(report.get('network_observations', []))) or 0} records)"
+        )
+        lines.append(
+            f"Cookie Map: {report.get('cookie_identity_count', len(report.get('cookie_map', []))) or 0} identities; "
+            f"{report.get('cookie_observation_count', len(report.get('cookie_map', []))) or 0} observations; "
+            f"{report.get('cookie_url_count', 0) or 0} identity/URL associations"
+        )
+        lines.append(
+            f"Content Discovery: {report.get('wordlist_scan_status', 'unknown')}; "
+            f"{report.get('wordlist_requests_attempted', len(report.get('wordlist_results', []))) or 0} requests attempted; "
+            f"{report.get('wordlist_requests_unattempted', 0) or 0} candidates unattempted"
+        )
 
         source_coverage = report.get("coverage", {}) or {}
         if source_coverage:
