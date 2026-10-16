@@ -246,6 +246,7 @@ def build_coverage_report(
         if condition and message not in reasons:
             reasons.append(message)
     gap(stopped_by_user, "Scan was stopped by the user.")
+    gap(rate_limit_stopped, "The scan-wide HTTP 429 policy stopped one or more active discovery phases.")
     gap(page_cap, "The page limit was reached; remaining candidates may not have been crawled.")
     gap(depth_limit_reached, "The configured crawl-depth limit prevented following some discovered links.")
     gap(stats.get("word_limit_reached"), "The configured wordlist word cap was reached.")
