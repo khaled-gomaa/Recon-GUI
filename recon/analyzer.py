@@ -23,7 +23,7 @@ class ReconReport:
 
 
 class ReconAnalyzer:
-    def __init__(self, base_domain: str, request_headers: dict | None = None, on_log=None, cookie_jar=None):
+    def __init__(self, base_domain: str, request_headers: dict | None = None, on_log=None, cookie_jar=None, rate_limit_manager=None):
         parsed_host = urlparse(base_domain).hostname
         host = (parsed_host or base_domain).lower()
         self.base_host = host
@@ -31,7 +31,8 @@ class ReconAnalyzer:
         self.subdomain_finder = SubdomainFinder(host, on_log=on_log)
         self.report = ReconReport()
         self.js_collector = JSCollector(
-            base_domain, on_log=on_log, request_headers=request_headers, cookie_jar=cookie_jar
+            base_domain, on_log=on_log, request_headers=request_headers,
+            cookie_jar=cookie_jar, rate_limit_manager=rate_limit_manager,
         )
         self.request_headers = dict(request_headers or {})
         self.cookie_jar = cookie_jar
