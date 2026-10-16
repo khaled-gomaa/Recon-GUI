@@ -201,6 +201,8 @@ async def probe_asset_references(
                             record["result"] = "rate limited; phase stopped safely" if rate_limited_stop else "rate limited; user stopped scan"
                         else:
                             record["result"] = "rate limited; cooldown applied; this asset remains unverified"
+                    else:
+                        rate_limit_manager.note_success()
                     # Do not follow redirects. Redirect destinations are separate scope decisions.
                     response.release()
             except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError, ValueError) as exc:
