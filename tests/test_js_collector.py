@@ -107,7 +107,7 @@ def test_js_collector_records_non_200_responses_without_query_values():
     asyncio.run(asyncio.wait_for(scenario(), timeout=10))
 
 
-def test_js_collector_records_429_and_stops_collection_safely():
+def test_js_collector_records_429_and_resumes_after_cooldown():
     async def scenario():
         calls = []
 
