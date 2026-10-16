@@ -76,6 +76,7 @@ class WordlistScanner:
         self.hits = []
         # Complete per-candidate response history, including ordinary 404 responses.
         self.responses = []
+        self.unresolved_rate_limited_urls: set[str] = set()
         self.bad_status = {400, 404, 410, 429, 500, 502, 503, 504}
         self.baseline_size = None
         self._rate_limited = False  # True means safely stopped, not bypassed.
@@ -304,6 +305,7 @@ class WordlistScanner:
         self.hits = []
         self.path_limit_reached = False
         self.word_limit_reached = False
+        self.unresolved_rate_limited_urls = set()
         self.candidate_limit_reached = False
         self.recursive_dirs_found = 0
         self.recursion_rounds = 0
@@ -411,10 +413,17 @@ class WordlistScanner:
                                     try:
                                         queue.put_nowait(url)
                                     except asyncio.QueueFull:
+                                        self.unresolved_rate_limited_urls.add(url)
                                         self._log(
                                             f"[429] Could not requeue {self._safe_result_url(url)} because "
-                                            "the discovery queue is full; remaining queued work will continue."
+                                            "the discovery queue is full; this path remains unverified."
                                         )
+                                else:
+                                    self.unresolved_rate_limited_urls.add(url)
+                                    self._log(
+                                        f"[429] Retry budget exhausted for {self._safe_result_url(url)}; "
+                                        "the path remains unverified while remaining queued paths continue."
+                                    )
                         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                             failure = {
                                 "url": self._safe_result_url(url),
