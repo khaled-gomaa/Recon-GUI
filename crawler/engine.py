@@ -332,8 +332,7 @@ class CrawlEngine:
         # Create loop-bound primitives only after crawl() is running in its event loop.
         self._request_gate_lock = asyncio.Lock()
         self._schedule_lock = asyncio.Lock()
-        self.rate_limit_attempts = []
-        self.unresolved_rate_limited_urls = set()
+        # Rate-limit history and unresolved URLs span all crawl passes in one scan.
         rate_limit_retries = {}
         queue = asyncio.Queue()
         self._resume_event = asyncio.Event()
