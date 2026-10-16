@@ -264,6 +264,8 @@ async def render_pages(urls, headers=None, should_stop=None, on_log=None, on_net
                                 response_headers, response.url, on_log=log,
                                 should_stop=stop, phase="Browser rendering",
                             )
+                        else:
+                            rate_limit_manager.note_success()
 
                     requests_by_id = {}
                     requests_by_key = {}
@@ -500,6 +502,8 @@ async def capture_manual_session(
                             headers, response.url, on_log=log,
                             should_stop=stop, phase="Manual browser session",
                         )
+                    else:
+                        rate_limit_manager.note_success()
 
                 pending_by_key = {}
                 page.on("request", on_request)
