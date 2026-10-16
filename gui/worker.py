@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import threading
+import traceback
 from datetime import datetime, timezone
 from http.cookies import SimpleCookie
 
@@ -866,7 +867,10 @@ class CrawlWorker(QThread):
             self.finished.emit(report)
 
         except Exception as exc:
-            self.error.emit(f"{type(exc).__name__}: {exc}")
+            # Preserve the traceback in the GUI log; a short RuntimeError message alone
+            # does not identify which async callback or worker phase failed.
+            details = traceback.format_exc(limit=12)
+            self.error.emit(f"{type(exc).__name__}: {exc}\\n{details}")
         finally:
             if loop is not None:
                 try:
