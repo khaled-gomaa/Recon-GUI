@@ -1,14 +1,22 @@
 """Offscreen smoke tests for the application's collapsible workspace controls."""
 import os
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from PySide6.QtWidgets import QApplication
-
-from gui.main_window import MainWindow
 
 
 def test_scan_settings_filters_panels_and_columns_can_be_toggled():
+    try:
+        from PySide6.QtWidgets import QApplication
+        from gui.main_window import MainWindow
+    except (ImportError, OSError) as exc:
+        # Some minimal Ubuntu runners omit Qt's system EGL library. The Windows CI
+        # job exercises this GUI smoke test with the full Qt runtime installed.
+        if "libEGL.so.1" in str(exc):
+            pytest.skip("Qt GUI smoke test requires the system libEGL.so.1 library.")
+        raise
+
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     try:
