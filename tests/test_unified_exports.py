@@ -279,3 +279,71 @@ def test_markdown_cells_escape_table_delimiters_and_untrusted_html():
     assert r"A \| B &lt;img src=x onerror=alert(1)&gt;" in markdown
     assert "<img src=x onerror=alert(1)>" not in html
     assert "&lt;img src=x onerror=alert(1)&gt;" in html
+
+
+def test_exports_include_source_coverage_and_observed_vs_inferred_request_intelligence():
+    report = {
+        "target": "https://example.test",
+        "pages": [],
+        "coverage": {
+            "assessment": "partial",
+            "partial": True,
+            "pages": {"discovered_and_attempted": 2, "page_cap_reached": True},
+            "http": {"transport_errors": 1},
+            "discovery": {
+                "endpoints": 1, "parameters": 2, "asset_references": 3,
+                "browser_request_records": 1, "observed_request_methods": 1,
+                "inferred_request_methods": 1,
+            },
+            "sources": {
+                "endpoints": {"html-link": 1, "javascript-fetch": 1},
+                "assets": {"css-url": 3},
+                "network_requests": {"manual-browser": 1},
+            },
+            "partial_reasons": ["The page limit was reached; remaining candidates may not have been crawled."],
+            "notes": ["Coverage is measured; it does not guarantee all routes were found."],
+            "request_accounting": {"crawled": 3, "failed": 1, "rate_limited": 0, "truncated": 0},
+        },
+        "request_intelligence": [
+            {
+                "url": "https://example.test/api/search",
+                "method": "POST",
+                "evidence": "observed",
+                "sources": ["manual-browser"],
+                "parameter_names": ["query"],
+                "content_types": ["application/json"],
+                "status_codes": [200],
+                "initiating_pages": ["https://example.test/home"],
+                "resource_types": ["fetch"],
+            },
+            {
+                "url": "https://example.test/api/users",
+                "method": "GET",
+                "evidence": "inferred",
+                "sources": ["javascript-fetch"],
+                "parameter_names": ["userId"],
+                "content_types": [],
+                "status_codes": [],
+                "initiating_pages": ["https://example.test/app.js"],
+                "resource_types": [],
+            },
+        ],
+    }
+    txt = render_text_report(report)
+    csv = render_csv_report(report)
+    markdown = render_markdown_report(report)
+    html = render_html_report(report)
+
+    assert "SOURCE-AWARE DISCOVERY COVERAGE" in txt
+    assert "REQUEST INTELLIGENCE (OBSERVED VS INFERRED" in txt
+    assert "[OBSERVED] [POST] https://example.test/api/search" in txt
+    assert "The page limit was reached" in txt
+
+    assert "source_coverage" in csv
+    assert "request_intelligence" in csv
+    assert "userId" in csv
+
+    assert "## Source-aware Discovery Coverage" in markdown
+    assert "## Request Intelligence (observed vs inferred)" in markdown
+    assert "static" not in html.lower() or "request intelligence" in html.lower()
+    assert "manual-browser" in html

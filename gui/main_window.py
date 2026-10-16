@@ -1966,6 +1966,94 @@ class MainWindow(QMainWindow):
         lines = []
         lines.append("=== SCAN COVERAGE / GAPS ===")
         lines.append(f"Target: {report.get('target') or '(no target recorded)'}")
+
+        source_coverage = report.get("coverage", {}) or {}
+        if source_coverage:
+            lines.append("")
+            lines.append("=== SOURCE-AWARE DISCOVERY COVERAGE ===")
+            lines.append(f"Assessment: {source_coverage.get('assessment', 'not calculated')}")
+            page_data = source_coverage.get("pages", {}) or {}
+            lines.append(
+                f"Pages attempted: {page_data.get('discovered_and_attempted', 0)}; "
+                f"successful/redirect: {page_data.get('successful_or_redirect', 0)}; "
+                f"transport failures: {page_data.get('transport_failed', 0)}; "
+                f"page cap: {page_data.get('page_cap_reached', False)}; "
+                f"depth cap: {page_data.get('depth_limit_reached', False)}"
+            )
+            discovery = source_coverage.get("discovery", {}) or {}
+            lines.append(
+                f"Endpoints: {discovery.get('endpoints', 0)}; parameters: {discovery.get('parameters', 0)}; "
+                f"assets: {discovery.get('asset_references', 0)}; "
+                f"network records: {discovery.get('browser_request_records', 0)}; "
+                f"observed method records: {discovery.get('observed_request_methods', 0)}; "
+                f"inferred method records: {discovery.get('inferred_request_methods', 0)}"
+            )
+            source_counts = source_coverage.get("sources", {}) or {}
+            for category in ("endpoints", "assets", "network_requests"):
+                counts = source_counts.get(category, {}) or {}
+                if counts:
+                    lines.append(
+                        category.replace("_", " ").title() + " sources: "
+                        + ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+                    )
+            wordlist_coverage = source_coverage.get("wordlist", {}) or {}
+            if wordlist_coverage.get("enabled"):
+                lines.append(
+                    f"Wordlist: {wordlist_coverage.get('words_loaded', 0)} words; "
+                    f"{wordlist_coverage.get('candidates_generated', 0)} candidates; "
+                    f"{wordlist_coverage.get('responses_recorded', 0)} responses; "
+                    f"complete under configured limits={wordlist_coverage.get('complete_under_configured_limits', False)}"
+                )
+            js_coverage = source_coverage.get("javascript", {}) or {}
+            if any(js_coverage.values()):
+                lines.append(
+                    f"JavaScript: failed={js_coverage.get('fetch_failures', 0)}; "
+                    f"unattempted={js_coverage.get('unattempted_files', 0)}; "
+                    f"truncated={js_coverage.get('truncated_files', 0)}; "
+                    f"rate-limited={js_coverage.get('rate_limited', False)}"
+                )
+            for reason in (source_coverage.get("partial_reasons", []) or [])[:30]:
+                lines.append("GAP: " + str(reason))
+            if len(source_coverage.get("partial_reasons", []) or []) > 30:
+                lines.append("Additional known gaps are available in exported reports.")
+            accounting = source_coverage.get("request_accounting", {}) or {}
+            if accounting:
+                lines.append(
+                    f"Request accounting: {accounting.get('crawled', 0)} response records; "
+                    f"{accounting.get('failed', 0)} failed; {accounting.get('rate_limited', 0)} rate-limited; "
+                    f"{accounting.get('truncated', 0)} truncated."
+                )
+            for note in source_coverage.get("notes", []) or []:
+                lines.append("NOTE: " + str(note))
+
+        request_intelligence = report.get("request_intelligence", []) or []
+        if request_intelligence:
+            observed_count = sum(1 for item in request_intelligence if item.get("evidence") == "observed")
+            inferred_count = len(request_intelligence) - observed_count
+            lines.append("")
+            lines.append("=== REQUEST INTELLIGENCE (OBSERVED VS INFERRED) ===")
+            lines.append(
+                f"Records: {len(request_intelligence)}; observed: {observed_count}; inferred: {inferred_count}"
+            )
+            for item in request_intelligence[:40]:
+                lines.append(
+                    f"[{str(item.get('evidence', 'inferred')).upper()}] "
+                    f"[{item.get('method', 'UNKNOWN')}] {item.get('url', '')} | "
+                    f"parameters={', '.join(item.get('parameter_names', []) or [])} | "
+                    f"sources={', '.join(item.get('sources', []) or [])} | "
+                    f"statuses={', '.join(str(code) for code in item.get('status_codes', []) or [])}"
+                )
+            if len(request_intelligence) > 40:
+                lines.append(
+                    f"{len(request_intelligence) - 40} additional records are available in exported reports."
+                )
+        else:
+            lines.append("")
+            lines.append("No request-intelligence evidence was recorded in this scan.")
+
+        lines.append(
+            "Coverage note: this report describes discovered and attempted data; it cannot prove that every possible route or user state was discovered."
+        )
         seed_info = report.get("seed_import_summary", {}) or {}
         if seed_info:
             lines.append(

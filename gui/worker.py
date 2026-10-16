@@ -752,6 +752,101 @@ class CrawlWorker(QThread):
                 "asset_probe_rate_limited_stop": asset_probe_data.get("summary", {}).get("rate_limited_stop", False),
                 "asset_probe_partial": asset_probe_data.get("summary", {}).get("partial", False),
             }
+            # Merge static clues with genuine runtime observations, but label the evidence.
+            from recon.request_intelligence import merge_observations
+            intelligence_observations = []
+            for item in analyzer.endpoint_observations:
+                method = str(item.get("method") or "").strip().upper()
+                if not method:
+                    continue
+                intelligence_observations.append({
+                    "url": item.get("endpoint", ""),
+                    "method": method,
+                    "source": item.get("source", "static-discovery"),
+                    "observed": False,
+                    "parameter_names": (
+                        list(item.get("query_parameters", []) or [])
+                        + list(item.get("body_parameters", []) or [])
+                    ),
+                    "page": item.get("location", ""),
+                })
+            for item in report.get("network_observations", []) or []:
+                intelligence_observations.append({
+                    **item,
+                    "observed": True,
+                    "parameter_names": (
+                        list(item.get("query_parameters", []) or [])
+                        + list(item.get("body_parameters", []) or [])
+                    ),
+                })
+            for result in all_results:
+                intelligence_observations.append({
+                    "url": result.url, "method": "GET", "source": "http-crawl",
+                    "observed": True, "status": result.status,
+                    "content_type": result.content_type, "page": result.url,
+                })
+            for item in wordlist_results:
+                if item.get("potential_hit"):
+                    intelligence_observations.append({
+                        "url": item.get("url", ""), "method": "GET",
+                        "source": "content-discovery", "observed": True,
+                        "status": item.get("status"),
+                        "content_type": item.get("content_type", ""),
+                        "page": self.url,
+                    })
+            report["request_intelligence"] = merge_observations(intelligence_observations)
+
+            # Produce a source-aware coverage summary across the phases enabled in this scan.
+            from recon.coverage import build_coverage_report
+            wordlist_stats = {
+                "enabled": bool(self.wordlist_path),
+                "words_loaded": report.get("wordlist_words_loaded", 0),
+                "candidate_count": report.get("wordlist_candidates", 0),
+                "word_limit_reached": report.get("wordlist_word_limit_reached", False),
+                "candidate_limit_reached": report.get("wordlist_candidate_limit_reached", False),
+                "path_limit_reached": report.get("wordlist_path_limit_reached", False),
+                "recursion_depth_limit_reached": report.get("wordlist_recursion_depth_limit_reached", False),
+                "rate_limited": report.get("wordlist_rate_limited_stop", False),
+            }
+            report["coverage"] = build_coverage_report(
+                page_results=all_results,
+                endpoint_inventory=report.get("endpoint_inventory", []),
+                parameter_inventory=report.get("parameters", []),
+                network_observations=report.get("network_observations", []),
+                asset_inventory=report.get("asset_inventory", []),
+                wordlist_hits=report.get("wordlist_hits", []),
+                wordlist_results=wordlist_results,
+                asset_probe_results=asset_probe_data.get("results", []),
+                passive_sources=passive_results.get("passive_sources", []),
+                passive_errors=passive_results.get("passive_errors", []),
+                historical_urls=passive_results.get("historical_urls", []),
+                imported_seed_urls=self.imported_seed_urls,
+                wordlist_stats=wordlist_stats,
+                request_intelligence=report["request_intelligence"],
+                max_pages=self.max_pages,
+                max_depth=self.max_depth,
+                target_url=self.url,
+                page_limit_reached=engine.page_limit_reached,
+                depth_limit_reached=engine.depth_limit_reached,
+                stopped_by_user=report.get("stopped_by_user", False),
+                crawler_rate_limited=report.get("crawler_rate_limited_stop", False),
+                wordlist_rate_limited=report.get("wordlist_rate_limited_stop", False),
+                javascript_rate_limited=report.get("js_rate_limited_stop", False),
+                css_rate_limited=css_rate_limited_stop,
+                asset_probe_partial=bool(asset_probe_data.get("summary", {}).get("partial")),
+                asset_probe_rate_limited=bool(asset_probe_data.get("summary", {}).get("rate_limited_stop")),
+                transport_error_count=report.get("transport_error_count", 0),
+                server_error_response_count=report.get("server_error_response_count", 0),
+                restricted_response_count=report.get("restricted_response_count", 0),
+                js_fetch_errors=report.get("js_fetch_errors", []),
+                unattempted_js_files=report.get("unattempted_js_files", []),
+                truncated_js_files=report.get("truncated_js_files", []),
+                response_bodies_truncated=report.get("response_bodies_truncated", 0),
+                content_limit_reached=report.get("content_limit_reached", False),
+                seed_import_limit_reached=bool(self.seed_import_summary.get("limit_reached")),
+                css_summary=css_discovery_data,
+            )
+
             try:
                 from recon.history_store import HistoryStore
                 report = HistoryStore().save_report(report)

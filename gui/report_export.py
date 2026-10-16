@@ -322,6 +322,37 @@ def render_text_report(report: dict) -> str:
             f"locations={item.get('location_count', 0)}"
         )
 
+    _section(lines, "Request Intelligence (Observed vs Inferred; Values Removed)")
+    request_intelligence = report.get("request_intelligence", []) or []
+    if not request_intelligence:
+        lines.append("(no method evidence recorded)")
+    for item in request_intelligence:
+        lines.append(
+            f"[{str(item.get('evidence', 'inferred')).upper()}] "
+            f"[{item.get('method', 'UNKNOWN')}] {item.get('url', '')} | "
+            f"sources={', '.join(item.get('sources', []) or [])} | "
+            f"parameters={', '.join(item.get('parameter_names', []) or [])} | "
+            f"statuses={', '.join(str(code) for code in item.get('status_codes', []) or [])} | "
+            f"content-types={', '.join(item.get('content_types', []) or [])}"
+        )
+
+    source_coverage = report.get("coverage", {}) or {}
+    _section(lines, "Source-aware Discovery Coverage")
+    if source_coverage:
+        lines.append(f"Assessment: {source_coverage.get('assessment', 'not calculated')}")
+        lines.append(f"Pages: {source_coverage.get('pages', {})}")
+        lines.append(f"HTTP outcomes: {source_coverage.get('http', {})}")
+        lines.append(f"Discovery counts: {source_coverage.get('discovery', {})}")
+        source_groups = source_coverage.get("sources", {}) or {}
+        for category, values in sorted(source_groups.items()):
+            lines.append(f"{category}: {values}")
+        for reason in source_coverage.get("partial_reasons", []) or []:
+            lines.append("GAP: " + str(reason))
+        for note in source_coverage.get("notes", []) or []:
+            lines.append("NOTE: " + str(note))
+    else:
+        lines.append("(not calculated)")
+
     _section(lines, "Parameter Inventory (Names Only; Values Omitted)")
     parameters = report.get("parameters", [])
     if not parameters:
@@ -684,6 +715,28 @@ def render_csv_report(report: dict) -> str:
                 "locations": item.get("locations", []),
             }, ensure_ascii=False, sort_keys=True),
         ])
+    for item in report.get("request_intelligence", []) or []:
+        writer.writerow([
+            "request_intelligence", item.get("url", ""),
+            ", ".join(str(code) for code in item.get("status_codes", []) or []),
+            item.get("method", ""), item.get("evidence", ""),
+            json.dumps({
+                "sources": item.get("sources", []),
+                "parameter_names": item.get("parameter_names", []),
+                "content_types": item.get("content_types", []),
+                "initiating_pages": item.get("initiating_pages", []),
+                "resource_types": item.get("resource_types", []),
+            }, ensure_ascii=False, sort_keys=True),
+        ])
+    source_coverage = report.get("coverage", {}) or {}
+    if source_coverage:
+        writer.writerow([
+            "source_coverage", source_coverage.get("target", ""), "",
+            source_coverage.get("assessment", ""),
+            "partial" if source_coverage.get("partial") else "",
+            json.dumps(source_coverage, ensure_ascii=False, sort_keys=True),
+        ])
+
     for item in report.get("network_observations", []) or []:
         writer.writerow([
             "network_request", item.get("url", ""), item.get("status") or "",
@@ -836,6 +889,31 @@ def _report_sections(report: dict):
             item.get("endpoint", ""), item.get("methods", []), _endpoint_method_evidence(item),
             item.get("sources", []), item.get("parameters", []), item.get("locations", []),
         ) for item in endpoints],
+    ))
+    source_coverage = report.get("coverage", {}) or {}
+    if source_coverage:
+        source_rows = [
+            ("Assessment", source_coverage.get("assessment", "not calculated")),
+            ("Pages", json.dumps(source_coverage.get("pages", {}), ensure_ascii=False, sort_keys=True)),
+            ("HTTP outcomes", json.dumps(source_coverage.get("http", {}), ensure_ascii=False, sort_keys=True)),
+            ("Discovery counts", json.dumps(source_coverage.get("discovery", {}), ensure_ascii=False, sort_keys=True)),
+            ("Endpoint sources", json.dumps((source_coverage.get("sources", {}) or {}).get("endpoints", {}), ensure_ascii=False, sort_keys=True)),
+            ("Asset sources", json.dumps((source_coverage.get("sources", {}) or {}).get("assets", {}), ensure_ascii=False, sort_keys=True)),
+            ("Request accounting", json.dumps(source_coverage.get("request_accounting", {}), ensure_ascii=False, sort_keys=True)),
+        ]
+        source_rows.extend(("Known gap", reason) for reason in source_coverage.get("partial_reasons", []) or [])
+        source_rows.extend(("Note", note) for note in source_coverage.get("notes", []) or [])
+        sections.append(("Source-aware Discovery Coverage", ["Metric", "Value"], source_rows))
+
+    sections.append((
+        "Request Intelligence (observed vs inferred)",
+        ["Endpoint", "Method", "Evidence", "Sources", "Parameter names", "Content types", "Statuses", "Initiating pages", "Resource types"],
+        [(
+            item.get("url", ""), item.get("method", ""), item.get("evidence", ""),
+            item.get("sources", []), item.get("parameter_names", []),
+            item.get("content_types", []), item.get("status_codes", []),
+            item.get("initiating_pages", []), item.get("resource_types", []),
+        ) for item in report.get("request_intelligence", []) or []],
     ))
     sections.append((
         "Parameter Inventory", ["Name", "Classification", "Methods", "Sources", "Occurrences", "Locations"],
