@@ -4,6 +4,7 @@ import asyncio
 from aiohttp import web
 
 from recon.js_collector import JSCollector
+from recon.rate_limit import RateLimitManager
 
 
 def test_downloaded_javascript_produces_same_host_route_candidates():
@@ -107,13 +108,15 @@ def test_js_collector_records_non_200_responses_without_query_values():
     asyncio.run(asyncio.wait_for(scenario(), timeout=10))
 
 
-def test_js_collector_records_429_and_stops_collection_safely():
+def test_js_collector_retries_429_and_stops_after_bounded_cooldowns():
     async def scenario():
         calls = []
+        attempts = {"count": 0}
 
         async def limited(request):
             calls.append(request.path)
-            return web.Response(status=429, headers={"Retry-After": "30"}, text="slow down")
+            attempts["count"] += 1
+            return web.Response(status=429, text="slow down")
 
         async def other_js(request):
             calls.append(request.path)
@@ -129,14 +132,17 @@ def test_js_collector_records_429_and_stops_collection_safely():
             await site.start()
             port = site._server.sockets[0].getsockname()[1]
             base = f"http://127.0.0.1:{port}/"
-            collector = JSCollector(base)
+            manager = RateLimitManager(fallback_initial_seconds=0)
+            collector = JSCollector(base, rate_limit_manager=manager)
             collector.js_urls.update({base + "limited.js", base + "other.js"})
             await collector.download_and_analyze(concurrency=1)
             report = collector.to_dict()
+            assert attempts["count"] == 4
             assert collector.rate_limit_stopped is True
+            assert manager.stopped is True
             assert any(item["status"] == 429 for item in report["js_fetch_errors"])
-            assert all(path in {"/limited.js", "/other.js"} for path in calls)
+            assert set(calls) <= {"/limited.js", "/other.js"}
         finally:
             await runner.cleanup()
 
-    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
