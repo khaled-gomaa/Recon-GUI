@@ -430,6 +430,7 @@ class CrawlWorker(QThread):
                 css_discovery_data["status"] = "skipped-after-rate-limit"
 
             wordlist_results = []
+            wordlist_unresolved_rate_limited_urls = []
             wordlist_rate_limited_stop = False
             if (
                 self.wordlist_path and not self._stopping()
@@ -460,6 +461,9 @@ class CrawlWorker(QThread):
                 )
                 analyzer.wordlist_hits = loop.run_until_complete(scanner.scan())
                 wordlist_results = scanner.responses
+                wordlist_unresolved_rate_limited_urls = sorted(
+                    scanner._safe_result_url(url) for url in scanner.unresolved_rate_limited_urls
+                )
                 wordlist_rate_limited_stop = scanner.rate_limit_stopped
                 if scanner.rate_limit_stopped:
                     self.log_message.emit("[Content Discovery] Stopped safely because rate limiting did not permit a compliant resume.")
@@ -645,7 +649,9 @@ class CrawlWorker(QThread):
                 key=lambda item: (item.get("url", ""), item.get("name", ""), item.get("source", "")),
             )
             report["wordlist_rate_limited_stop"] = wordlist_rate_limited_stop
+            report["wordlist_unresolved_rate_limited_urls"] = list(wordlist_unresolved_rate_limited_urls)
             report["crawler_rate_limited_stop"] = engine.rate_limit_stopped
+            report["crawler_unresolved_rate_limited_urls"] = sorted(engine.unresolved_rate_limited_urls)
             report["rate_limit_summary"] = rate_limit_manager.to_dict()
             report["rate_limit_stopped"] = bool(rate_limit_manager.stopped)
             report["rate_limit_attempts"] = list(engine.rate_limit_attempts)
@@ -836,8 +842,14 @@ class CrawlWorker(QThread):
                 page_limit_reached=engine.page_limit_reached,
                 depth_limit_reached=engine.depth_limit_reached,
                 stopped_by_user=report.get("stopped_by_user", False),
-                crawler_rate_limited=report.get("crawler_rate_limited_stop", False),
-                wordlist_rate_limited=report.get("wordlist_rate_limited_stop", False),
+                crawler_rate_limited=bool(
+                    report.get("crawler_rate_limited_stop", False)
+                    or report.get("crawler_unresolved_rate_limited_urls")
+                ),
+                wordlist_rate_limited=bool(
+                    report.get("wordlist_rate_limited_stop", False)
+                    or report.get("wordlist_unresolved_rate_limited_urls")
+                ),
                 javascript_rate_limited=report.get("js_rate_limited_stop", False),
                 css_rate_limited=css_rate_limited_stop,
                 rate_limit_stopped=bool(rate_limit_manager.stopped),
