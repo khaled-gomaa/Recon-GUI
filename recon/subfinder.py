@@ -21,14 +21,25 @@ def discover_subdomains(target: str, timeout: int = 90, should_stop=None, on_log
     parsed = urlparse((target or "").strip())
     if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
         raise ValueError("target must be a full HTTP(S) URL")
-    root = registrable_domain(parsed.hostname)
+    log = on_log or (lambda _message: None)
+    stop = should_stop or (lambda: False)
+    try:
+        root = registrable_domain(parsed.hostname)
+    except RuntimeError as exc:
+        # Keep the crawler usable when an older portable build lacks the PSL data,
+        # but do not guess a wider root for active/passive enumeration.
+        message = str(exc)
+        log(f"[Subfinder] Scope verification unavailable; skipping safely: {message}")
+        return {
+            "subfinder_subdomains": [],
+            "subfinder_status": "scope-unavailable",
+            "subfinder_error": message,
+        }
     if not root:
         raise ValueError(
             "Subfinder requires a registrable DNS domain; IP addresses and public suffixes "
             "cannot define the root scope."
         )
-    log = on_log or (lambda _message: None)
-    stop = should_stop or (lambda: False)
     executable = shutil.which("subfinder")
     if not executable:
         log("[Subfinder] Not installed/on PATH; passive Subfinder phase skipped.")
