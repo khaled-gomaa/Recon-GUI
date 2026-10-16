@@ -368,3 +368,40 @@ def test_same_length_distinct_200_page_is_not_suppressed_as_wildcard(tmp_path):
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=8))
+
+
+def test_wildcard_similarity_samples_body_tail_not_only_shared_header(tmp_path):
+    async def scenario():
+        shared = "shared navigation section " * 600
+        baseline_body = shared + ("default error body " * 180)
+        actual_body = shared + ("real account records " * 180)
+
+        async def handler(request):
+            if request.path == "/this-path-should-not-exist-recon-baseline-74c31":
+                return web.Response(status=200, text=baseline_body, content_type="text/plain")
+            if request.path == "/records":
+                return web.Response(status=200, text=actual_body, content_type="text/plain")
+            return web.Response(status=404, text="missing")
+
+        app = web.Application()
+        app.router.add_get("/{tail:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            wordlist = tmp_path / "paths.txt"
+            wordlist.write_text("records", encoding="utf-8")
+            scanner = WordlistScanner(
+                f"http://127.0.0.1:{port}/", str(wordlist),
+                extensions=[""], concurrency=1, delay_ms=0,
+            )
+            hits = await asyncio.wait_for(scanner.scan(), timeout=5)
+            assert scanner.responses[0]["wildcard_match"] is False
+            assert scanner.responses[0]["potential_hit"] is True
+            assert len(hits) == 1
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=8))
