@@ -266,9 +266,7 @@ class CSSCollector:
                     break
                 try:
                     async with session.get(url, allow_redirects=False) as response:
-                        if response.status == 429 or (
-                            response.status == 503 and response.headers.get("Retry-After")
-                        ):
+                        if response.status in {429, 503}:
                             decision = self.rate_controller.on_rate_limit(
                                 response.headers.get("Retry-After"), status=int(response.status)
                             )
