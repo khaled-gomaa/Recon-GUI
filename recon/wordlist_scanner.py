@@ -341,8 +341,8 @@ class WordlistScanner:
         parsed = urlparse(str(url or ""))
         candidates = {
             str(url or ""),
-            parsed.path or "",
-            unquote(parsed.path or ""),
+            parsed.path if parsed.path not in {"", "/"} else "",
+            unquote(parsed.path) if parsed.path not in {"", "/"} else "",
         }
         for token in sorted((item for item in candidates if item), key=len, reverse=True):
             value = value.replace(token, " {requested-path} ")
