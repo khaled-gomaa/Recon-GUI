@@ -505,12 +505,12 @@ def test_engine_constructor_does_not_require_a_running_event_loop():
 
 def test_shared_cookie_jar_factory_runs_inside_event_loop():
     from yarl import URL
-    from gui.worker import _create_session_cookie_jar
+    from gui.session import create_session_cookie_jar
 
     async def scenario():
         logs = []
         target = "http://127.0.0.1:8080/"
-        jar = await _create_session_cookie_jar(
+        jar = await create_session_cookie_jar(
             target, "sessionid=secret-value; theme=dark", logs.append
         )
         cookies = jar.filter_cookies(URL(target))
