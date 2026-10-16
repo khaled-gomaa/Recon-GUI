@@ -3,6 +3,7 @@ import asyncio
 from aiohttp import web
 
 from crawler.engine import CrawlEngine, _normalize_http_url
+from recon.rate_limit import RateLimitManager
 
 
 def test_crawler_visits_multiple_depths_and_blocks_off_host_redirects():
@@ -301,9 +302,10 @@ def test_crawler_reads_robots_and_sitemap_content_to_discover_pages():
 
 
 
-def test_crawler_honors_retry_after_and_resumes_queued_pages():
+def test_crawler_honors_retry_after_and_retries_the_limited_page():
     async def scenario():
         requested = []
+        limited_attempts = {"count": 0}
 
         async def root(request):
             requested.append(request.path)
@@ -314,10 +316,13 @@ def test_crawler_honors_retry_after_and_resumes_queued_pages():
 
         async def limited(request):
             requested.append(request.path)
-            return web.Response(
-                status=429, headers={"Retry-After": "0"}, text="slow down",
-                content_type="text/plain",
-            )
+            limited_attempts["count"] += 1
+            if limited_attempts["count"] == 1:
+                return web.Response(
+                    status=429, headers={"Retry-After": "0"}, text="slow down",
+                    content_type="text/plain",
+                )
+            return web.Response(text="<title>Recovered page</title>ok", content_type="text/html")
 
         async def okay(request):
             requested.append(request.path)
@@ -334,59 +339,71 @@ def test_crawler_honors_retry_after_and_resumes_queued_pages():
             site = web.TCPSite(runner, "127.0.0.1", 0)
             await site.start()
             port = site._server.sockets[0].getsockname()[1]
+            manager = RateLimitManager(fallback_initial_seconds=0)
             engine = CrawlEngine(
                 f"http://127.0.0.1:{port}/", max_depth=1,
                 max_pages=10, concurrency=1, on_log=logs.append,
+                rate_limit_manager=manager,
             )
             results = await engine.crawl()
-            assert "/a-rate-limit" in requested
+            assert requested.count("/a-rate-limit") == 2
             assert "/z-okay" in requested
-            assert any(result.status == 429 for result in results)
+            assert any(result.url.endswith("/a-rate-limit") and result.status == 200 for result in results)
+            assert not any(result.status == 429 for result in results)
             assert engine.rate_limit_stopped is False
-            assert any("resuming queued crawl requests" in line for line in logs)
+            assert len(engine.rate_limit_attempts) == 1
+            assert manager.pause_count == 1
+            assert any("cooldown complete" in line for line in logs)
         finally:
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
 
 
-def test_crawler_stops_queue_when_429_has_no_retry_after():
+def test_crawler_backoffs_without_retry_after_and_resumes():
     async def scenario():
         requested = []
+        limited_attempts = {"count": 0}
 
         async def root(request):
             requested.append(request.path)
             return web.Response(
-                text='<a href="/a-rate-limit">limited</a><a href="/z-should-not-run">later</a>',
+                text='<a href="/a-rate-limit">limited</a><a href="/z-should-run">later</a>',
                 content_type="text/html",
             )
 
         async def limited(request):
             requested.append(request.path)
-            return web.Response(status=429, text="slow down", content_type="text/plain")
+            limited_attempts["count"] += 1
+            if limited_attempts["count"] == 1:
+                return web.Response(status=429, text="slow down", content_type="text/plain")
+            return web.Response(text="<title>Recovered</title>ok", content_type="text/html")
 
         async def later(request):
             requested.append(request.path)
-            return web.Response(text="not expected", content_type="text/html")
+            return web.Response(text="later page", content_type="text/html")
 
         app = web.Application()
         app.router.add_get("/", root)
         app.router.add_get("/a-rate-limit", limited)
-        app.router.add_get("/z-should-not-run", later)
+        app.router.add_get("/z-should-run", later)
         runner = web.AppRunner(app)
         await runner.setup()
         try:
             site = web.TCPSite(runner, "127.0.0.1", 0)
             await site.start()
             port = site._server.sockets[0].getsockname()[1]
+            manager = RateLimitManager(fallback_initial_seconds=0)
             engine = CrawlEngine(
                 f"http://127.0.0.1:{port}/", max_depth=1,
-                max_pages=10, concurrency=1,
+                max_pages=10, concurrency=1, rate_limit_manager=manager,
             )
             await engine.crawl()
-            assert engine.rate_limit_stopped is True
-            assert "/a-rate-limit" in requested
-            assert "/z-should-not-run" not in requested
+            assert requested.count("/a-rate-limit") == 2
+            assert "/z-should-run" in requested
+            assert engine.rate_limit_stopped is False
+            assert len(engine.rate_limit_attempts) == 1
+            assert manager.events[0]["reason"] == "fallback backoff (no valid Retry-After)"
         finally:
             await runner.cleanup()
 
