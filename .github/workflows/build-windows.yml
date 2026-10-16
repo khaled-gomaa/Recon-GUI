@@ -61,9 +61,9 @@ jobs:
           if (-not (Get-ChildItem -Path "dist/ReconGUI" -Recurse -Filter "common.txt")) {
             throw "Bundled content-discovery wordlist was not included."
           }
-          & "dist/ReconGUI/ReconGUI.exe" --self-test-domain-scope
-          if ($LASTEXITCODE -ne 0) {
-            throw "Bundled Public Suffix List test failed with exit code $LASTEXITCODE."
+          $scopeTest = Start-Process -FilePath "dist/ReconGUI/ReconGUI.exe" -ArgumentList "--self-test-domain-scope" -PassThru -Wait
+          if ($scopeTest.ExitCode -ne 0) {
+            throw "Bundled Public Suffix List test failed with exit code $($scopeTest.ExitCode)."
           }
 
       - name: Upload portable Windows app
