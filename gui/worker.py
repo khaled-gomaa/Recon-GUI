@@ -18,6 +18,23 @@ from recon.favicon_hasher import get_favicon_hash
 from recon.similarity_detector import SimilarityDetector
 
 
+async def _create_session_cookie_jar(target_url, raw_cookie_header="", on_log=None):
+    """Create the shared aiohttp cookie jar while an asyncio loop is actually running."""
+    log = on_log or (lambda _message: None)
+    jar = aiohttp.CookieJar(unsafe=True)
+    if raw_cookie_header:
+        parsed_cookies = SimpleCookie()
+        try:
+            parsed_cookies.load(raw_cookie_header)
+            if parsed_cookies:
+                jar.update_cookies(parsed_cookies, response_url=URL(target_url))
+                log("[Session] Imported supplied cookie names into the in-memory session jar.")
+        except Exception as exc:
+            log(f"[Session] Supplied Cookie header could not be parsed: {type(exc).__name__}.")
+    return jar
+
+
+
 class CrawlWorker(QThread):
     log_message = Signal(str)
     page_crawled = Signal(object)
@@ -85,25 +102,18 @@ class CrawlWorker(QThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            # One cookie jar is reused between the crawl, JS download, and Content Discovery
-            # sessions. The user-supplied Cookie header is imported into the jar once so
-            # cookie Domain/Path/Secure rules can be handled by the HTTP client.
-            session_cookie_jar = aiohttp.CookieJar(unsafe=True)
+            # One cookie jar is reused between crawl, JS and Content Discovery. Build it
+            # from inside the running loop: modern aiohttp versions may raise
+            # "RuntimeError: no running event loop" if CookieJar is initialized here.
             phase_headers = dict(self.request_headers)
             raw_cookie_header = ""
             for header_name in list(phase_headers):
                 if header_name.lower() == "cookie":
                     raw_cookie_header = phase_headers.pop(header_name)
                     break
-            if raw_cookie_header:
-                parsed_cookies = SimpleCookie()
-                try:
-                    parsed_cookies.load(raw_cookie_header)
-                    if parsed_cookies:
-                        session_cookie_jar.update_cookies(parsed_cookies, response_url=URL(self.url))
-                        self.log_message.emit("[Session] Imported supplied cookie names into the in-memory session jar.")
-                except Exception as exc:
-                    self.log_message.emit(f"[Session] Supplied Cookie header could not be parsed: {type(exc).__name__}.")
+            session_cookie_jar = loop.run_until_complete(
+                _create_session_cookie_jar(self.url, raw_cookie_header, self.log_message.emit)
+            )
             analyzer = ReconAnalyzer(
                 self.url, request_headers=phase_headers, on_log=self.log_message.emit,
                 cookie_jar=session_cookie_jar,
