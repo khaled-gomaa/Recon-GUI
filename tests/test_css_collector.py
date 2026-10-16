@@ -2,8 +2,8 @@ import asyncio
 
 from aiohttp import web
 
-from recon.css_collector import CSSCollector
-from recon.rate_limit import RateLimitManager, MAX_CSS_BYTES
+from recon.css_collector import CSSCollector, MAX_CSS_BYTES
+from recon.rate_limit import RateLimitManager
 
 
 def test_css_collector_follows_same_origin_imports_and_redacts_query_values():
