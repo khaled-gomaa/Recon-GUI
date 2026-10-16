@@ -357,7 +357,7 @@ class CrawlEngine:
         # Keep certificate verification enabled. Never disable TLS verification for recon.
         connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=True)
         headers = {
-            "User-Agent": "Recon-GUI/3.0 (+authorized security testing)",
+            "User-Agent": "Recon-GUI/3.2 (+authorized security testing)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
         # Create loop-bound primitives only after crawl() is running in its event loop.
