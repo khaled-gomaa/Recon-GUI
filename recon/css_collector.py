@@ -12,6 +12,7 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
 import aiohttp
+from recon.rate_limit import RateLimitManager
 
 MAX_CSS_BYTES = 2 * 1024 * 1024
 MAX_CSS_FILES = 0  # 0 means process every discovered same-origin stylesheet.
@@ -95,13 +96,14 @@ def _retry_after_seconds(value: str | None):
 class CSSCollector:
     """Sequential, same-origin CSS collector with recursive @import discovery."""
 
-    def __init__(self, target_url: str, *, cookie_jar=None, request_headers=None, on_log=None):
+    def __init__(self, target_url: str, *, cookie_jar=None, request_headers=None, on_log=None, rate_limit_manager=None):
         self.target_url = target_url
         self.target_origin = _origin(target_url)
         if not self.target_origin:
             raise ValueError("target_url must be a valid HTTP(S) URL")
         self.cookie_jar = cookie_jar
         self.request_headers = dict(request_headers or {})
+        self.rate_limit_manager = rate_limit_manager or RateLimitManager()
         self.on_log = on_log or (lambda _message: None)
         self.css_urls: set[str] = set()
         self.attempted_urls: set[str] = set()
@@ -259,19 +261,23 @@ class CSSCollector:
                     await asyncio.sleep(delay_ms / 1000)
                 if stop():
                     break
+                if not await self.rate_limit_manager.wait_until_ready(stop):
+                    self.rate_limit_stopped = self.rate_limit_manager.stopped and not stop()
+                    break
                 try:
                     async with session.get(url, allow_redirects=False) as response:
                         if response.status == 429:
-                            wait = _retry_after_seconds(response.headers.get("Retry-After"))
-                            if wait is None or wait > MAX_RETRY_AFTER_SECONDS or self.retry_after_pauses >= MAX_RATE_LIMIT_PAUSES:
-                                self.rate_limit_stopped = True
+                            resumed = await self.rate_limit_manager.handle_429(
+                                dict(response.headers), url, on_log=self._log,
+                                should_stop=stop, phase="CSS discovery",
+                            )
+                            self.retry_after_pauses = self.rate_limit_manager.pause_count
+                            if not resumed:
+                                self.rate_limit_stopped = self.rate_limit_manager.stopped and not stop()
                                 self.errors.append({"url": _safe_url(url), "error": "rate-limited-stop"})
-                                self._log(f"[CSS] {_safe_url(url)} returned HTTP 429; stopping CSS discovery rather than bypassing the limit.")
+                                self._log(f"[CSS] {_safe_url(url)} hit HTTP 429; CSS discovery stopped safely.")
                                 break
-                            self.retry_after_pauses += 1
-                            self.attempted_urls.discard(url)  # retry after honoring the server's requested wait
-                            self._log(f"[CSS] HTTP 429; waiting {wait:.1f}s per Retry-After ({self.retry_after_pauses}/{MAX_RATE_LIMIT_PAUSES}): {_safe_url(url)}")
-                            await asyncio.sleep(wait)
+                            self.attempted_urls.discard(url)  # retry after the shared cooldown
                             continue
                         if response.status != 200:
                             self.errors.append({"url": _safe_url(url), "status": int(response.status), "error": "http-error"})
