@@ -176,13 +176,14 @@ class JSCollector:
                 # Do not follow redirects: their destinations may be outside scope.
                 if resp.status == 429:
                     rate_limit_headers = dict(resp.headers)
-                elif resp.status != 200:
-                    self._record_fetch_error(url, resp.status, f"HTTP {resp.status}; response not analyzed")
-                    self.on_log(
-                        f"[JS] Could not analyze {self._safe_url(url)}: HTTP {resp.status}."
-                    )
-                    return
                 else:
+                    self.rate_limit_manager.note_success()
+                    if resp.status != 200:
+                        self._record_fetch_error(url, resp.status, f"HTTP {resp.status}; response not analyzed")
+                        self.on_log(
+                            f"[JS] Could not analyze {self._safe_url(url)}: HTTP {resp.status}."
+                        )
+                        return
                     data = await resp.content.read(MAX_JS_BYTES + 1)
                     if len(data) > MAX_JS_BYTES:
                         self.truncated_js_files.add(url)
