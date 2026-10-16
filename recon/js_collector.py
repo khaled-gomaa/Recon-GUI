@@ -5,6 +5,7 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
+from recon.rate_limit import RateLimitManager
 
 from recon.js_endpoint_extractor import JSEndpointExtractor
 from crawler.fetcher import build_headers
@@ -18,13 +19,14 @@ MAX_JS_FILES = 0
 
 
 class JSCollector:
-    def __init__(self, base_url: str, on_log=None, request_headers=None, cookie_jar=None):
+    def __init__(self, base_url: str, on_log=None, request_headers=None, cookie_jar=None, rate_limit_manager=None):
         self.base_url = base_url
         self.base_host = (urlparse(base_url).hostname or "").lower()
         self.base_origin = self._origin(base_url)
         self.on_log = on_log or (lambda msg: None)
         self.request_headers = dict(request_headers or {})
         self.cookie_jar = cookie_jar
+        self.rate_limit_manager = rate_limit_manager or RateLimitManager()
         self.rate_limit_stopped = False
         # Each failed referenced script is tracked as metadata only; query values and
         # raw exception strings are never recorded.
@@ -151,9 +153,15 @@ class JSCollector:
         if MAX_JS_FILES and len(self.js_urls) > MAX_JS_FILES:
             self.on_log(f"[JS] File limit reached ({MAX_JS_FILES}); unprocessed files remain.")
 
-    async def _fetch_js(self, session, url, timeout, stop):
+    async def _fetch_js(self, session, url, timeout, stop, retry_count=0):
         if stop() or not self._in_scope(url):
             return
+        if not await self.rate_limit_manager.wait_until_ready(stop):
+            self.rate_limit_stopped = self.rate_limit_manager.stopped and not stop()
+            return
+
+        rate_limit_headers = None
+        content = ""
         try:
             request_headers = build_headers()
             if self._origin(url) == self.base_origin:
@@ -167,28 +175,39 @@ class JSCollector:
             ) as resp:
                 # Do not follow redirects: their destinations may be outside scope.
                 if resp.status == 429:
-                    self.rate_limit_stopped = True
-                    self._record_fetch_error(url, resp.status, "HTTP 429 rate limited")
-                    self.on_log(
-                        f"[429] JavaScript download was rate-limited at {self._safe_url(url)}; "
-                        "stopping JS collection safely."
-                    )
-                    return
-                if resp.status != 200:
+                    rate_limit_headers = dict(resp.headers)
+                elif resp.status != 200:
                     self._record_fetch_error(url, resp.status, f"HTTP {resp.status}; response not analyzed")
                     self.on_log(
                         f"[JS] Could not analyze {self._safe_url(url)}: HTTP {resp.status}."
                     )
                     return
-                data = await resp.content.read(MAX_JS_BYTES + 1)
-                if len(data) > MAX_JS_BYTES:
-                    self.truncated_js_files.add(url)
-                    data = data[:MAX_JS_BYTES]
-                    self.on_log(f"[JS] Truncated oversized file: {url}")
-                content = data.decode(resp.charset or "utf-8", errors="replace")
+                else:
+                    data = await resp.content.read(MAX_JS_BYTES + 1)
+                    if len(data) > MAX_JS_BYTES:
+                        self.truncated_js_files.add(url)
+                        data = data[:MAX_JS_BYTES]
+                        self.on_log(f"[JS] Truncated oversized file: {self._safe_url(url)}")
+                    content = data.decode(resp.charset or "utf-8", errors="replace")
         except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError) as exc:
             self._record_fetch_error(url, 0, type(exc).__name__)
             self.on_log(f"[JS] Request failed for {self._safe_url(url)}: {type(exc).__name__}")
+            return
+
+        if rate_limit_headers is not None:
+            resumed = await self.rate_limit_manager.handle_429(
+                rate_limit_headers, url, on_log=self.on_log,
+                should_stop=stop, phase="JavaScript",
+            )
+            if resumed and retry_count < self.rate_limit_manager.max_pauses and not stop():
+                return await self._fetch_js(session, url, timeout, stop, retry_count + 1)
+            self.rate_limit_stopped = self.rate_limit_manager.stopped and not stop()
+            message = "HTTP 429; retry budget exhausted" if resumed else "HTTP 429 rate limit stopped the phase"
+            self._record_fetch_error(url, 429, message)
+            self.on_log(
+                f"[JS] Could not fetch {self._safe_url(url)} after rate-limit handling; "
+                f"{'remaining JS discovery will continue' if not self.rate_limit_stopped else 'later active phases will be skipped'}."
+            )
             return
 
         self.js_contents[url] = content
@@ -208,7 +227,7 @@ class JSCollector:
             if candidate.startswith(("http://", "https://")) and self._in_scope(candidate):
                 self.source_maps.add(candidate)
 
-        self.on_log(f"[JS] Analyzed {url} ({len(content)} characters)")
+        self.on_log(f"[JS] Analyzed {self._safe_url(url)} ({len(content)} characters)")
 
     def to_dict(self) -> dict:
         return {
