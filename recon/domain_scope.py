@@ -46,7 +46,18 @@ def registrable_domain(hostname: str) -> str:
     except UnicodeError:
         return ""
     extractor = _extractor()
-    extracted = extractor(host)
+    try:
+        extracted = extractor(host)
+    except OSError as exc:
+        # Frozen Windows builds must carry tldextract's data snapshot. If an older or
+        # damaged portable build is missing it, disable optional text-subdomain
+        # extraction gracefully instead of terminating the entire crawl. Callers
+        # that actively validate a registrable root receive this explicit error and
+        # must fail closed rather than guessing a broader domain scope.
+        raise RuntimeError(
+            "The bundled Public Suffix List snapshot is missing or unreadable. "
+            "Download the latest Windows build; subdomain scope verification was not run."
+        ) from exc
     if extracted.domain and extracted.suffix:
         return f"{extracted.domain}.{extracted.suffix}".lower()
 
