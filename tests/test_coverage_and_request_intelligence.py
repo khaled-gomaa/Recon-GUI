@@ -6,8 +6,8 @@ from recon.request_intelligence import merge_observations, normalize_observation
 
 def test_coverage_tracker_deduplicates_sanitized_request_candidates_and_tracks_limits():
     tracker = CoverageTracker()
-    assert tracker.add_candidate("https://example.test/a?token=private", "html")
-    assert not tracker.add_candidate("https://example.test/a?token=other", "js")
+    assert tracker.add_candidate("GET https://example.test/a?token=private", "html")
+    assert not tracker.add_candidate("GET https://example.test/a?token=other", "js")
     tracker.add_result(
         url="https://example.test/a?token=private", status=200,
         method="GET", source="http-crawl",
