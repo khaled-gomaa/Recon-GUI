@@ -289,6 +289,11 @@ def render_text_report(report: dict) -> str:
 
     _section(lines, "Cookie Map (Names and Attributes Only)")
     cookie_map = report.get("cookie_map", [])
+    lines.append(
+        f"Identities: {report.get('cookie_identity_count', len(cookie_map))}; "
+        f"observations: {report.get('cookie_observation_count', len(cookie_map))}; "
+        f"identity/URL associations: {report.get('cookie_url_count', 0)}"
+    )
     if not cookie_map:
         lines.append("(no cookie metadata captured)")
     for item in cookie_map:
@@ -302,8 +307,12 @@ def render_text_report(report: dict) -> str:
         lines.append(
             f"{item.get('name', '')} | domain={item.get('domain', '')} | "
             f"path={item.get('path', '')} | attributes={', '.join(attrs)} | "
-            f"source={item.get('source', '')} | url={item.get('url', '')}"
+            f"sources={', '.join(item.get('sources', []) or [item.get('source', '')])} | "
+            f"observations={item.get('observation_count', 1)} | "
+            f"URLs={item.get('url_count', 1)} | sample={item.get('url', '')}"
         )
+        for sample_url in (item.get('sample_urls', []) or [])[1:5]:
+            lines.append(f"    also observed at: {sample_url}")
 
     _section(lines, "Endpoint Inventory")
     endpoint_inventory = report.get("endpoint_inventory", [])
@@ -760,6 +769,10 @@ def render_csv_report(report: dict) -> str:
                 "httponly": item.get("httponly", False),
                 "samesite": item.get("samesite", ""),
                 "source": item.get("source", ""),
+                "sources": item.get("sources", []),
+                "observation_count": item.get("observation_count", 1),
+                "url_count": item.get("url_count", 1),
+                "sample_urls": item.get("sample_urls", []),
             }, ensure_ascii=False, sort_keys=True),
         ])
     for item in report.get("parameters", []) or []:
