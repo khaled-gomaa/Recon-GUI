@@ -2073,9 +2073,22 @@ class MainWindow(QMainWindow):
         lines.append("=== COVERAGE / INCOMPLETE CONTENT ===")
         coverage = report.get("coverage_summary", {}) or {}
         if coverage:
+            page_cap_text = (
+                "unlimited" if coverage.get("page_cap_is_unlimited", coverage.get("page_cap", 0) == 0)
+                else str(coverage.get("page_cap", 0))
+            )
+            depth_cap_text = (
+                "unlimited" if coverage.get("depth_is_unlimited", coverage.get("max_depth", 0) == 0)
+                else str(coverage.get("max_depth", 0))
+            )
             lines.append(
-                f"  Pages fetched: {coverage.get('pages_crawled', 0)} / configured cap {coverage.get('page_cap', 0)}; "
-                f"maximum depth: {coverage.get('max_depth', 0)}"
+                f"  Pages fetched: {coverage.get('pages_crawled', 0)}; "
+                f"page cap: {page_cap_text}; depth cap: {depth_cap_text}"
+            )
+            lines.append(
+                f"  Rate-limit pauses: {coverage.get('rate_limit_pauses', 0)}; "
+                f"current adaptive inter-request delay: "
+                f"{coverage.get('adaptive_request_delay_seconds', 0):.2f}s"
             )
             lines.append(
                 f"  JavaScript files: {coverage.get('javascript_files_attempted', 0)} attempted / "
