@@ -336,7 +336,7 @@ def test_wildcard_baseline_uses_normalized_body_not_size_alone(tmp_path):
 def test_same_length_distinct_200_page_is_not_suppressed_as_wildcard(tmp_path):
     async def scenario():
         baseline_text = "Generic missing response template"
-        actual_text = "Real customer dashboard contents"
+        actual_text = "Real customer dashboard contents!"
         assert len(baseline_text) == len(actual_text)
 
         async def handler(request):
