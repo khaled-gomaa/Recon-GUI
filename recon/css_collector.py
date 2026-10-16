@@ -235,7 +235,7 @@ class CSSCollector:
             "connector": connector,
             "timeout": timeout,
             "headers": {
-                "User-Agent": "Recon-GUI/3.1 (stylesheet discovery; authorized use)",
+                "User-Agent": "Recon-GUI/3.2 (+authorized reconnaissance)",
                 "Accept": "text/css,*/*;q=0.1",
                 **safe_headers,
             },
@@ -259,8 +259,9 @@ class CSSCollector:
                 self.attempted_urls.add(url)
                 if not self._in_origin(url):
                     continue
-                if delay_ms:
-                    await asyncio.sleep(delay_ms / 1000)
+                effective_delay = max(delay_ms / 1000.0, self.rate_controller.current_delay)
+                if effective_delay > 0:
+                    await asyncio.sleep(effective_delay)
                 if stop():
                     break
                 try:
