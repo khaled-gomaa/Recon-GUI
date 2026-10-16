@@ -60,29 +60,34 @@ class AdaptiveRateController:
             return None
 
     def on_success(self) -> None:
-        """Recover request pacing gradually after a series of non-rate-limited responses."""
+        """Reset the consecutive-limit counter and gradually restore normal pacing."""
+        self.consecutive_limits = 0
         self._success_streak += 1
         if self._success_streak < 5:
             return
         self._success_streak = 0
-        self.consecutive_limits = max(0, self.consecutive_limits - 1)
         self.current_delay = max(self.base_delay, self.current_delay * 0.7)
 
     def on_rate_limit(self, retry_after=None, *, status: int = 429) -> RateLimitDecision:
-        """Choose a wait without capping a server-specified Retry-After."""
+        """Choose a wait without capping a server-specified Retry-After.
+
+        When Retry-After exists, keep honoring it even if the server repeats 429s.
+        When no usable Retry-After exists, exponential backoff is bounded and the
+        affected phase eventually stops instead of retrying indefinitely.
+        """
         self._success_streak = 0
         self.consecutive_limits += 1
-        if self.consecutive_limits > self.max_consecutive_limits:
+        server_wait = self.parse_retry_after(retry_after)
+        if server_wait is None and self.consecutive_limits > self.max_consecutive_limits:
             return RateLimitDecision(
                 should_stop=True,
-                reason=f"HTTP {status} rate limit repeated too many times",
+                reason=f"HTTP {status} rate limit repeated without usable Retry-After",
             )
 
         fallback = min(
             self.max_delay,
             max(1.0, self.base_delay) * math.pow(2, self.consecutive_limits - 1),
         )
-        server_wait = self.parse_retry_after(retry_after)
         # Retry-After is a minimum wait, not a cap. A zero/short value combined with
         # repeated 429s still receives backoff to avoid a rapid request loop.
         wait = fallback if server_wait is None else max(server_wait, fallback)
