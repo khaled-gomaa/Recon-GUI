@@ -233,9 +233,7 @@ class JSCollector:
                 url, headers=request_headers, timeout=timeout, allow_redirects=False
             ) as resp:
                 # Do not follow redirects: their destinations may be outside scope.
-                if resp.status == 429 or (
-                    resp.status == 503 and resp.headers.get("Retry-After")
-                ):
+                if resp.status in {429, 503}:
                     await self._handle_rate_limit(url, resp, stop)
                     return
                 self.rate_controller.on_success()
