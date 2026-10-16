@@ -44,3 +44,30 @@ def test_txt_report_includes_rate_limit_outcomes():
     assert "Content Discovery rate limit: not triggered / resumed after Retry-After" in text
 
 
+
+
+def test_txt_report_explains_429_cooldowns_and_unresolved_paths():
+    text = render_text_report({
+        "target": "https://example.com/",
+        "rate_limit_stopped": False,
+        "rate_limit_summary": {
+            "stopped": False,
+            "cooldowns_applied": 1,
+            "consecutive_cooldowns": 0,
+            "max_cooldowns": 3,
+            "events": [{
+                "phase": "Crawler", "url": "https://example.com/admin",
+                "delay_seconds": 15, "reason": "fallback backoff (no valid Retry-After)",
+            }],
+        },
+        "rate_limit_attempts": [{
+            "url": "https://example.com/admin", "depth": 1, "attempt": 1,
+        }],
+        "crawler_unresolved_rate_limited_urls": ["https://example.com/admin"],
+        "wordlist_unresolved_rate_limited_urls": ["https://example.com/backup"],
+    })
+    assert "Status: Partial (rate limited)" in text
+    assert "HTTP 429 RECOVERY" in text
+    assert "Cooldowns applied: 1" in text
+    assert "https://example.com/admin" in text
+    assert "https://example.com/backup" in text
