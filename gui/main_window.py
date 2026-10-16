@@ -2115,6 +2115,31 @@ class MainWindow(QMainWindow):
         lines.append(f"  Authentication configured: {report.get('auth_configured', False)}")
         lines.append(f"  Authentication fields: {', '.join(report.get('auth_types', [])) or '(none)'}")
 
+        rate_summary = report.get("rate_limit_summary", {}) or {}
+        if rate_summary or report.get("rate_limit_attempts"):
+            lines.append("")
+            lines.append("=== HTTP 429 RECOVERY ===")
+            lines.append(f"  Shared policy stopped active requests: {bool(rate_summary.get('stopped') or report.get('rate_limit_stopped'))}")
+            lines.append(f"  Cooldowns applied: {rate_summary.get('cooldowns_applied', 0)}")
+            lines.append(f"  Consecutive cooldowns: {rate_summary.get('consecutive_cooldowns', 0)}")
+            for item in (report.get("rate_limit_attempts", []) or [])[:100]:
+                lines.append(
+                    f"  [429] {item.get('url', '')} | depth={item.get('depth', '')} "
+                    f"| attempt={item.get('attempt', '')}"
+                )
+            if len(report.get("rate_limit_attempts", []) or []) > 100:
+                lines.append("  Retry-attempt details truncated to the first 100 entries.")
+            for label, key in (
+                ("Crawler URLs still unverified", "crawler_unresolved_rate_limited_urls"),
+                ("Content-discovery paths still unverified", "wordlist_unresolved_rate_limited_urls"),
+            ):
+                values = report.get(key, []) or []
+                if values:
+                    lines.append(f"  {label}: {len(values)}")
+                    lines.extend(f"    - {value}" for value in values[:100])
+                    if len(values) > 100:
+                        lines.append("    - ... additional paths omitted from this view")
+
         self.recon_view.setPlainText("\n".join(lines))
 
     def _render_coverage(self, report: dict):
