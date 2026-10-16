@@ -226,7 +226,7 @@ class CrawlEngine:
                 self._resume_event.set()
                 return False
             self._resume_event.set()
-            self._log("[Rate limit] Cool-down complete; resuming queued requests at reduced pacing.")
+            self._log("[Rate limit] Cool-down complete; resuming queued crawl requests at reduced pacing.")
             return True
 
     @staticmethod
