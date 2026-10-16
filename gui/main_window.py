@@ -1764,8 +1764,10 @@ class MainWindow(QMainWindow):
             classification = "Request failed: " + str(result.get("error") or "no HTTP response")
         elif result.get("baseline_match", result.get("wildcard_match", False)):
             classification = "Likely wildcard response (suppressed)"
-        elif result.get("wildcard_suspect"):
+        elif result.get("wildcard_suspect") and result.get("potential_hit"):
             classification = "Potential hit — fallback-like body, status differs"
+        elif result.get("wildcard_suspect"):
+            classification = "Fallback-like body; status differs (review)"
         elif result.get("potential_hit"):
             classification = "Potential hit"
         else:
