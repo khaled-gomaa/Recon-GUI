@@ -5,6 +5,7 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
+from recon.rate_limit_policy import AdaptiveRateController
 
 from recon.js_endpoint_extractor import JSEndpointExtractor
 from crawler.fetcher import build_headers
@@ -26,6 +27,14 @@ class JSCollector:
         self.request_headers = dict(request_headers or {})
         self.cookie_jar = cookie_jar
         self.rate_limit_stopped = False
+        self.rate_controller = AdaptiveRateController(
+            base_delay=0.0, max_delay=60.0, max_consecutive_limits=5, jitter=0.0
+        )
+        self._resume_event = None
+        self._rate_limit_lock = None
+        self._request_gate_lock = None
+        self._next_request_time = 0.0
+        self._retry_urls: set[str] = set()
         # Each failed referenced script is tracked as metadata only; query values and
         # raw exception strings are never recorded.
         self.fetch_errors: list[dict] = []
@@ -126,6 +135,11 @@ class JSCollector:
             concurrency = 1
         timeout = aiohttp.ClientTimeout(total=15, connect=8)
         connector = aiohttp.TCPConnector(limit=concurrency, ssl=True)
+        self._resume_event = asyncio.Event()
+        self._resume_event.set()
+        self._rate_limit_lock = asyncio.Lock()
+        self._request_gate_lock = asyncio.Lock()
+        self._next_request_time = 0.0
         session_options = {"connector": connector}
         if self.cookie_jar is not None:
             session_options["cookie_jar"] = self.cookie_jar
@@ -143,19 +157,72 @@ class JSCollector:
                     *(self._fetch_js(session, url, timeout, stop) for url in batch),
                     return_exceptions=True,
                 )
-                # Mark attempts once to avoid repeating failing endpoints on a second pass.
-                self._analyzed_js_urls.update(batch)
+                # A rate-limited URL remains eligible for a retry after the shared cooldown.
+                retry_urls = self._retry_urls.intersection(batch)
+                self._analyzed_js_urls.update(set(batch) - retry_urls)
+                self._retry_urls.difference_update(batch)
                 if delay_seconds > 0 and (self.js_urls - self._analyzed_js_urls) and not stop():
                     await asyncio.sleep(delay_seconds)
 
         if MAX_JS_FILES and len(self.js_urls) > MAX_JS_FILES:
             self.on_log(f"[JS] File limit reached ({MAX_JS_FILES}); unprocessed files remain.")
 
+    async def _request_gate(self, stop):
+        """Apply shared adaptive pacing to all concurrent JS fetches."""
+        await self._resume_event.wait()
+        if stop() or self.rate_limit_stopped:
+            return False
+        async with self._request_gate_lock:
+            loop = asyncio.get_running_loop()
+            while not stop() and not self.rate_limit_stopped:
+                await self._resume_event.wait()
+                wait = self._next_request_time - loop.time()
+                if wait <= 0:
+                    self._next_request_time = loop.time() + self.rate_controller.current_delay
+                    return True
+                await asyncio.sleep(min(0.25, wait))
+            return False
+
+    async def _handle_rate_limit(self, url, response, stop):
+        async with self._rate_limit_lock:
+            if stop() or self.rate_limit_stopped:
+                return False
+            decision = self.rate_controller.on_rate_limit(
+                response.headers.get("Retry-After"), status=int(response.status)
+            )
+            self._record_fetch_error(url, response.status, "HTTP rate limited")
+            if decision.should_stop:
+                self.rate_limit_stopped = True
+                self.on_log(
+                    f"[429] JavaScript discovery at {self._safe_url(url)}: {decision.reason}; "
+                    "stopping this phase without retrying early."
+                )
+                self._resume_event.set()
+                return False
+            self._retry_urls.add(url)
+            self._resume_event.clear()
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + decision.wait_seconds
+            self.on_log(
+                f"[Rate limit] JavaScript fetch received HTTP {response.status}; "
+                f"waiting {decision.wait_seconds:.1f}s before retrying."
+            )
+            while loop.time() < deadline:
+                if stop():
+                    self._resume_event.set()
+                    return False
+                await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
+            self._resume_event.set()
+            return True
+
     async def _fetch_js(self, session, url, timeout, stop):
         if stop() or not self._in_scope(url):
             return
+        if not await self._request_gate(stop):
+            return
         try:
             request_headers = build_headers()
+            request_headers["User-Agent"] = "Recon-GUI/3.2 (+authorized reconnaissance)"
             if self._origin(url) == self.base_origin:
                 request_headers.update({
                     str(key): str(value) for key, value in self.request_headers.items()
@@ -166,14 +233,12 @@ class JSCollector:
                 url, headers=request_headers, timeout=timeout, allow_redirects=False
             ) as resp:
                 # Do not follow redirects: their destinations may be outside scope.
-                if resp.status == 429:
-                    self.rate_limit_stopped = True
-                    self._record_fetch_error(url, resp.status, "HTTP 429 rate limited")
-                    self.on_log(
-                        f"[429] JavaScript download was rate-limited at {self._safe_url(url)}; "
-                        "stopping JS collection safely."
-                    )
+                if resp.status == 429 or (
+                    resp.status == 503 and resp.headers.get("Retry-After")
+                ):
+                    await self._handle_rate_limit(url, resp, stop)
                     return
+                self.rate_controller.on_success()
                 if resp.status != 200:
                     self._record_fetch_error(url, resp.status, f"HTTP {resp.status}; response not analyzed")
                     self.on_log(
