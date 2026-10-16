@@ -71,6 +71,45 @@ def test_crawler_visits_multiple_depths_and_blocks_off_host_redirects():
     asyncio.run(asyncio.wait_for(scenario(), timeout=10))
 
 
+def test_zero_page_and_depth_limits_mean_unlimited():
+    async def scenario():
+        requested = []
+
+        async def root(request):
+            requested.append(request.path)
+            links = "".join(f'<a href="/p{i}">p{i}</a>' for i in range(25))
+            return web.Response(text=links, content_type="text/html")
+
+        async def page(request):
+            requested.append(request.path)
+            return web.Response(text="child", content_type="text/html")
+
+        app = web.Application()
+        app.router.add_get("/", root)
+        app.router.add_get("/{name}", page)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            engine = CrawlEngine(
+                f"http://127.0.0.1:{port}/",
+                max_depth=0, max_pages=0, concurrency=4,
+            )
+            results = await engine.crawl()
+            assert len(results) == 26
+            assert len(engine.visited) == 26
+            assert engine.page_limit_reached is False
+            assert engine.depth_limit_reached is False
+            assert engine.limits.unlimited_pages is True
+            assert engine.limits.unlimited_depth is True
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
 def test_crawler_respects_max_pages_with_many_discovered_links():
     async def scenario():
         requested = []
@@ -350,7 +389,7 @@ def test_crawler_honors_retry_after_and_resumes_queued_pages():
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
 
 
-def test_crawler_stops_queue_when_429_has_no_retry_after():
+def test_crawler_backs_off_without_retry_after_then_resumes_queue():
     async def scenario():
         requested = []
 
@@ -384,9 +423,9 @@ def test_crawler_stops_queue_when_429_has_no_retry_after():
                 max_pages=10, concurrency=1,
             )
             await engine.crawl()
-            assert engine.rate_limit_stopped is True
+            assert engine.rate_limit_stopped is False
             assert "/a-rate-limit" in requested
-            assert "/z-should-not-run" not in requested
+            assert "/z-should-not-run" in requested
         finally:
             await runner.cleanup()
 

@@ -113,15 +113,20 @@ class MainWindow(QMainWindow):
         depth_label = QLabel("Depth")
         depth_label.setObjectName("fieldLabel")
         self.depth_spin = QSpinBox()
-        self.depth_spin.setRange(1, 5)
-        self.depth_spin.setValue(2)
-        self.depth_spin.setToolTip("How many link levels to follow from the starting page.")
-        pages_label = QLabel("Max pages")
+        self.depth_spin.setRange(0, 1000)
+        self.depth_spin.setValue(0)
+        self.depth_spin.setToolTip(
+            "0 = unlimited depth. Use a positive value to limit link traversal depth."
+        )
+        pages_label = QLabel("Max pages (0 = all)")
         pages_label.setObjectName("fieldLabel")
         self.pages_spin = QSpinBox()
-        self.pages_spin.setRange(10, 5000)
-        self.pages_spin.setValue(200)
-        self.pages_spin.setToolTip("Hard cap on pages fetched by the crawl engine.")
+        self.pages_spin.setRange(0, 2147483647)
+        self.pages_spin.setValue(0)
+        self.pages_spin.setToolTip(
+            "0 = no arbitrary page-count cap. Large sites may consume significant memory, "
+            "disk and request budget; use Stop and obey server rate limits."
+        )
         concurrency_label = QLabel("Parallel")
         concurrency_label.setObjectName("fieldLabel")
         self.conc_spin = QSpinBox()
@@ -2068,9 +2073,22 @@ class MainWindow(QMainWindow):
         lines.append("=== COVERAGE / INCOMPLETE CONTENT ===")
         coverage = report.get("coverage_summary", {}) or {}
         if coverage:
+            page_cap_text = (
+                "unlimited" if coverage.get("page_cap_is_unlimited", coverage.get("page_cap", 0) == 0)
+                else str(coverage.get("page_cap", 0))
+            )
+            depth_cap_text = (
+                "unlimited" if coverage.get("depth_is_unlimited", coverage.get("max_depth", 0) == 0)
+                else str(coverage.get("max_depth", 0))
+            )
             lines.append(
-                f"  Pages fetched: {coverage.get('pages_crawled', 0)} / configured cap {coverage.get('page_cap', 0)}; "
-                f"maximum depth: {coverage.get('max_depth', 0)}"
+                f"  Pages fetched: {coverage.get('pages_crawled', 0)}; "
+                f"page cap: {page_cap_text}; depth cap: {depth_cap_text}"
+            )
+            lines.append(
+                f"  Rate-limit pauses: {coverage.get('rate_limit_pauses', 0)}; "
+                f"current adaptive inter-request delay: "
+                f"{coverage.get('adaptive_request_delay_seconds', 0):.2f}s"
             )
             lines.append(
                 f"  JavaScript files: {coverage.get('javascript_files_attempted', 0)} attempted / "

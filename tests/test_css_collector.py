@@ -65,13 +65,15 @@ def test_css_collector_follows_same_origin_imports_and_redacts_query_values():
     asyncio.run(asyncio.wait_for(scenario(), timeout=8))
 
 
-def test_css_collector_stops_safely_on_429_without_retry_after():
+def test_css_collector_retries_after_429_cooldown():
     async def scenario():
         requested = []
 
         async def handler(request):
             requested.append(request.path)
-            return web.Response(status=429, text="rate limited")
+            if len(requested) == 1:
+                return web.Response(status=429, headers={"Retry-After": "0"}, text="rate limited")
+            return web.Response(text="body{color:black}", content_type="text/css")
 
         app = web.Application()
         app.router.add_route("*", "/{name:.*}", handler)
@@ -87,9 +89,9 @@ def test_css_collector_stops_safely_on_429_without_retry_after():
                 [{"url": target + "site.css", "kind": "stylesheet"}],
                 delay_ms=0,
             )
-            assert requested == ["/site.css"]
-            assert report["css_rate_limited_stop"] is True
-            assert report["css_file_errors"][0]["error"] == "rate-limited-stop"
+            assert requested == ["/site.css", "/site.css"]
+            assert report["css_rate_limited_stop"] is False
+            assert report["css_files_fetched"] == 1
         finally:
             await runner.cleanup()
 

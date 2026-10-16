@@ -75,11 +75,12 @@ def test_baseline_http_429_stops_wordlist_requests(tmp_path):
                 concurrency=2,
                 delay_ms=0,
             )
+            scanner.rate_controller.max_consecutive_limits = 1
             hits = await scanner.scan()
             assert hits == []
             assert scanner._rate_limited is True
-            assert len(requested) == 1
-            assert "this-path-should-not-exist-recon-baseline" in requested[0]
+            assert len(requested) == 2  # one retry after the adaptive cool-down
+            assert all("this-path-should-not-exist-recon-baseline" in value for value in requested)
         finally:
             await runner.cleanup()
 
@@ -206,7 +207,7 @@ def test_baseline_429_honors_retry_after_then_resumes(tmp_path):
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
 
 
-def test_429_without_retry_after_stops_instead_of_retrying(tmp_path):
+def test_repeated_429_without_retry_after_uses_backoff_then_stops(tmp_path):
     async def scenario():
         requested = []
 
@@ -228,9 +229,10 @@ def test_429_without_retry_after_stops_instead_of_retrying(tmp_path):
                 f"http://127.0.0.1:{port}/", str(wordlist),
                 extensions=[""], concurrency=1, delay_ms=0,
             )
+            scanner.rate_controller.max_consecutive_limits = 1
             await scanner.scan()
             assert scanner._rate_limited is True
-            assert len(requested) == 1  # only baseline; never retry before guidance
+            assert len(requested) == 2  # baseline retried once after adaptive backoff
         finally:
             await runner.cleanup()
 

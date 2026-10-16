@@ -4,7 +4,7 @@ Recon-GUI is a Python desktop application for mapping and documenting web assets
 
 ## Core features
 
-- Same-host crawling with configurable depth, page count (up to 5000), and concurrency. When page or depth limits leave additional links unvisited, the scan is explicitly marked partial and history comparisons do not infer removals from incomplete coverage.
+- Same-host crawling with configurable depth and page count; set **Depth = 0** and **Max pages = 0** for no configured depth/page-count cap. Unlimited scans continue until the in-scope discovery queue is exhausted, the user stops the scan, or safety/rate-limit controls stop a phase. Large scans still consume RAM, disk, and time. Finite caps remain available and are marked partial when reached.
 - Import extra crawl seeds from TXT URL lists, Search Console-style CSV exports, XML/gzip sitemaps, JSON URL collections, or common access logs. Imports are deduplicated and restricted to the exact configured hostname; imported seeds are starting points, not authorization checks, and still obey normal crawl limits. This helps discover orphan pages that internal links alone cannot reveal.
 - The JavaScript renderer performs a small, bounded scroll sequence per page to trigger lazy-loaded and infinite-scroll content without clicking controls or submitting forms. This improves SPA coverage but cannot guarantee that every dynamically generated record or route is exposed.
 - Canonical URL handling, redirect-chain tracking, response metadata, page hashes, similarity groups, and soft-404 candidates.
@@ -26,7 +26,7 @@ Recon-GUI is a Python desktop application for mapping and documenting web assets
 - A **Coverage / Gaps** tab explains reached page/depth/wordlist/recursion caps, rate limits, truncated data, failed requests (including JavaScript assets that returned errors), HTTP 5xx responses, rate-limited JavaScript discovery, and restricted 401/403 responses. Request diagnostics strip query strings and omit raw exception messages. A scan is not labelled complete when observed transport errors or server-error responses leave evidence incomplete. Local SQLite scan history grouped by origin compares URL, endpoint, parameter, and asset-reference additions/removals/changes; incomplete, stopped, rate-limited, request-failed, server-error, or capped asset-probe phases do not infer removals.
 - Filterable results and readable TXT, machine-readable JSON, and spreadsheet-friendly CSV reports.
 - Optional external CLI integrations for GAU, Nuclei, and ffuf in the External Tools tab. Subfinder is a separate passive hostname discovery phase in Scan Options; Nmap remains excluded from the core web crawler because port scanning is a different activity.
-- Honors a valid Crawl-delay in robots.txt. On HTTP 429, the crawler waits only when the response provides a supported Retry-After; otherwise it stops safely rather than bypassing rate limits.
+- Honors a valid Crawl-delay in robots.txt. HTTP 429 and 503 responses with Retry-After trigger a shared cool-down, gradual request pacing, and queue resume. Explicit server Retry-After waits are not truncated by an internal 120-second cap; when no usable header is present, exponential backoff is used, then the affected phase stops after repeated consecutive limit signals. Recon-GUI does not spoof headers or rotate identities to bypass limits.
 
 ## Quick start (Windows and Linux)
 

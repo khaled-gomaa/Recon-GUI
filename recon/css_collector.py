@@ -12,11 +12,12 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
 import aiohttp
+from recon.rate_limit_policy import AdaptiveRateController
 
 MAX_CSS_BYTES = 2 * 1024 * 1024
 MAX_CSS_FILES = 0  # 0 means process every discovered same-origin stylesheet.
-MAX_RETRY_AFTER_SECONDS = 120
-MAX_RATE_LIMIT_PAUSES = 3
+MAX_RETRY_AFTER_SECONDS = 120  # compatibility constant; explicit Retry-After is not capped
+MAX_RATE_LIMIT_PAUSES = 5
 
 CSS_URL_RE = re.compile(r"""url\(\s*(?P<quote>['"]?)(?P<url>[^)'"]+?)(?P=quote)\s*\)""", re.I)
 CSS_IMPORT_RE = re.compile(
@@ -111,6 +112,9 @@ class CSSCollector:
         self.assets: dict[tuple[str, str], dict] = {}
         self.rate_limit_stopped = False
         self.retry_after_pauses = 0
+        self.rate_controller = AdaptiveRateController(
+            base_delay=0.0, max_delay=60.0, max_consecutive_limits=MAX_RATE_LIMIT_PAUSES, jitter=0.0
+        )
         self.limit_reached = False
 
     def _log(self, message: str):
@@ -231,7 +235,7 @@ class CSSCollector:
             "connector": connector,
             "timeout": timeout,
             "headers": {
-                "User-Agent": "Recon-GUI/3.1 (stylesheet discovery; authorized use)",
+                "User-Agent": "Recon-GUI/3.2 (+authorized reconnaissance)",
                 "Accept": "text/css,*/*;q=0.1",
                 **safe_headers,
             },
@@ -255,24 +259,40 @@ class CSSCollector:
                 self.attempted_urls.add(url)
                 if not self._in_origin(url):
                     continue
-                if delay_ms:
-                    await asyncio.sleep(delay_ms / 1000)
+                effective_delay = max(delay_ms / 1000.0, self.rate_controller.current_delay)
+                if effective_delay > 0:
+                    await asyncio.sleep(effective_delay)
                 if stop():
                     break
                 try:
                     async with session.get(url, allow_redirects=False) as response:
-                        if response.status == 429:
-                            wait = _retry_after_seconds(response.headers.get("Retry-After"))
-                            if wait is None or wait > MAX_RETRY_AFTER_SECONDS or self.retry_after_pauses >= MAX_RATE_LIMIT_PAUSES:
+                        if response.status in {429, 503}:
+                            decision = self.rate_controller.on_rate_limit(
+                                response.headers.get("Retry-After"), status=int(response.status)
+                            )
+                            self.retry_after_pauses = self.rate_controller.consecutive_limits
+                            if decision.should_stop:
                                 self.rate_limit_stopped = True
                                 self.errors.append({"url": _safe_url(url), "error": "rate-limited-stop"})
-                                self._log(f"[CSS] {_safe_url(url)} returned HTTP 429; stopping CSS discovery rather than bypassing the limit.")
+                                self._log(
+                                    f"[CSS] {_safe_url(url)}: {decision.reason}. "
+                                    "Stopping stylesheet discovery instead of retrying early."
+                                )
                                 break
-                            self.retry_after_pauses += 1
-                            self.attempted_urls.discard(url)  # retry after honoring the server's requested wait
-                            self._log(f"[CSS] HTTP 429; waiting {wait:.1f}s per Retry-After ({self.retry_after_pauses}/{MAX_RATE_LIMIT_PAUSES}): {_safe_url(url)}")
-                            await asyncio.sleep(wait)
+                            self.attempted_urls.discard(url)
+                            self._log(
+                                f"[CSS] HTTP {response.status}; pausing for {decision.wait_seconds:.1f}s "
+                                "before retrying the stylesheet."
+                            )
+                            deadline = asyncio.get_running_loop().time() + decision.wait_seconds
+                            while asyncio.get_running_loop().time() < deadline:
+                                if stop():
+                                    break
+                                await asyncio.sleep(min(0.25, max(0.0, deadline - asyncio.get_running_loop().time())))
+                            if stop():
+                                break
                             continue
+                        self.rate_controller.on_success()
                         if response.status != 200:
                             self.errors.append({"url": _safe_url(url), "status": int(response.status), "error": "http-error"})
                             continue

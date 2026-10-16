@@ -10,12 +10,12 @@ from urllib.parse import urlparse, urljoin, urldefrag
 
 import aiohttp
 from crawler.parser import PageParser
+from recon.rate_limit_policy import AdaptiveRateController, CrawlLimits
 
 MAX_BODY_BYTES = 5 * 1024 * 1024
 MAX_DECOMPRESSED_SITEMAP_BYTES = 20 * 1024 * 1024
 REDIRECT_CODES = {301, 302, 303, 307, 308}
-MAX_RETRY_AFTER_SECONDS = 120
-MAX_RATE_LIMIT_PAUSES = 3
+MAX_RATE_LIMIT_PAUSES = 5
 
 
 def _hash(text: str) -> str:
@@ -138,7 +138,11 @@ class CrawlEngine:
         self.start_url = normalized
         self.base_domain = (urlparse(normalized).hostname or "").lower()
         self.max_depth = max(0, int(max_depth))
-        self.max_pages = max(1, int(max_pages))
+        self.max_pages = max(0, int(max_pages))
+        self.limits = CrawlLimits(max_pages=self.max_pages, max_depth=self.max_depth)
+        self.rate_controller = AdaptiveRateController(
+            base_delay=0.0, max_delay=60.0, max_consecutive_limits=MAX_RATE_LIMIT_PAUSES, jitter=0.0
+        )
         self.concurrency = max(1, min(int(concurrency), 20))
         self.parser = PageParser(self.start_url)
         self.on_page_crawled = on_page_crawled
@@ -179,75 +183,61 @@ class CrawlEngine:
              if str(k).lower() == "retry-after"),
             None,
         )
-        if not value:
-            return None
-        if value.isdigit():
-            return float(int(value))
-        try:
-            when = parsedate_to_datetime(value)
-            if when.tzinfo is None:
-                when = when.replace(tzinfo=timezone.utc)
-            return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
-        except (TypeError, ValueError, OverflowError):
-            return None
+        return AdaptiveRateController.parse_retry_after(value)
 
-    async def _handle_429(self, headers: dict, url: str):
-        """Honor Retry-After or stop safely; never attempt to evade rate limiting."""
+    async def _handle_429(self, headers: dict, url: str, status: int = 429):
+        """Pause and reduce request pressure; never cap or evade Retry-After."""
         async with self._rate_limit_lock:
-            if self.rate_limit_stopped:
+            if self.rate_limit_stopped or self.should_stop():
+                return False
+
+            retry_after = next(
+                (str(value).strip() for key, value in (headers or {}).items()
+                 if str(key).lower() == "retry-after"),
+                None,
+            )
+            decision = self.rate_controller.on_rate_limit(retry_after, status=status)
+            self._rate_limit_pauses = self.rate_controller.consecutive_limits
+            if decision.should_stop:
+                self.rate_limit_stopped = True
+                self._log(
+                    f"[Rate limit] {self._safe_log_url(url)}: {decision.reason}. "
+                    "Stopping this phase without changing identity or retrying early."
+                )
+                self._resume_event.set()
                 return False
 
             loop = asyncio.get_running_loop()
-            now = loop.time()
-            if self._rate_limit_pauses and now <= self._rate_limit_cooldown_until + 2.0:
-                return True
-
-            retry_after = self._parse_retry_after(headers)
-            if retry_after is None:
-                self.rate_limit_stopped = True
-                self._log(
-                    f"[429] {url} returned Too Many Requests without a valid Retry-After. "
-                    "Stopping new crawl requests instead of bypassing the limit."
-                )
-                self._resume_event.set()
-                return False
-            if retry_after > MAX_RETRY_AFTER_SECONDS:
-                self.rate_limit_stopped = True
-                self._log(
-                    f"[429] Server requested a {retry_after:.0f}s wait, above the "
-                    f"{MAX_RETRY_AFTER_SECONDS}s automatic wait ceiling. Stopping rather "
-                    "than retrying early."
-                )
-                self._resume_event.set()
-                return False
-            if self._rate_limit_pauses >= MAX_RATE_LIMIT_PAUSES:
-                self.rate_limit_stopped = True
-                self._log(
-                    f"[429] Rate limit repeated {self._rate_limit_pauses} times. "
-                    "Stopping new crawl requests to avoid additional pressure."
-                )
-                self._resume_event.set()
-                return False
-
-            self._rate_limit_pauses += 1
-            self._rate_limit_cooldown_until = now + retry_after
+            self._rate_limit_cooldown_until = loop.time() + decision.wait_seconds
             self._resume_event.clear()
             self._log(
-                f"[429] Pausing new crawl requests for {retry_after:.1f}s per Retry-After "
-                f"(cool-down {self._rate_limit_pauses}/{MAX_RATE_LIMIT_PAUSES})."
+                f"[Rate limit] HTTP {status} at {self._safe_log_url(url)}. "
+                f"Pausing new requests for {decision.wait_seconds:.1f}s; "
+                f"next request pacing is {self.rate_controller.current_delay:.2f}s."
             )
-            deadline = loop.time() + retry_after
+            deadline = loop.time() + decision.wait_seconds
             while loop.time() < deadline:
                 if self.should_stop():
                     self._resume_event.set()
                     return False
                 await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
+
             if self.should_stop():
                 self._resume_event.set()
                 return False
             self._resume_event.set()
-            self._log("[429] Cool-down complete; resuming queued crawl requests at the configured rate.")
+            self._log("[Rate limit] Cool-down complete; resuming queued crawl requests at reduced pacing.")
             return True
+
+    @staticmethod
+    def _safe_log_url(url: str) -> str:
+        """Keep query values out of rate-limit logs."""
+        from urllib.parse import urlsplit, urlunsplit
+        try:
+            parsed = urlsplit(str(url or ""))
+            return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", ""))
+        except ValueError:
+            return "(invalid URL)"
 
     @staticmethod
     def _origin(url: str):
@@ -339,8 +329,8 @@ class CrawlEngine:
             self._log(f"[robots.txt] Could not read Crawl-delay: {type(exc).__name__}: {exc}")
 
     async def _request_gate(self) -> bool:
-        """Serialize request start times when robots.txt asks for a delay."""
-        delay = self.crawl_delay_seconds
+        """Serialize request starts for robots.txt and adaptive rate-limit pacing."""
+        delay = max(self.crawl_delay_seconds, self.rate_controller.current_delay)
         if delay <= 0:
             return not self.should_stop()
         async with self._request_gate_lock:
@@ -367,7 +357,7 @@ class CrawlEngine:
         # Keep certificate verification enabled. Never disable TLS verification for recon.
         connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=True)
         headers = {
-            "User-Agent": "Recon-GUI/3.0 (+authorized security testing)",
+            "User-Agent": "Recon-GUI/3.2 (+authorized security testing)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
         # Create loop-bound primitives only after crawl() is running in its event loop.
@@ -395,7 +385,7 @@ class CrawlEngine:
                 continue
             if normalized in self.visited:
                 continue
-            if len(self.visited) >= self.max_pages:
+            if self.max_pages > 0 and len(self.visited) >= self.max_pages:
                 self.page_limit_reached = True
                 if not self._page_limit_logged:
                     self._log(
@@ -446,13 +436,15 @@ class CrawlEngine:
                                 # UI/reporting callbacks must not prevent discovery from continuing.
                                 self._log(f"[CALLBACK ERROR] {type(exc).__name__}: {exc}")
 
-                        if result.status == 429:
-                            await self._handle_429(result.headers, url)
+                        if result.status in {429, 503}:
+                            await self._handle_429(result.headers, url, status=result.status)
                             continue
+                        if result.status not in {429, 503}:
+                            self.rate_controller.on_success()
 
                         if result.status != 200 or self.should_stop() or self.rate_limit_stopped:
                             continue
-                        if depth >= self.max_depth:
+                        if self.max_depth > 0 and depth >= self.max_depth:
                             has_unvisited_in_scope_links = any(
                                 (candidate := _normalize_http_url(link))
                                 and self._in_scope(candidate)
@@ -476,7 +468,7 @@ class CrawlEngine:
                                 # visited contains both queued and in-flight URLs, so the cap is reserved atomically.
                                 if normalized_link in self.visited:
                                     continue
-                                if len(self.visited) >= self.max_pages:
+                                if self.max_pages > 0 and len(self.visited) >= self.max_pages:
                                     self.page_limit_reached = True
                                     if not self._page_limit_logged:
                                         self._log(
