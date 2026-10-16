@@ -4,6 +4,7 @@ import asyncio
 from aiohttp import web
 
 from recon.wordlist_scanner import WordlistScanner
+from recon.rate_limit import RateLimitManager
 
 
 def test_hit_callback_failure_does_not_stop_wordlist_scan(tmp_path):
@@ -48,7 +49,7 @@ def test_hit_callback_failure_does_not_stop_wordlist_scan(tmp_path):
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
 
 
-def test_baseline_http_429_stops_wordlist_requests(tmp_path):
+def test_baseline_http_429_stops_after_bounded_fallback_cooldowns(tmp_path):
     async def scenario():
         requested = []
 
@@ -56,7 +57,7 @@ def test_baseline_http_429_stops_wordlist_requests(tmp_path):
             requested.append(request.path)
             if "this-path-should-not-exist-recon-baseline" in request.path:
                 return web.Response(status=429, text="rate limited")
-            return web.Response(status=200, text="should not be requested")
+            return web.Response(status=200, text="candidate should not be requested")
 
         app = web.Application()
         app.router.add_get("/{name:.*}", handler)
@@ -68,23 +69,21 @@ def test_baseline_http_429_stops_wordlist_requests(tmp_path):
             port = site._server.sockets[0].getsockname()[1]
             wordlist = tmp_path / "paths.txt"
             wordlist.write_text("secret\n", encoding="utf-8")
+            manager = RateLimitManager(fallback_initial_seconds=0)
             scanner = WordlistScanner(
-                f"http://127.0.0.1:{port}/",
-                str(wordlist),
-                extensions=[""],
-                concurrency=2,
-                delay_ms=0,
+                f"http://127.0.0.1:{port}/", str(wordlist),
+                extensions=[""], concurrency=1, delay_ms=0,
+                rate_limit_manager=manager,
             )
-            hits = await scanner.scan()
-            assert hits == []
+            await scanner.scan()
             assert scanner._rate_limited is True
-            assert len(requested) == 1
-            assert "this-path-should-not-exist-recon-baseline" in requested[0]
+            assert manager.stopped is True
+            assert len(requested) == 4
+            assert all("this-path-should-not-exist-recon-baseline" in item for item in requested)
         finally:
             await runner.cleanup()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
-
 
 
 def test_records_404_responses_for_content_discovery_results(tmp_path):
@@ -206,7 +205,7 @@ def test_baseline_429_honors_retry_after_then_resumes(tmp_path):
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
 
 
-def test_429_without_retry_after_stops_instead_of_retrying(tmp_path):
+def test_429_without_retry_after_uses_backoff_then_stops_repeated_rate_limits(tmp_path):
     async def scenario():
         requested = []
 
@@ -224,13 +223,17 @@ def test_429_without_retry_after_stops_instead_of_retrying(tmp_path):
             port = site._server.sockets[0].getsockname()[1]
             wordlist = tmp_path / "paths.txt"
             wordlist.write_text("admin\n", encoding="utf-8")
+            manager = RateLimitManager(fallback_initial_seconds=0)
             scanner = WordlistScanner(
                 f"http://127.0.0.1:{port}/", str(wordlist),
                 extensions=[""], concurrency=1, delay_ms=0,
+                rate_limit_manager=manager,
             )
             await scanner.scan()
             assert scanner._rate_limited is True
-            assert len(requested) == 1  # only baseline; never retry before guidance
+            assert manager.stopped is True
+            assert len(requested) == 4  # only the baseline; no candidate path was started.
+            assert all("this-path-should-not-exist-recon-baseline" in item for item in requested)
         finally:
             await runner.cleanup()
 
