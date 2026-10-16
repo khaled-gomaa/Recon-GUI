@@ -10,6 +10,7 @@ from urllib.parse import urlparse, urljoin, urldefrag
 
 import aiohttp
 from crawler.parser import PageParser
+from recon.rate_limit import RateLimitManager, parse_retry_after
 
 MAX_BODY_BYTES = 5 * 1024 * 1024
 MAX_DECOMPRESSED_SITEMAP_BYTES = 20 * 1024 * 1024
@@ -131,6 +132,7 @@ class CrawlEngine:
         request_headers=None,
         respect_robots=True,
         cookie_jar=None,
+        rate_limit_manager=None,
     ):
         normalized = _normalize_http_url(start_url)
         if not normalized:
@@ -151,6 +153,7 @@ class CrawlEngine:
         }
         self.respect_robots = bool(respect_robots)
         self.cookie_jar = cookie_jar
+        self.rate_limit_manager = rate_limit_manager or RateLimitManager()
         self.crawl_delay_seconds = 0.0
         self.robots_url = ""
         self._robots_loaded = False
@@ -179,75 +182,26 @@ class CrawlEngine:
              if str(k).lower() == "retry-after"),
             None,
         )
-        if not value:
-            return None
-        if value.isdigit():
-            return float(int(value))
-        try:
-            when = parsedate_to_datetime(value)
-            if when.tzinfo is None:
-                when = when.replace(tzinfo=timezone.utc)
-            return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
-        except (TypeError, ValueError, OverflowError):
-            return None
+        return parse_retry_after(value)
 
     async def _handle_429(self, headers: dict, url: str):
-        """Honor Retry-After or stop safely; never attempt to evade rate limiting."""
+        """Use the scan-wide policy, coalescing concurrent 429 responses into one pause."""
         async with self._rate_limit_lock:
             if self.rate_limit_stopped:
                 return False
-
-            loop = asyncio.get_running_loop()
-            now = loop.time()
-            if self._rate_limit_pauses and now <= self._rate_limit_cooldown_until + 2.0:
-                return True
-
-            retry_after = self._parse_retry_after(headers)
-            if retry_after is None:
-                self.rate_limit_stopped = True
-                self._log(
-                    f"[429] {url} returned Too Many Requests without a valid Retry-After. "
-                    "Stopping new crawl requests instead of bypassing the limit."
-                )
-                self._resume_event.set()
-                return False
-            if retry_after > MAX_RETRY_AFTER_SECONDS:
-                self.rate_limit_stopped = True
-                self._log(
-                    f"[429] Server requested a {retry_after:.0f}s wait, above the "
-                    f"{MAX_RETRY_AFTER_SECONDS}s automatic wait ceiling. Stopping rather "
-                    "than retrying early."
-                )
-                self._resume_event.set()
-                return False
-            if self._rate_limit_pauses >= MAX_RATE_LIMIT_PAUSES:
-                self.rate_limit_stopped = True
-                self._log(
-                    f"[429] Rate limit repeated {self._rate_limit_pauses} times. "
-                    "Stopping new crawl requests to avoid additional pressure."
-                )
-                self._resume_event.set()
-                return False
-
-            self._rate_limit_pauses += 1
-            self._rate_limit_cooldown_until = now + retry_after
             self._resume_event.clear()
-            self._log(
-                f"[429] Pausing new crawl requests for {retry_after:.1f}s per Retry-After "
-                f"(cool-down {self._rate_limit_pauses}/{MAX_RATE_LIMIT_PAUSES})."
+            resumed = await self.rate_limit_manager.handle_429(
+                headers, url, on_log=self._log, should_stop=self.should_stop,
+                phase="Crawler",
             )
-            deadline = loop.time() + retry_after
-            while loop.time() < deadline:
-                if self.should_stop():
-                    self._resume_event.set()
-                    return False
-                await asyncio.sleep(min(0.25, max(0.0, deadline - loop.time())))
-            if self.should_stop():
-                self._resume_event.set()
-                return False
+            self._rate_limit_pauses = self.rate_limit_manager.pause_count
+            self._rate_limit_cooldown_until = getattr(
+                self.rate_limit_manager, "_paused_until", 0.0
+            )
+            if not resumed and not self.should_stop():
+                self.rate_limit_stopped = True
             self._resume_event.set()
-            self._log("[429] Cool-down complete; resuming queued crawl requests at the configured rate.")
-            return True
+            return resumed
 
     @staticmethod
     def _origin(url: str):
@@ -321,6 +275,8 @@ class CrawlEngine:
         parsed = urlparse(self.start_url)
         self.robots_url = parsed._replace(path="/robots.txt", params="", query="", fragment="").geturl()
         try:
+            if not await self.rate_limit_manager.wait_until_ready(self.should_stop):
+                return
             async with session.get(self.robots_url, headers=self._headers_for_url(self.robots_url) or None, allow_redirects=False) as response:
                 if response.status == 429:
                     await self._handle_429(dict(response.headers), self.robots_url)
@@ -339,7 +295,9 @@ class CrawlEngine:
             self._log(f"[robots.txt] Could not read Crawl-delay: {type(exc).__name__}: {exc}")
 
     async def _request_gate(self) -> bool:
-        """Serialize request start times when robots.txt asks for a delay."""
+        """Apply the shared 429 gate and robots Crawl-delay before each new request."""
+        if not await self.rate_limit_manager.wait_until_ready(self.should_stop):
+            return False
         delay = self.crawl_delay_seconds
         if delay <= 0:
             return not self.should_stop()
