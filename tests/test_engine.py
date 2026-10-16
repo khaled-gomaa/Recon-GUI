@@ -537,3 +537,48 @@ def test_shared_cookie_jar_factory_runs_inside_event_loop():
         assert "secret-value" not in "\n".join(logs)
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=3))
+
+
+def test_robots_429_retries_after_shared_cooldown_before_starting_crawl():
+    async def scenario():
+        requested = []
+        robots_count = {"value": 0}
+
+        async def handler(request):
+            requested.append(request.path)
+            if request.path == "/robots.txt":
+                robots_count["value"] += 1
+                if robots_count["value"] == 1:
+                    return web.Response(
+                        status=429, headers={"Retry-After": "0"}, text="slow down"
+                    )
+                return web.Response(
+                    status=200, text="User-agent: *\nCrawl-delay: 0\n",
+                    content_type="text/plain",
+                )
+            return web.Response(text="<title>Root</title>ok", content_type="text/html")
+
+        app = web.Application()
+        app.router.add_route("*", "/{name:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            manager = RateLimitManager(fallback_initial_seconds=0)
+            engine = CrawlEngine(
+                f"http://127.0.0.1:{port}/", max_depth=1, max_pages=5,
+                concurrency=1, rate_limit_manager=manager,
+            )
+            results = await engine.crawl()
+            assert robots_count["value"] == 2
+            assert requested.count("/") == 1
+            assert any(result.url.endswith("/") and result.status == 200 for result in results)
+            assert manager.pause_count == 1
+            assert manager.stopped is False
+            assert engine.rate_limit_stopped is False
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
