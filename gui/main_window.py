@@ -113,15 +113,20 @@ class MainWindow(QMainWindow):
         depth_label = QLabel("Depth")
         depth_label.setObjectName("fieldLabel")
         self.depth_spin = QSpinBox()
-        self.depth_spin.setRange(1, 5)
-        self.depth_spin.setValue(2)
-        self.depth_spin.setToolTip("How many link levels to follow from the starting page.")
-        pages_label = QLabel("Max pages")
+        self.depth_spin.setRange(0, 1000)
+        self.depth_spin.setValue(0)
+        self.depth_spin.setToolTip(
+            "0 = unlimited depth. Use a positive value to limit link traversal depth."
+        )
+        pages_label = QLabel("Max pages (0 = all)")
         pages_label.setObjectName("fieldLabel")
         self.pages_spin = QSpinBox()
-        self.pages_spin.setRange(10, 5000)
-        self.pages_spin.setValue(200)
-        self.pages_spin.setToolTip("Hard cap on pages fetched by the crawl engine.")
+        self.pages_spin.setRange(0, 2147483647)
+        self.pages_spin.setValue(0)
+        self.pages_spin.setToolTip(
+            "0 = no arbitrary page-count cap. Large sites may consume significant memory, "
+            "disk and request budget; use Stop and obey server rate limits."
+        )
         concurrency_label = QLabel("Parallel")
         concurrency_label.setObjectName("fieldLabel")
         self.conc_spin = QSpinBox()
