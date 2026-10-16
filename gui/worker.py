@@ -13,6 +13,7 @@ from recon.matchers import MatcherFilter
 from recon.favicon_hasher import get_favicon_hash
 from recon.similarity_detector import SimilarityDetector
 from gui.session import create_session_cookie_jar
+from recon.cookie_map import build_cookie_map
 
 
 
@@ -565,6 +566,12 @@ class CrawlWorker(QThread):
                 {result.url for result in all_results} & imported_seed_set
             )
             report["manual_browser_session_enabled"] = self.manual_browser_session
+            report["network_capture_mode"] = (
+                "manual browser + JavaScript renderer" if self.manual_browser_session and self.render_javascript else
+                "manual browser" if self.manual_browser_session else
+                "JavaScript renderer" if self.render_javascript else "off"
+            )
+            report["runtime_network_request_count"] = len(report.get("network_observations", []) or [])
             report["manual_browser_seconds"] = manual_browser_results.get("manual_browser_seconds", 0)
             report["manual_browser_window_seconds"] = manual_browser_results.get(
                 "manual_browser_window_seconds", self.manual_browser_duration if self.manual_browser_session else 0
@@ -576,6 +583,18 @@ class CrawlWorker(QThread):
             )
             report["wordlist_words_loaded"] = (
                 scanner.words_loaded if self.wordlist_path and "scanner" in locals() else 0
+            )
+            report["wordlist_requests_attempted"] = len(wordlist_results)
+            report["wordlist_requests_unattempted"] = max(
+                0, int(report["wordlist_candidates"] or 0) - len(wordlist_results)
+            )
+            report["wordlist_scan_status"] = (
+                "rate-limited" if wordlist_rate_limited_stop else
+                "stopped" if self._stopping() else
+                "not-run" if not self.wordlist_path else
+                "partial" if (
+                    report["wordlist_word_limit_reached"] if "wordlist_word_limit_reached" in report else False
+                ) else "completed"
             )
             report["wordlist_word_limit_reached"] = (
                 scanner.word_limit_reached if self.wordlist_path and "scanner" in locals() else False
@@ -615,26 +634,13 @@ class CrawlWorker(QThread):
                 "word_limit_reached": report["wordlist_word_limit_reached"],
                 "path_limit_reached": report["wordlist_path_limit_reached"],
             }
-            # The cookie map stores names and attributes only, never cookie values.
-            cookie_map = []
-            for result in all_results:
-                for event in getattr(result, "cookie_events", []) or []:
-                    cookie_map.append({"url": result.url, "source": "http-response", **event})
-            for result in wordlist_results:
-                for event in result.get("set_cookie_names", []) or []:
-                    cookie_map.append({"url": result.get("url", ""), "source": "content-discovery", **event})
-            cookie_map.extend(manual_browser_results.get("session_cookies", []) or [])
-            unique_cookie_map = {}
-            for event in cookie_map:
-                key = (
-                    event.get("url", ""), event.get("name", ""), event.get("domain", ""),
-                    event.get("path", ""), event.get("source", ""),
-                )
-                unique_cookie_map[key] = event
-            report["cookie_map"] = sorted(
-                unique_cookie_map.values(),
-                key=lambda item: (item.get("url", ""), item.get("name", ""), item.get("source", "")),
-            )
+            # Compact repeated Set-Cookie events into identities while preserving counts and URL samples.
+            report.update(build_cookie_map(
+                page_results=all_results,
+                wordlist_results=wordlist_results,
+                session_cookies=manual_browser_results.get("session_cookies", []) or [],
+                target_url=self.url,
+            ))
             report["wordlist_rate_limited_stop"] = wordlist_rate_limited_stop
             report["crawler_rate_limited_stop"] = engine.rate_limit_stopped
             report["page_limit_reached"] = engine.page_limit_reached
