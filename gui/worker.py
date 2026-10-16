@@ -870,7 +870,7 @@ class CrawlWorker(QThread):
             # Preserve the traceback in the GUI log; a short RuntimeError message alone
             # does not identify which async callback or worker phase failed.
             details = traceback.format_exc(limit=12)
-            self.error.emit(f"{type(exc).__name__}: {exc}\\n{details}")
+            self.error.emit(f"{type(exc).__name__}: {exc}\n{details}")
         finally:
             if loop is not None:
                 try:
