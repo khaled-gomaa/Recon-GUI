@@ -592,6 +592,9 @@ class CrawlWorker(QThread):
                 "rate-limited" if wordlist_rate_limited_stop else
                 "stopped" if self._stopping() else
                 "not-run" if not self.wordlist_path else
+                "skipped-after-rate-limit" if (
+                    engine.rate_limit_stopped or analyzer.js_collector.rate_limit_stopped or css_rate_limited_stop
+                ) else
                 "partial" if (
                     "scanner" in locals() and (
                         scanner.word_limit_reached or scanner.path_limit_reached
