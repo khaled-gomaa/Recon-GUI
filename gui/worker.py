@@ -648,6 +648,7 @@ class CrawlWorker(QThread):
             report["crawler_rate_limited_stop"] = engine.rate_limit_stopped
             report["rate_limit_summary"] = rate_limit_manager.to_dict()
             report["rate_limit_stopped"] = bool(rate_limit_manager.stopped)
+            report["rate_limit_attempts"] = list(engine.rate_limit_attempts)
             report["page_limit_reached"] = engine.page_limit_reached
             report["depth_limit_reached"] = engine.depth_limit_reached
             report["filtered_pages"] = [result.to_dict() for result in filtered]
@@ -839,6 +840,7 @@ class CrawlWorker(QThread):
                 wordlist_rate_limited=report.get("wordlist_rate_limited_stop", False),
                 javascript_rate_limited=report.get("js_rate_limited_stop", False),
                 css_rate_limited=css_rate_limited_stop,
+                rate_limit_stopped=bool(rate_limit_manager.stopped),
                 asset_probe_partial=bool(asset_probe_data.get("summary", {}).get("partial")),
                 asset_probe_rate_limited=bool(asset_probe_data.get("summary", {}).get("rate_limited_stop")),
                 transport_error_count=report.get("transport_error_count", 0),
