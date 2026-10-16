@@ -152,6 +152,10 @@ async def probe_asset_references(
                 await asyncio.sleep(delay_ms / 1000)
             if stop():
                 break
+            # Recheck after the pacing delay in case another request received 429.
+            if not await rate_limit_manager.wait_until_ready(stop):
+                rate_limited_stop = rate_limit_manager.stopped and not stop()
+                break
             record = {
                 "url": item["url"],
                 "method": "HEAD",
