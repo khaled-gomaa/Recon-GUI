@@ -67,6 +67,12 @@ With a project virtual environment, use:
 
 Do not ignore the error during explicit subdomain verification: public-suffix support is used to avoid treating unrelated hosted tenants as one authorized domain.
 
+### Troubleshooting: portable Windows build reports missing `.tld_set_snapshot`
+
+If the portable `ReconGUI.exe` reports `No remote Public Suffix List found` or a missing `tldextract\\.tld_set_snapshot` file, that build is missing required packaged data. It is not fixed by changing the target URL or disabling the network. Download a newly built Windows artifact that passes the `--self-test-domain-scope` smoke test. The build pipeline now stages the snapshot explicitly, checks that the file exists inside the packaged application, and runs the domain-scope self-test before uploading it.
+
+Older portable folders cannot repair their own missing bundled resource. Keep the new artifact's entire folder structure together when extracting it; do not copy only `ReconGUI.exe` out of the folder.
+
 ### Linux (Ubuntu/Debian/Kali)
 
     python3.12 -m venv .venv
