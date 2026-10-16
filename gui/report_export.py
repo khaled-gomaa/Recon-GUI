@@ -49,6 +49,14 @@ def render_text_report(report: dict) -> str:
         f"Pages after filters: {len(report.get('filtered_pages', []))}",
         f"Asset references found (not necessarily fetched): {len(report.get('asset_inventory', []))}",
         f"Asset HEAD checks: {(report.get('asset_probe_summary', {}) or {}).get('requests_completed', 0)}; failed={(report.get('asset_probe_summary', {}) or {}).get('request_failures', 0)}; enabled={(report.get('asset_probe_summary', {}) or {}).get('enabled', False)}; partial={(report.get('asset_probe_summary', {}) or {}).get('partial', False)}",
+        f"Runtime request capture mode: {report.get('network_capture_mode', 'unknown')}",
+        f"Observed browser request records: {report.get('runtime_network_request_count', len(report.get('network_observations', []))) or 0}",
+        f"Cookie identities: {report.get('cookie_identity_count', len(report.get('cookie_map', []))) or 0}",
+        f"Cookie observations: {report.get('cookie_observation_count', len(report.get('cookie_map', []))) or 0}",
+        f"Cookie identity/URL associations: {report.get('cookie_url_count', 0) or 0}",
+        f"Content Discovery requests attempted: {report.get('wordlist_requests_attempted', len(report.get('wordlist_results', []))) or 0}",
+        f"Content Discovery candidates unattempted: {report.get('wordlist_requests_unattempted', 0) or 0}",
+        f"Content Discovery status: {report.get('wordlist_scan_status', 'unknown')}",
         f"Content Discovery words loaded: {report.get('wordlist_words_loaded', 0)}",
         f"Content Discovery candidates generated: {report.get('wordlist_candidates', 0)}",
         f"JavaScript fetch failures: {report.get('js_fetch_error_count', 0)}",
@@ -289,6 +297,11 @@ def render_text_report(report: dict) -> str:
 
     _section(lines, "Cookie Map (Names and Attributes Only)")
     cookie_map = report.get("cookie_map", [])
+    lines.append(
+        f"Identities: {report.get('cookie_identity_count', len(cookie_map))}; "
+        f"observations: {report.get('cookie_observation_count', len(cookie_map))}; "
+        f"identity/URL associations: {report.get('cookie_url_count', 0)}"
+    )
     if not cookie_map:
         lines.append("(no cookie metadata captured)")
     for item in cookie_map:
@@ -302,8 +315,12 @@ def render_text_report(report: dict) -> str:
         lines.append(
             f"{item.get('name', '')} | domain={item.get('domain', '')} | "
             f"path={item.get('path', '')} | attributes={', '.join(attrs)} | "
-            f"source={item.get('source', '')} | url={item.get('url', '')}"
+            f"sources={', '.join(item.get('sources', []) or [item.get('source', '')])} | "
+            f"observations={item.get('observation_count', 1)} | "
+            f"URLs={item.get('url_count', 1)} | sample={item.get('url', '')}"
         )
+        for sample_url in (item.get('sample_urls', []) or [])[1:5]:
+            lines.append(f"    also observed at: {sample_url}")
 
     _section(lines, "Endpoint Inventory")
     endpoint_inventory = report.get("endpoint_inventory", [])
@@ -616,14 +633,17 @@ def render_csv_report(report: dict) -> str:
             "", "potential" if item.get("potential_hit") else "",
             "method={}; source={}; bytes={}; words={}; type={}; final_url={}; "
             "location={}; server={}; last_modified={}; allow={}; content_hash={}; "
-            "response_truncated={}; baseline_match={}; error={}; set_cookie_names={}".format(
+            "response_truncated={}; baseline_match={}; wildcard_suspect={}; "
+            "wildcard_similarity={}; wildcard_reason={}; error={}; set_cookie_names={}".format(
                 item.get("method", "GET"), item.get("source", "wordlist"),
                 item.get("size", 0), item.get("word_count", 0),
                 item.get("content_type", ""), item.get("final_url", ""),
                 item.get("location", ""), item.get("server", ""),
                 item.get("last_modified", ""), item.get("allow", ""),
                 item.get("content_hash", ""), item.get("response_truncated", False),
-                item.get("baseline_match", False), item.get("error", ""),
+                item.get("baseline_match", False), item.get("wildcard_suspect", False),
+                item.get("wildcard_similarity", 0), item.get("wildcard_match_reason", ""),
+                item.get("error", ""),
                 json.dumps(item.get("set_cookie_names", []), ensure_ascii=False, sort_keys=True),
             ),
         ])
@@ -760,6 +780,10 @@ def render_csv_report(report: dict) -> str:
                 "httponly": item.get("httponly", False),
                 "samesite": item.get("samesite", ""),
                 "source": item.get("source", ""),
+                "sources": item.get("sources", []),
+                "observation_count": item.get("observation_count", 1),
+                "url_count": item.get("url_count", 1),
+                "sample_urls": item.get("sample_urls", []),
             }, ensure_ascii=False, sort_keys=True),
         ])
     for item in report.get("parameters", []) or []:

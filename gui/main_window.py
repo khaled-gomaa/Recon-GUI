@@ -1251,8 +1251,18 @@ class MainWindow(QMainWindow):
                 attrs.append("HttpOnly")
             if record.get("samesite"):
                 attrs.append("SameSite=" + str(record.get("samesite")))
+            sample_urls = record.get("sample_urls", []) or []
+            url_count = int(record.get("url_count", 1) or 0)
+            observation_count = int(record.get("observation_count", 1) or 0)
+            first_url = record.get("url", "")
+            url_display = first_url
+            if url_count > 1 or observation_count > 1:
+                url_display = (
+                    f"{first_url} (+{max(0, url_count - 1)} URLs; "
+                    f"{observation_count} observations)"
+                )
             values = (
-                record.get("url", ""),
+                url_display,
                 record.get("name", ""),
                 record.get("domain", ""),
                 record.get("path", ""),
@@ -1262,7 +1272,14 @@ class MainWindow(QMainWindow):
             row = self.cookie_table.rowCount()
             self.cookie_table.insertRow(row)
             for column, value in enumerate(values):
-                self.cookie_table.setItem(row, column, QTableWidgetItem(str(value)))
+                cell = QTableWidgetItem(str(value))
+                if column == 0:
+                    cell.setToolTip(
+                        "Sample URLs (query values removed):\n"
+                        + "\n".join(sample_urls[:5])
+                        + f"\nDistinct URLs: {url_count}; observations: {observation_count}"
+                    )
+                self.cookie_table.setItem(row, column, cell)
             self._filter_table_row(self.cookie_table, row, self.results_search.text().strip().casefold())
 
     def _set_scan_controls_visible(self, visible: bool):
@@ -1745,8 +1762,12 @@ class MainWindow(QMainWindow):
         self.discovery_table.insertRow(row)
         if result.get("error") or not result.get("status"):
             classification = "Request failed: " + str(result.get("error") or "no HTTP response")
-        elif result.get("baseline_match"):
-            classification = "Likely wildcard response"
+        elif result.get("baseline_match", result.get("wildcard_match", False)):
+            classification = "Likely wildcard response (suppressed)"
+        elif result.get("wildcard_suspect") and result.get("potential_hit"):
+            classification = "Potential hit — fallback-like body, status differs"
+        elif result.get("wildcard_suspect"):
+            classification = "Fallback-like body; status differs (review)"
         elif result.get("potential_hit"):
             classification = "Potential hit"
         else:
@@ -1855,7 +1876,8 @@ class MainWindow(QMainWindow):
         )
         self.tabs.setTabText(
             self.tabs.indexOf(self.cookie_table),
-            f"Cookie Map ({len(report.get('cookie_map', []))})",
+            f"Cookie Map ({report.get('cookie_identity_count', len(report.get('cookie_map', [])))} identities; "
+            f"{report.get('cookie_observation_count', len(report.get('cookie_map', [])))} observations)",
         )
         self.tabs.setTabText(
             self.tabs.indexOf(self.subdomain_table.parentWidget()),
@@ -1954,15 +1976,33 @@ class MainWindow(QMainWindow):
             f"{len(report.get('truncated_wordlist_urls', []))} wordlist responses"
             if content_limited else ""
         )
+        runtime_network_count = int(
+            report.get("runtime_network_request_count", len(report.get("network_observations", []))) or 0
+        )
+        network_capture_mode = str(report.get("network_capture_mode") or "unknown")
+        cookie_identity_count = int(report.get("cookie_identity_count", len(report.get("cookie_map", []))) or 0)
+        cookie_observation_count = int(report.get("cookie_observation_count", len(report.get("cookie_map", []))) or 0)
+        cookie_url_count = int(report.get("cookie_url_count", 0) or 0)
+        wordlist_attempted = int(report.get("wordlist_requests_attempted", len(path_results)) or 0)
+        wordlist_unattempted = int(report.get("wordlist_requests_unattempted", max(0, report.get("wordlist_candidates", 0) - wordlist_attempted)) or 0)
+        wildcard_responses = sum(
+            1 for item in path_results
+            if item.get("wildcard_match", item.get("baseline_match", False))
+        )
+        wildcard_suspects = sum(1 for item in path_results if item.get("wildcard_suspect"))
         summary = (
             f"[Summary] {total} pages crawled; {kept} match current filters; "
             f"{len(path_results)} content-discovery responses; {len(path_hits)} potential hits; "
             f"{len(report.get('endpoint_inventory', []))} endpoints; "
             f"{len(report.get('parameters', []))} parameter names; "
-            f"{len(report.get('network_observations', []))} runtime network requests; "
-            f"{len(report.get('cookie_map', []))} cookie metadata records; "
+            f"{runtime_network_count} observed browser request records (capture: {network_capture_mode}); "
+            f"{cookie_identity_count} cookie identities / {cookie_observation_count} observations "
+            f"across {cookie_url_count} identity-URL associations; "
             f"{report.get('wordlist_words_loaded', 0)} wordlist words / "
-            f"{report.get('wordlist_candidates', 0)} candidates; "
+            f"{report.get('wordlist_candidates', 0)} candidates "
+            f"({wordlist_attempted} attempted, {wordlist_unattempted} unattempted); "
+            f"{wildcard_responses} wildcard-like responses suppressed; "
+            f"{wildcard_suspects} status-different fallback lookalikes flagged; "
             f"{(report.get('css_discovery_summary', {}) or {}).get('css_files_fetched', 0)} CSS files analyzed; "
             f"{len(report.get('related_findings', []))} review findings; "
             f"{len(sim.get('exact_duplicates', []))} duplicate groups; "
@@ -1970,10 +2010,28 @@ class MainWindow(QMainWindow):
             f"{content_cap_note}"
         )
         self._append_log(summary)
+        if runtime_network_count == 0:
+            if network_capture_mode == "off":
+                self._append_log(
+                    "[Network Capture] No runtime requests were recorded because Manual Browser Session "
+                    "and JavaScript rendering are both disabled. Static endpoint inference remains separate."
+                )
+            else:
+                self._append_log(
+                    "[Network Capture] Capture was enabled but recorded no same-origin request records. "
+                    "Confirm Playwright/Chromium is installed and, for manual mode, interact with the target "
+                    "during the capture window."
+                )
         if page_limited:
             self._append_log("[LIMIT] Page limit was reached; undiscovered same-host links remain in the queue/frontier.")
         if depth_limited:
             self._append_log("[LIMIT] Depth limit was reached while additional same-host links remained unvisited.")
+        if discovery_limited:
+            self._append_log(
+                f"[Content Discovery] Rate limit stopped the phase after {wordlist_attempted} recorded "
+                f"attempts; {wordlist_unattempted} generated candidates were not attempted. "
+                "Wait for the server's permitted retry window before starting another scan."
+            )
         if crawler_limited or discovery_limited or css_limited or js_limited:
             self._append_log(
                 "[429] Scanning stopped or later active phases were skipped to respect the target's "
@@ -2120,6 +2178,20 @@ class MainWindow(QMainWindow):
         lines = []
         lines.append("=== SCAN COVERAGE / GAPS ===")
         lines.append(f"Target: {report.get('target') or '(no target recorded)'}")
+        lines.append(
+            f"Runtime request capture: {report.get('network_capture_mode', 'unknown')} "
+            f"({report.get('runtime_network_request_count', len(report.get('network_observations', []))) or 0} records)"
+        )
+        lines.append(
+            f"Cookie Map: {report.get('cookie_identity_count', len(report.get('cookie_map', []))) or 0} identities; "
+            f"{report.get('cookie_observation_count', len(report.get('cookie_map', []))) or 0} observations; "
+            f"{report.get('cookie_url_count', 0) or 0} identity/URL associations"
+        )
+        lines.append(
+            f"Content Discovery: {report.get('wordlist_scan_status', 'unknown')}; "
+            f"{report.get('wordlist_requests_attempted', len(report.get('wordlist_results', []))) or 0} requests attempted; "
+            f"{report.get('wordlist_requests_unattempted', 0) or 0} candidates unattempted"
+        )
 
         source_coverage = report.get("coverage", {}) or {}
         if source_coverage:

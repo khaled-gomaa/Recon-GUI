@@ -1,4 +1,4 @@
-from gui.report_export import render_text_report
+from gui.report_export import render_csv_report, render_text_report
 
 
 def test_txt_report_includes_core_sections_and_hidden_discovery_results():
@@ -44,3 +44,27 @@ def test_txt_report_includes_rate_limit_outcomes():
     assert "Content Discovery rate limit: not triggered / resumed after Retry-After" in text
 
 
+
+
+def test_csv_report_includes_status_different_wildcard_suspicion():
+    report = {
+        "wordlist_results": [{
+            "url": "https://example.com/maybe-real",
+            "status": 200,
+            "method": "GET",
+            "source": "wordlist",
+            "size": 240,
+            "word_count": 32,
+            "content_type": "text/html",
+            "potential_hit": True,
+            "baseline_match": False,
+            "wildcard_match": False,
+            "wildcard_suspect": True,
+            "wildcard_similarity": 1.0,
+            "wildcard_match_reason": "body-identical-status-differs",
+        }]
+    }
+    csv_text = render_csv_report(report)
+    assert "wildcard_suspect=True" in csv_text
+    assert "wildcard_similarity=1.0" in csv_text
+    assert "body-identical-status-differs" in csv_text

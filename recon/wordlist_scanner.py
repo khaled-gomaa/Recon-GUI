@@ -1,6 +1,11 @@
 """Low-rate optional wordlist path checks for authorized targets."""
 import asyncio
 import hashlib
+import re
+from difflib import SequenceMatcher
+from html import unescape
+from bs4 import BeautifulSoup
+from urllib.parse import unquote
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -75,6 +80,10 @@ class WordlistScanner:
         self.responses = []
         self.bad_status = {400, 404, 410, 429, 500, 502, 503, 504}
         self.baseline_size = None
+        self.baseline_status = None
+        self.baseline_content_type = ""
+        self.baseline_location = ""
+        self.baseline_normalized_text = ""
         self._rate_limited = False  # True means safely stopped, not bypassed.
         self._rate_limit_pauses = 0
         self._resume_event = None
@@ -319,6 +328,89 @@ class WordlistScanner:
             return path.strip("/") + "/"
         return ""
 
+    def _comparison_text(self, text: str, url: str) -> str:
+        """Normalize obvious dynamic response noise for soft-404/wildcard comparison."""
+        try:
+            soup = BeautifulSoup(text or "", "html.parser")
+            for node in soup(["script", "style", "noscript", "svg"]):
+                node.decompose()
+            value = soup.get_text(" ", strip=True)
+        except Exception:
+            value = str(text or "")
+        value = unescape(value)
+        parsed = urlparse(str(url or ""))
+        candidates = {
+            str(url or ""),
+            parsed.path if parsed.path not in {"", "/"} else "",
+            unquote(parsed.path) if parsed.path not in {"", "/"} else "",
+        }
+        for token in sorted((item for item in candidates if item), key=len, reverse=True):
+            value = value.replace(token, " {requested-path} ")
+        value = re.sub(r"https?://[^\s<>\"']+", "{absolute-url}", value, flags=re.I)
+        value = re.sub(
+            r"\b[0-9a-f]{8}-[0-9a-f-]{27,}\b", "{uuid}", value, flags=re.I
+        )
+        value = re.sub(r"\b[0-9a-f]{16,}\b", "{hex-id}", value, flags=re.I)
+        value = re.sub(r"\b\d{10,13}\b", "{timestamp}", value)
+        return " ".join(value.casefold().split())
+
+    @staticmethod
+    def _similarity_sample(value: str) -> str:
+        """Sample beginning, middle and end so large pages are not judged by their headers alone."""
+        if len(value) <= 8192:
+            return value
+        midpoint = len(value) // 2
+        middle_start = max(0, midpoint - 1024)
+        return (
+            value[:4096] + " {middle} "
+            + value[middle_start:middle_start + 2048] + " {tail} "
+            + value[-2048:]
+        )
+
+    def _matches_baseline(self, url, status, content_type, location, body):
+        """Return (wildcard match, similarity, reason) using status, redirects and body text."""
+        if self.baseline_status is None:
+            # If the control request failed for a transport reason, do not suppress
+            # candidates based solely on response length.
+            return False, 0.0, "baseline-unavailable"
+        status_matches = int(status or 0) == int(self.baseline_status)
+        baseline_type = str(self.baseline_content_type or "").split(";", 1)[0].strip().lower()
+        current_type = str(content_type or "").split(";", 1)[0].strip().lower()
+        if baseline_type and current_type and baseline_type != current_type:
+            return False, 0.0, "content-type-differs"
+        baseline_location = str(self.baseline_location or "").strip()
+        current_location = str(location or "").strip()
+        if status_matches and baseline_location and current_location and baseline_location == current_location:
+            return True, 1.0, "same-redirect-destination"
+        baseline_text = self.baseline_normalized_text
+        candidate_text = self._comparison_text(
+            bytes(body).decode("utf-8", errors="replace") if isinstance(body, (bytes, bytearray)) else str(body or ""),
+            url,
+        )
+        if baseline_text == candidate_text:
+            if status_matches:
+                return True, 1.0, "normalized-body-identical"
+            return False, 1.0, "body-identical-status-differs"
+        if not baseline_text and not candidate_text:
+            if self.baseline_size is not None and abs(len(body) - self.baseline_size) <= 4:
+                if status_matches:
+                    return True, 1.0, "empty-body-size-match"
+                return False, 1.0, "body-identical-status-differs"
+            return False, 0.0, "empty-body-differs"
+        left = self._similarity_sample(baseline_text)
+        right = self._similarity_sample(candidate_text)
+        # Keep difflib's autojunk optimization enabled to avoid quadratic work on repetitive text.
+        similarity = SequenceMatcher(None, left, right, autojunk=True).ratio()
+        size_delta = abs(len(body) - (self.baseline_size or 0))
+        relative_delta = size_delta / max(1, self.baseline_size or 1)
+        if similarity >= 0.94 and relative_delta <= 0.20:
+            if status_matches:
+                return True, similarity, "normalized-body-similar"
+            # Keep status-different lookalikes as potential hits, but explicitly flag them
+            # so the operator can review possible soft-404/fallback routing.
+            return False, similarity, "body-similar-status-differs"
+        return False, similarity, "body-differs" if status_matches else "status-and-body-differ"
+
     async def _fetch_baseline(self, session):
         baseline_url = urljoin(self.origin, "this-path-should-not-exist-recon-baseline-74c31")
         for attempt in range(2):
@@ -340,14 +432,25 @@ class WordlistScanner:
                         self._log("[Baseline] Rate limit persisted; stopping content discovery.")
                         return
                     data = await resp.content.read(MAX_RESPONSE_BYTES + 1)
-                    self.baseline_size = len(data[:MAX_RESPONSE_BYTES])
+                    body = data[:MAX_RESPONSE_BYTES]
+                    self.baseline_size = len(body)
+                    self.baseline_status = int(resp.status)
+                    self.baseline_content_type = str(resp.headers.get("Content-Type", ""))
+                    self.baseline_location = str(resp.headers.get("Location", ""))
+                    baseline_text = body.decode(resp.charset or "utf-8", errors="replace")
+                    self.baseline_normalized_text = self._comparison_text(baseline_text, baseline_url)
                     self._log(
-                        f"[Baseline] Reference response: HTTP {resp.status}, "
-                        f"{self.baseline_size} bytes"
+                        f"[Baseline] Reference response: HTTP {self.baseline_status}, "
+                        f"{self.baseline_size} bytes; wildcard comparison uses status, redirect, "
+                        "content type and normalized body."
                     )
                     return
             except (aiohttp.ClientError, asyncio.TimeoutError):
                 self.baseline_size = None
+                self.baseline_status = None
+                self.baseline_content_type = ""
+                self.baseline_location = ""
+                self.baseline_normalized_text = ""
                 return
 
     async def scan(self):
@@ -404,9 +507,10 @@ class WordlistScanner:
                                 size = len(body)
                                 text = body.decode(resp.charset or "utf-8", errors="replace")
                                 word_count = len(text.split())
-                                baseline_match = (
-                                    self.baseline_size is not None
-                                    and abs(size - self.baseline_size) < 50
+                                content_type = str(resp.headers.get("Content-Type", ""))
+                                location = str(resp.headers.get("Location", ""))
+                                baseline_match, wildcard_similarity, wildcard_reason = self._matches_baseline(
+                                    url, resp.status, content_type, location, body
                                 )
                                 set_cookie_names = []
                                 for cookie_name, morsel in resp.cookies.items():
@@ -426,8 +530,8 @@ class WordlistScanner:
                                     "status": resp.status,
                                     "size": size,
                                     "word_count": word_count,
-                                    "content_type": resp.headers.get("Content-Type", ""),
-                                    "location": resp.headers.get("Location", ""),
+                                    "content_type": content_type,
+                                    "location": location,
                                     "server": resp.headers.get("Server", ""),
                                     "last_modified": resp.headers.get("Last-Modified", ""),
                                     "allow": resp.headers.get("Allow", ""),
@@ -436,6 +540,16 @@ class WordlistScanner:
                                     "response_truncated": len(data) > MAX_RESPONSE_BYTES,
                                     "set_cookie_names": set_cookie_names,
                                     "baseline_match": baseline_match,
+                                    "wildcard_match": baseline_match,
+                                    "wildcard_suspect": (
+                                        not baseline_match and wildcard_similarity >= 0.94
+                                        and wildcard_reason in {
+                                            "body-identical-status-differs",
+                                            "body-similar-status-differs",
+                                        }
+                                    ),
+                                    "wildcard_similarity": round(wildcard_similarity, 4),
+                                    "wildcard_match_reason": wildcard_reason,
                                     "potential_hit": (
                                         resp.status not in self.bad_status
                                         and not baseline_match
@@ -470,6 +584,10 @@ class WordlistScanner:
                                 "response_truncated": False,
                                 "set_cookie_names": [],
                                 "baseline_match": False,
+                                "wildcard_match": False,
+                                "wildcard_suspect": False,
+                                "wildcard_similarity": 0.0,
+                                "wildcard_match_reason": "request-failed",
                                 "potential_hit": False,
                                 "error": type(exc).__name__,
                             }
