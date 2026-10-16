@@ -12,6 +12,7 @@ from recon.js_collector import JSCollector
 from recon.parameter_intelligence import (
     build_endpoint_inventory, build_parameter_inventory, _normalize_endpoint,
 )
+from recon.coverage import build_coverage_report
 
 
 @dataclass
@@ -36,6 +37,10 @@ class ReconAnalyzer:
         self.request_headers = dict(request_headers or {})
         self.cookie_jar = cookie_jar
         self.wordlist_hits: list = []
+        self.wordlist_stats: dict = {}
+        self.passive_results: dict = {}
+        self.imported_seed_urls: list = []
+        self.max_pages: int = 0
         self.favicon_hash: str = ""
         self.matcher_applied: bool = False
         self.forms: dict[tuple, dict] = {}
@@ -43,8 +48,6 @@ class ReconAnalyzer:
         self.sensitive_findings: dict[tuple, dict] = {}
         self.page_urls: set[str] = set()
         self.discovered_links: set[str] = set()
-        # Raw endpoint candidates exist only in memory so parameter names can be extracted.
-        # Reported endpoint paths remove query strings and their potentially sensitive values.
         self.endpoint_observations: list[dict] = []
         self._observation_keys: set[tuple] = set()
         self.network_observations: dict[tuple, dict] = {}
@@ -64,8 +67,6 @@ class ReconAnalyzer:
         if not (parsed.scheme and parsed.netloc):
             endpoint = urljoin(location or self.base_url, endpoint)
             parsed = urlparse(endpoint)
-        # External references are not app endpoints. The crawler's in-scope HTML links
-        # and route candidates should all resolve to the target hostname.
         if parsed.scheme.lower() not in ("http", "https") or (parsed.hostname or "").lower() != self.base_host:
             return
         method = str(method or "").strip().upper()
@@ -84,7 +85,7 @@ class ReconAnalyzer:
             self.report.endpoints.add(safe_endpoint)
 
     def record_network_observation(self, record: dict):
-        """Store request metadata only; URLs are already sanitized and bodies are never retained."""
+        """Store request metadata only; URLs are sanitized and bodies are never retained."""
         raw_url = str(record.get("url") or "").strip()
         if not raw_url:
             return
@@ -171,8 +172,6 @@ class ReconAnalyzer:
         self.page_urls.add(url)
         for asset in discovered_assets or []:
             self._record_asset_reference(url, asset)
-        # Mine extension-bearing strings from inline scripts (including JSON-LD) without
-        # mistaking every HTML attribute for JavaScript. Honour a valid document <base href>.
         soup = BeautifulSoup(html, "lxml")
         script_base = url
         base_tag = soup.find("base", href=True)
@@ -194,11 +193,7 @@ class ReconAnalyzer:
             if (parsed_link.hostname or "").lower() != self.base_host:
                 continue
             self.discovered_links.add(link)
-            self._record_endpoint(
-                link,
-                "discovered-link-query" if parsed_link.query else "html-link",
-                url,
-            )
+            self._record_endpoint(link, "discovered-link-query" if parsed_link.query else "html-link", url)
         self.report.emails.update(EmailExtractor.extract(html))
         self.report.subdomains.update(self.subdomain_finder.find(html))
         for endpoint in JSEndpointExtractor.extract(html):
@@ -206,16 +201,13 @@ class ReconAnalyzer:
         for request in JSEndpointExtractor.extract_request_observations(html):
             self._record_endpoint(
                 request.get("endpoint", ""), request.get("source", "javascript-static"), url,
-                method=request.get("method"),
-                body_parameters=request.get("body_parameters", []),
+                method=request.get("method"), body_parameters=request.get("body_parameters", []),
             )
         self.js_collector.collect_from_html(url, html)
-
         for route in JSEndpointExtractor.extract_routes(html):
             resolved = urljoin(url, route)
             if urlparse(resolved).scheme.lower() in ("http", "https"):
                 self._record_endpoint(resolved, "inline-route", url)
-
         advanced = analyze_html(url, html)
         for form in advanced["forms"]:
             key = (form.get("page"), form.get("method"), form.get("action"))
@@ -239,19 +231,13 @@ class ReconAnalyzer:
         for item in advanced["sensitive_findings"]:
             key = (item.get("page"), item.get("type"), item.get("source"), item.get("key_name", ""))
             self.sensitive_findings[key] = item
-
         if headers:
-            # Refresh by URL because rendered DOM may replace a static page result.
-            self.report.header_audits = [
-                audit for audit in self.report.header_audits if audit.url != url
-            ]
+            self.report.header_audits = [audit for audit in self.report.header_audits if audit.url != url]
             self.report.header_audits.append(HeaderAuditor.audit(url, headers))
 
     def finalize_js(self, loop, should_stop=None, delay_seconds: float = 0.0):
         loop.run_until_complete(
-            self.js_collector.download_and_analyze(
-                should_stop=should_stop, delay_seconds=delay_seconds
-            )
+            self.js_collector.download_and_analyze(should_stop=should_stop, delay_seconds=delay_seconds)
         )
         for js_url, js_content in self.js_collector.js_contents.items():
             for asset in JSEndpointExtractor.extract_asset_references(js_content, js_url):
@@ -261,8 +247,7 @@ class ReconAnalyzer:
             for request in JSEndpointExtractor.extract_request_observations(js_content):
                 self._record_endpoint(
                     request.get("endpoint", ""), request.get("source", "javascript-static"), js_url,
-                    method=request.get("method"),
-                    body_parameters=request.get("body_parameters", []),
+                    method=request.get("method"), body_parameters=request.get("body_parameters", []),
                 )
             for route in JSEndpointExtractor.extract_routes(js_content):
                 self._record_endpoint(urljoin(js_url, route), "javascript-route", js_url)
@@ -286,20 +271,16 @@ class ReconAnalyzer:
             candidate_urls=self.discovered_links,
             network_observations=list(self.network_observations.values()),
         )
-        # Never expose parameter values extracted from endpoint/query strings.
         safe_routes = sorted({_normalize_endpoint(route) for route in self.js_collector.route_urls if _normalize_endpoint(route)})
         safe_endpoints = sorted({item["endpoint"] for item in endpoint_inventory})
-        return {
+        report = {
             "favicon_hash": self.favicon_hash,
             "emails": sorted(self.report.emails),
             "subdomains": sorted(self.report.subdomains),
             "endpoints": safe_endpoints,
             "endpoint_inventory": endpoint_inventory,
             "endpoint_observations_count": len(self.endpoint_observations),
-            "network_observations": sorted(
-                self.network_observations.values(),
-                key=lambda item: (item.get("url", ""), item.get("method", ""), item.get("source", "")),
-            ),
+            "network_observations": sorted(self.network_observations.values(), key=lambda item: (item.get("url", ""), item.get("method", ""), item.get("source", ""))),
             "asset_inventory": [
                 {
                     "url": item["url"], "kind": item["kind"], "extension": item["extension"],
@@ -308,17 +289,11 @@ class ReconAnalyzer:
                     "reference_count": len(item["referrers"]),
                     "query_parameter_names": sorted(item["query_parameter_names"]),
                     "in_scope": item["in_scope"],
-                    "fetched_by_page_crawler": item["url"] in {
-                        _normalize_endpoint(page_url) for page_url in self.page_urls
-                    },
-                    "fetched_by_js_collector": item["url"] in {
-                        _normalize_endpoint(js_url) for js_url in self.js_collector.js_contents
-                    },
+                    "fetched_by_page_crawler": item["url"] in {_normalize_endpoint(page_url) for page_url in self.page_urls},
+                    "fetched_by_js_collector": item["url"] in {_normalize_endpoint(js_url) for js_url in self.js_collector.js_contents},
                     "fetched_by_css_collector": item["url"] in self.css_files_fetched,
                 }
-                for _key, item in sorted(
-                    self.asset_observations.items(), key=lambda pair: (pair[0][0].casefold(), pair[0][1])
-                )
+                for _key, item in sorted(self.asset_observations.items(), key=lambda pair: (pair[0][0].casefold(), pair[0][1]))
             ],
             "discovered_link_count": len(self.discovered_links),
             "parameters": parameters,
@@ -327,19 +302,9 @@ class ReconAnalyzer:
                 {"url": audit.url, "present": audit.present, "missing": audit.missing}
                 for audit in self.report.header_audits
             ],
-            "js_files": sorted({
-                _normalize_endpoint(url) for url in self.js_collector.js_urls
-                if _normalize_endpoint(url)
-            }),
-            "unattempted_js_files": sorted({
-                _normalize_endpoint(url) for url in (
-                    self.js_collector.js_urls - self.js_collector._analyzed_js_urls
-                ) if _normalize_endpoint(url)
-            }),
-            "truncated_js_files": sorted({
-                _normalize_endpoint(url) for url in self.js_collector.truncated_js_files
-                if _normalize_endpoint(url)
-            }),
+            "js_files": sorted({_normalize_endpoint(url) for url in self.js_collector.js_urls if _normalize_endpoint(url)}),
+            "unattempted_js_files": sorted({_normalize_endpoint(url) for url in (self.js_collector.js_urls - self.js_collector._analyzed_js_urls) if _normalize_endpoint(url)}),
+            "truncated_js_files": sorted({_normalize_endpoint(url) for url in self.js_collector.truncated_js_files if _normalize_endpoint(url)}),
             "js_fetch_errors": list(self.js_collector.fetch_errors),
             "js_fetch_error_count": len(self.js_collector.fetch_errors),
             "source_maps": sorted(self.js_collector.source_maps),
@@ -347,10 +312,23 @@ class ReconAnalyzer:
             "inline_script_count": len(self.js_collector.inline_scripts),
             "js_rate_limited_stop": self.js_collector.rate_limit_stopped,
             "wordlist_hits": self.wordlist_hits,
+            "wordlist_stats": dict(self.wordlist_stats),
             "forms": forms,
             "json_ld": sorted(self.json_ld.values(), key=lambda item: (item["page"], item["type"])),
-            "sensitive_findings": sorted(
-                self.sensitive_findings.values(),
-                key=lambda item: (item["page"], item["type"], item.get("source", "")),
-            ),
+            "sensitive_findings": sorted(self.sensitive_findings.values(), key=lambda item: (item["page"], item["type"], item.get("source", ""))),
         }
+        report["coverage"] = build_coverage_report(
+            page_results=getattr(self, "page_results", []),
+            endpoint_inventory=endpoint_inventory,
+            parameter_inventory=parameters,
+            network_observations=list(self.network_observations.values()),
+            asset_inventory=report["asset_inventory"],
+            wordlist_hits=self.wordlist_hits,
+            passive_sources=self.passive_results.get("passive_sources", []),
+            historical_urls=self.passive_results.get("historical_urls", []),
+            imported_seed_urls=self.imported_seed_urls,
+            wordlist_stats=self.wordlist_stats,
+            max_pages=self.max_pages,
+            target_url=self.base_url,
+        )
+        return report
