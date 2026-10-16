@@ -305,13 +305,19 @@ class CrawlWorker(QThread):
                     loop.run_until_complete(engine.crawl(seed_urls=sorted(route_seeds), seed_depth=1))
                     _analyze_new_results()
 
-            if not self._stopping() and not engine.rate_limit_stopped:
+            if not self._stopping() and not engine.rate_limit_stopped and not rate_limit_manager.stopped:
                 self.log_message.emit("[Favicon] Computing favicon hash...")
                 try:
                     async def _hash_favicon():
                         connector = aiohttp.TCPConnector(ssl=True)
-                        async with aiohttp.ClientSession(connector=connector) as session:
-                            return await get_favicon_hash(session, self.url)
+                        async with aiohttp.ClientSession(
+                            connector=connector, cookie_jar=session_cookie_jar,
+                            headers=phase_headers,
+                        ) as session:
+                            return await get_favicon_hash(
+                                session, self.url, rate_limit_manager=rate_limit_manager,
+                                should_stop=self._stopping, on_log=self.log_message.emit,
+                            )
                     analyzer.favicon_hash = loop.run_until_complete(_hash_favicon())
                     self.log_message.emit(
                         f"[Favicon] Hash = {analyzer.favicon_hash}"
@@ -320,7 +326,7 @@ class CrawlWorker(QThread):
                 except Exception as exc:
                     self.log_message.emit(f"[Favicon] Error: {exc}")
 
-            if not self._stopping() and not engine.rate_limit_stopped:
+            if not self._stopping() and not engine.rate_limit_stopped and not rate_limit_manager.stopped:
                 # Iterate until the JS queue and route queue stop producing new crawl pages.
                 # The crawler's configured page cap, stop event, exact-host scope and 429
                 # gate remain the hard boundaries; no fixed two-round truncation.
