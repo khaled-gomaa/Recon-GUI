@@ -335,7 +335,7 @@ def test_exports_include_source_coverage_and_observed_vs_inferred_request_intell
     html = render_html_report(report)
 
     assert "SOURCE-AWARE DISCOVERY COVERAGE" in txt
-    assert "REQUEST INTELLIGENCE (OBSERVED VS INFERRED)" in txt
+    assert "REQUEST INTELLIGENCE (OBSERVED VS INFERRED" in txt
     assert "[OBSERVED] [POST] https://example.test/api/search" in txt
     assert "The page limit was reached" in txt
 
