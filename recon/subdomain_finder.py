@@ -17,7 +17,10 @@ class SubdomainFinder:
         # registrable_domain() directly and remains fail-closed.
         try:
             self.base_domain = registrable_domain(host) or host
-        except RuntimeError as exc:
+        except (RuntimeError, OSError) as exc:
+            # Frozen PyInstaller builds can occasionally miss tldextract's hidden
+            # .tld_set_snapshot resource. This is optional text discovery; do not
+            # abort the entire crawl. Active scope verification remains fail-closed.
             self.enabled = False
             self.base_domain = host
             self.on_log(

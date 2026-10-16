@@ -48,3 +48,20 @@ def test_domain_scope_verification_still_fails_closed_without_public_suffix_supp
 
     with pytest.raises(RuntimeError, match="tldextract snapshot unavailable"):
         domain_scope.registrable_domain("api.example.com")
+
+
+def test_missing_tldextract_snapshot_does_not_abort_full_crawl(monkeypatch):
+    logs = []
+
+    def missing_snapshot(_hostname):
+        raise FileNotFoundError(
+            "No such file or directory: '_internal/tldextract/.tld_set_snapshot'"
+        )
+
+    monkeypatch.setattr(subdomain_finder, "registrable_domain", missing_snapshot)
+    finder = SubdomainFinder("https://www.example.com", on_log=logs.append)
+
+    assert finder.enabled is False
+    assert finder.find("api.example.com") == set()
+    assert any("disabled" in line.lower() for line in logs)
+    assert any(".tld_set_snapshot" in line for line in logs)
